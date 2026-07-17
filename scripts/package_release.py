@@ -66,6 +66,16 @@ def normalize_version(value: str, *, source: str = "version") -> str:
     return normalized
 
 
+def _readme_states_minimum_version(readme: str, version: str) -> bool:
+    """Return whether README prose states the supported minimum version."""
+
+    pattern = re.compile(
+        rf"(?i)(?:minimum|requires|support(?:ed)?)\S*(?:\s+\S+){{0,12}}"
+        rf"\s*{re.escape(version)}"
+    )
+    return pattern.search(readme) is not None
+
+
 def validate_repository(root: Path) -> ReleaseMetadata:
     """Validate the repository metadata used by a Hydronicus release."""
 
@@ -105,8 +115,7 @@ def validate_repository(root: Path) -> ReleaseMetadata:
             "hacs.json homeassistant minimum does not match the repository release contract"
         )
     readme = readme_path.read_text(encoding="utf-8")
-    requirement = f"Hydronicus requires Home Assistant {minimum_home_assistant} or newer."
-    if requirement not in readme:
+    if not _readme_states_minimum_version(readme, minimum_home_assistant):
         raise ReleaseValidationError(
             "README.md does not state the HACS minimum Home Assistant version"
         )
