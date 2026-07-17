@@ -152,3 +152,29 @@ def test_evaluation_is_deterministic_for_generated_topologies(
     second = evaluate(plant, snapshot, RuntimeState(), NOW)
 
     assert first == second
+
+
+@given(
+    temperatures=st.lists(
+        st.floats(min_value=15, max_value=25, allow_nan=False, allow_infinity=False),
+        min_size=1,
+        max_size=6,
+    )
+)
+def test_unchanged_generated_snapshot_produces_no_new_commands(
+    temperatures: list[float],
+) -> None:
+    """A settled generated plant must not emit another command for unchanged inputs."""
+    plant = compile_topology(_shared_pump_plant(len(temperatures)))
+    snapshot = _snapshot(tuple(temperatures))
+
+    initial = evaluate(plant, snapshot, RuntimeState(), NOW)
+    settled = evaluate(plant, snapshot, initial.next_runtime, NOW)
+    unchanged = evaluate(
+        plant,
+        snapshot,
+        settled.next_runtime,
+        NOW + timedelta(seconds=1),
+    )
+
+    assert unchanged.control_plan.commands == ()

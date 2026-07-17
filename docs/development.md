@@ -21,11 +21,13 @@ make hooks
 - `make test-integration` runs Home Assistant config, entity, and lifecycle adapter tests.
 - `make test-scenarios` runs named, time-ordered operating scenarios.
 - `make lint` checks Ruff linting, Python compilation, and repository JSON files.
+- `make format-check` checks formatter-clean files while pre-existing format debt is retired.
 - `make typecheck` checks the dependency-free controller package with mypy.
 - `make verify` runs the complete local quality gate used by CI.
 
 Run the narrowest relevant target while developing and run `make verify` before handing off a chunk.
-The pre-commit hook applies Ruff formatting to changed Python files while the existing source tree converges on formatter-clean output.
+The pre-commit hook applies Ruff formatting to every changed Python file.
+The CI format check excludes the explicitly listed pre-existing format debt while the source tree converges on formatter-clean output.
 
 ## Test boundaries
 
