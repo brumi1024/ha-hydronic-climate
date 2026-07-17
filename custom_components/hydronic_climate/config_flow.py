@@ -6,7 +6,8 @@ from typing import Any
 from uuid import uuid4
 
 import voluptuous as vol
-from homeassistant import config_entries, selector
+from homeassistant import config_entries
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_CIRCUITS,

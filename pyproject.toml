@@ -19,7 +19,7 @@ classifiers = [
 
 [tool.pytest.ini_options]
 addopts = "-ra"
-testpaths = ["tests/core", "tests/test_runtime.py"]
+testpaths = ["tests/core", "tests/test_config_flow_import.py", "tests/test_runtime.py"]
 
 [tool.ruff]
 target-version = "py313"
