@@ -29,6 +29,16 @@ OFFICE_ROUTE_ID = "00000000-0000-4000-8000-000000000008"
 SECOND_VALVE_ID = "00000000-0000-4000-8000-000000000009"
 
 
+async def _confirm_warning_review(hass, result):
+    """Acknowledge non-fatal topology warnings when a flow presents them."""
+    if result.get("type") == FlowResultType.FORM and result.get("step_id") == "review":
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"], user_input={"confirm": True}
+        )
+        await hass.async_block_till_done()
+    return result
+
+
 def _plant_entry() -> MockConfigEntry:
     """Return a valid two-zone plant whose equipment can be shared."""
     return MockConfigEntry(
@@ -65,7 +75,7 @@ def _plant_entry() -> MockConfigEntry:
                         "name": "Shared return valve",
                         "entity_id": "switch.shared_return_valve",
                         "opening_time_seconds": 45.0,
-                    }
+                    },
                 ],
                 "pumps": [
                     {
@@ -131,19 +141,23 @@ async def test_topology_preview_updates_after_adding_shared_circuit(hass) -> Non
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     preview = hass.states.get(entity_id)
     assert preview is not None
     assert preview.state == "2 zones, 2 circuits"
-    assert "Zone Living room can request circuits Floor loop, Ceiling loop." in (
-        preview.attributes["logic_summary"]
+    assert (
+        "Zone Living room can request circuits Floor loop, Ceiling loop."
+        in (preview.attributes["logic_summary"])
     )
-    assert "Valve Shared supply valve is shared by circuits Floor loop, Ceiling loop." in (
-        preview.attributes["logic_summary"]
+    assert (
+        "Valve Shared supply valve is shared by circuits Floor loop, Ceiling loop."
+        in (preview.attributes["logic_summary"])
     )
-    assert "Pump Shared pump is shared by circuits Floor loop, Ceiling loop." in (
-        preview.attributes["logic_summary"]
+    assert (
+        "Pump Shared pump is shared by circuits Floor loop, Ceiling loop."
+        in (preview.attributes["logic_summary"])
     )
 
 
@@ -172,13 +186,12 @@ async def test_add_circuit_subentry_composes_multi_zone_routes(hass) -> None:
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     assert entry.runtime_data is not initial_runtime
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
     circuit_id = subentry.data["id"]
     UUID(circuit_id)
@@ -186,11 +199,7 @@ async def test_add_circuit_subentry_composes_multi_zone_routes(hass) -> None:
     assert circuit.name == "Ceiling loop"
     assert circuit.valve_ids == (VALVE_ID, SECOND_VALVE_ID)
     assert circuit.pump_id == PUMP_ID
-    routes = [
-        route
-        for route in entry.runtime_data.plant.routes
-        if route.circuit_id == circuit_id
-    ]
+    routes = [route for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id]
     assert {route.zone_id for route in routes} == {LIVING_ZONE_ID, OFFICE_ZONE_ID}
     assert len({route.id for route in routes}) == 2
     assert all(str(UUID(route.id)) == route.id for route in routes)
@@ -216,16 +225,13 @@ async def test_reconfigure_circuit_preserves_retained_relationship_uuids(hass) -
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
     circuit_id = subentry.data["id"]
-    route_ids = {
-        route["zone_id"]: route["id"] for route in subentry.data["routes"]
-    }
+    route_ids = {route["zone_id"]: route["id"] for route in subentry.data["routes"]}
     runtime_after_add = entry.runtime_data
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
@@ -242,22 +248,17 @@ async def test_reconfigure_circuit_preserves_retained_relationship_uuids(hass) -
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert entry.runtime_data is not runtime_after_add
     assert subentry.data["id"] == circuit_id
     assert subentry.title == "Updated ceiling loop"
-    assert subentry.data["routes"] == [
-        {"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}
-    ]
+    assert subentry.data["routes"] == [{"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}]
     circuit = entry.runtime_data.plant.circuits[circuit_id]
     assert circuit.name == "Updated ceiling loop"
-    routes = [
-        route
-        for route in entry.runtime_data.plant.routes
-        if route.circuit_id == circuit_id
-    ]
+    routes = [route for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id]
     assert [(route.id, route.zone_id) for route in routes] == [
         (route_ids[OFFICE_ZONE_ID], OFFICE_ZONE_ID)
     ]
@@ -283,15 +284,12 @@ async def test_reconfigure_circuit_preserves_retained_route_enablement(hass) -> 
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
     disabled_route_id = next(
-        route["id"]
-        for route in subentry.data["routes"]
-        if route["zone_id"] == LIVING_ZONE_ID
+        route["id"] for route in subentry.data["routes"] if route["zone_id"] == LIVING_ZONE_ID
     )
     updated_data = {
         **subentry.data,
@@ -312,6 +310,7 @@ async def test_reconfigure_circuit_preserves_retained_route_enablement(hass) -> 
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["reason"] == "reconfigure_successful"
     assert subentry.data["routes"] == [
@@ -383,11 +382,10 @@ async def test_delete_circuit_subentry_restores_base_topology(hass) -> None:
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
     circuit_id = subentry.data["id"]
     runtime_after_add = entry.runtime_data
@@ -397,9 +395,7 @@ async def test_delete_circuit_subentry_restores_base_topology(hass) -> None:
 
     assert entry.runtime_data is not runtime_after_add
     assert circuit_id not in entry.runtime_data.plant.circuits
-    assert all(
-        route.circuit_id != circuit_id for route in entry.runtime_data.plant.routes
-    )
+    assert all(route.circuit_id != circuit_id for route in entry.runtime_data.plant.routes)
     assert set(entry.runtime_data.plant.circuits) == {BASE_CIRCUIT_ID}
 
 
@@ -423,11 +419,10 @@ async def test_reconfigure_rejects_stale_relationship_atomically(hass) -> None:
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
@@ -479,11 +474,10 @@ async def test_reload_reconstructs_persisted_circuit_subentry(hass) -> None:
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
     )
     circuit_id = subentry.data["id"]
     route_ids = {route["id"] for route in subentry.data["routes"]}
@@ -498,7 +492,5 @@ async def test_reload_reconstructs_persisted_circuit_subentry(hass) -> None:
         SECOND_VALVE_ID,
     )
     assert {
-        route.id
-        for route in entry.runtime_data.plant.routes
-        if route.circuit_id == circuit_id
+        route.id for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id
     } == route_ids

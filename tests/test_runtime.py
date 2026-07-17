@@ -105,21 +105,22 @@ class _RuntimeHomeAssistant:
         return task
 
 
-def _configured_entry() -> SimpleNamespace:
+def _configured_entry(*, zone_overrides: dict[str, object] | None = None) -> SimpleNamespace:
+    zone = {
+        "id": ZONE_UUID,
+        "name": "Test zone",
+        "target_temperature": 21.0,
+        "temperature_sensor": "sensor.test_temperature",
+    }
+    if zone_overrides:
+        zone.update(zone_overrides)
     return SimpleNamespace(
         data={
             "name": "Hydronic plant",
             "plant_id": PLANT_UUID,
             "shadow_mode": True,
             "topology": {
-                "zones": [
-                    {
-                        "id": ZONE_UUID,
-                        "name": "Test zone",
-                        "target_temperature": 21.0,
-                        "temperature_sensor": "sensor.test_temperature",
-                    }
-                ],
+                "zones": [zone],
                 "circuits": [
                     {
                         "id": CIRCUIT_UUID,
@@ -213,11 +214,11 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
             clock.now.return_value = NOW + timedelta(seconds=31)
             await runtime.async_refresh(hass)
 
-            self.assertEqual(scheduled[1][0], 120.0)
+            self.assertEqual(scheduled[-1][0], 120.0)
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "overrun")
 
             clock.now.return_value = NOW + timedelta(seconds=151)
-            scheduled[1][1](clock.now.return_value)
+            scheduled[-1][1](clock.now.return_value)
             await hass.tasks[-1]
 
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "off")
@@ -233,15 +234,48 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
             last_reported=NOW,
         )
 
-        with mock.patch.object(
-            runtime_module, "async_call_later", return_value=mock.Mock()
-        ):
+        with mock.patch.object(runtime_module, "async_call_later", return_value=mock.Mock()):
             await runtime.async_refresh(hass)
 
         self.assertEqual(
             runtime.snapshot.temperatures["sensor.test_temperature"].observed_at,
             NOW,
         )
+
+    async def test_sensor_staleness_deadline_is_scheduled_without_state_change(self) -> None:
+        """The runtime wakes at freshness expiry even when no sensor event arrives."""
+        runtime = HydronicRuntime.from_entry(
+            _configured_entry(
+                zone_overrides={
+                    "temperature_sensor_metadata": [
+                        {
+                            "entity_id": "sensor.test_temperature",
+                            "max_age_seconds": 60.0,
+                        }
+                    ]
+                }
+            )
+        )
+        hass = _RuntimeHomeAssistant("22.0")
+        scheduled: list[float] = []
+
+        def schedule(_hass, delay: float, _action):
+            scheduled.append(delay)
+            return mock.Mock()
+
+        with (
+            mock.patch.object(
+                runtime_module,
+                "async_track_state_change_event",
+                return_value=mock.Mock(),
+            ),
+            mock.patch.object(runtime_module, "async_call_later", side_effect=schedule),
+            mock.patch.object(runtime_module, "datetime") as clock,
+        ):
+            clock.now.return_value = NOW
+            await runtime.async_start(hass)
+
+        self.assertEqual(scheduled, [60.0])
 
     async def test_stop_cancels_state_and_timer_listeners(self) -> None:
         runtime = HydronicRuntime.from_entry(_configured_entry())
@@ -254,7 +288,9 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
                 runtime_module, "async_track_state_change_event", return_value=cancel_state
             ),
             mock.patch.object(runtime_module, "async_call_later", return_value=cancel_timer),
+            mock.patch.object(runtime_module, "datetime") as clock,
         ):
+            clock.now.return_value = NOW
             await runtime.async_start(hass)
             await runtime.async_stop()
 

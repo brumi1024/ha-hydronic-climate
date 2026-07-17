@@ -391,3 +391,169 @@ def test_rejects_non_uuid_ids_in_first_class_persisted_topology() -> None:
                 },
             }
         )
+
+
+def test_legacy_sensor_data_gets_safe_metadata_defaults() -> None:
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "plant-1",
+            "topology": {
+                "zones": [
+                    {
+                        "id": "zone-1",
+                        "name": "Living room",
+                        "target_temperature": 21.0,
+                        "temperature_sensor": "sensor.living_temperature",
+                    }
+                ],
+                "circuits": [],
+                "routes": [],
+            },
+        }
+    )
+
+    sensor = plant.zones[0].sensor_metadata[0]
+    assert sensor.entity_id == "sensor.living_temperature"
+    assert sensor.required is True
+    assert sensor.weight == 1.0
+    assert sensor.calibration_offset == 0.0
+    assert sensor.maximum_age_seconds == 1800.0
+    assert sensor.designated_reference is False
+
+
+def test_decodes_sensor_metadata_and_zone_policy_fields() -> None:
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "plant-1",
+            "topology": {
+                "zones": [
+                    {
+                        "id": "zone-1",
+                        "name": "Living room",
+                        "target_temperature": 21.0,
+                        "temperature_sensor_metadata": [
+                            {
+                                "entity_id": "sensor.primary",
+                                "required": True,
+                                "weight": 2.0,
+                                "calibration_offset": -0.25,
+                                "max_age_seconds": 300,
+                                "designated_reference": True,
+                            },
+                            {
+                                "entity_id": "sensor.backup",
+                                "required": False,
+                                "weight": 1.0,
+                                "calibration_offset": 0.5,
+                                "max_age_seconds": 900,
+                                "designated_reference": False,
+                            },
+                        ],
+                        "temperature_aggregation": "designated_reference",
+                        "heating_start_delta": 0.4,
+                        "heating_stop_delta": 0.15,
+                        "minimum_active_duration_seconds": 120,
+                        "minimum_idle_duration_seconds": 60,
+                        "preset_targets": {"comfort": 21.5, "eco": 19.0, "away": 16.0},
+                    }
+                ],
+                "circuits": [],
+                "routes": [],
+            },
+        }
+    )
+
+    zone = plant.zones[0]
+    assert zone.aggregation is TemperatureAggregation.DESIGNATED_REFERENCE
+    assert zone.sensor_metadata[0].maximum_age_seconds == 300
+    assert zone.sensor_metadata[1].required is False
+    assert zone.heating_start_delta == 0.4
+    assert zone.heating_stop_delta == 0.15
+    assert zone.minimum_active_duration_seconds == 120
+    assert zone.minimum_idle_duration_seconds == 60
+    assert dict(zone.preset_targets) == {"comfort": 21.5, "eco": 19.0, "away": 16.0}
+
+
+@pytest.mark.parametrize(
+    ("metadata", "message"),
+    [
+        (
+            [{"entity_id": "sensor.one", "unknown": True}],
+            "unknown fields",
+        ),
+        (
+            [
+                {"entity_id": "sensor.one"},
+                {"entity_id": "sensor.one"},
+            ],
+            "duplicate",
+        ),
+        (
+            [{"entity_id": "sensor.one", "max_age_seconds": 0}],
+            "positive",
+        ),
+    ],
+)
+def test_rejects_invalid_sensor_metadata(metadata, message) -> None:
+    with pytest.raises(StoredTopologyError, match=message):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant-1",
+                "topology": {
+                    "zones": [
+                        {
+                            "id": "zone-1",
+                            "name": "Living room",
+                            "target_temperature": 21.0,
+                            "temperature_sensor_metadata": metadata,
+                        }
+                    ],
+                    "circuits": [],
+                    "routes": [],
+                },
+            }
+        )
+
+
+def test_designated_reference_requires_one_metadata_record() -> None:
+    with pytest.raises(StoredTopologyError, match="exactly one designated"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant-1",
+                "topology": {
+                    "zones": [
+                        {
+                            "id": "zone-1",
+                            "name": "Living room",
+                            "target_temperature": 21.0,
+                            "temperature_sensor": "sensor.one",
+                            "temperature_aggregation": "designated_reference",
+                        }
+                    ],
+                    "circuits": [],
+                    "routes": [],
+                },
+            }
+        )
+
+
+def test_legacy_route_enablement_is_preserved() -> None:
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "plant-1",
+            "topology": {
+                "zones": [],
+                "circuits": [],
+                "routes": [
+                    {
+                        "id": "route-1",
+                        "zone_id": "zone-1",
+                        "circuit_id": "circuit-1",
+                        "enabled": False,
+                    }
+                ],
+            },
+        }
+    )
+
+    assert plant.routes[0].enabled is False

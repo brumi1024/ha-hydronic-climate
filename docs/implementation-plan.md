@@ -608,6 +608,227 @@ Acceptance criteria:
 - Setpoint changes recalculate shadow demand.
 - Shared-valve limitations appear as configuration warnings.
 
+#### Milestone 3 implementation status
+
+Status snapshot: 2026-07-17 at commit `14158cf`, after the integration rename to Hydronicus.
+The canonical integration directory is `custom_components/hydronicus`, the integration domain is `hydronicus`, and new implementation or staging work must not recreate the former `hydronic_climate` package or domain.
+
+The baseline quality gate is green.
+`make verify` passes 100 tests with 93.70 percent branch coverage for `custom_components/hydronicus/core`.
+This baseline must remain green throughout the milestone.
+
+Current coverage:
+
+| Deliverable or criterion | Status | Current evidence and remaining gap |
+| --- | --- | --- |
+| Climate entities | Implemented | `climate.py` publishes one target-temperature climate entity per configured zone and integration tests cover setup, unload, and target changes. |
+| Presets | Missing | The climate entity exposes target temperature only and has no preset model, preset configuration, or `async_set_preset_mode` implementation. |
+| Sensor aggregation policies | Partial | Mean, median, minimum, maximum, and weighted mean exist in the pure controller, but designated-reference aggregation is missing and weighted mean is not user-configurable because the UI has no per-sensor weight editor. |
+| Hysteresis | Partial | The pure controller has separate heating start and stop deltas, but they are not yet part of the supported zone configuration contract. |
+| Minimum demand and idle times | Missing | Zone runtime state records only a demand Boolean and cannot represent demand or idle deadlines. |
+| Stale-sensor handling | Partial | The Home Assistant adapter records `last_reported`, but the controller does not compare observation age with a configured maximum age. |
+| Active and blocked explanations | Partial | The controller publishes a human-readable zone reason, but blocked state, excluded optional sensors, and timing lockouts are not represented as structured diagnostics or dedicated zone entities. |
+| Every aggregation policy has deterministic tests | Partial | Every currently implemented policy is parameterized in core tests, but designated-reference aggregation is absent and weighted-mean configuration is not covered through the UI. |
+| Failed optional sensor is excluded | Missing | Every configured temperature sensor is currently treated as required. |
+| Failed required sensor blocks the zone | Implemented | Core and Home Assistant adapter tests prove that an unavailable or invalid configured reading blocks demand. |
+| Setpoint changes recalculate shadow demand | Implemented | The climate service persists the target and immediately refreshes the shadow evaluation. |
+| Shared-valve limitations appear as configuration warnings | Partial | Shared equipment appears in topology preview prose, but there is no structured non-fatal warning channel or warning presentation in the configuration flow. |
+
+#### Milestone 3 scope decisions
+
+Milestone 3 remains heating-only and shadow-only.
+It must not issue Home Assistant service calls to valves, pumps, or heat sources.
+Cooling, humidity aggregation, condensation protection, physical actuator execution, and source selection remain owned by later milestones.
+Demand smoothing for this milestone consists of hysteresis plus minimum active and minimum idle durations.
+Additional smoothing strategies and staged emitter activation remain deferred until they justify a separate deterministic strategy seam.
+
+The pure controller remains the owner of aggregation, freshness decisions, demand transitions, duration enforcement, and explanations.
+The Home Assistant adapter owns entity observation, persistence, scheduled reevaluation, service handling for the climate entity, and entity publication.
+No Home Assistant import is permitted under `custom_components/hydronicus/core`.
+
+#### Milestone 3 core contract
+
+The contract must be settled and tested before Home Assistant adapter work proceeds in parallel.
+
+Temperature sensor configuration must become a first-class immutable value object rather than a collection of parallel maps.
+Each configured temperature observation must contain:
+
+- Home Assistant entity ID.
+- Required or optional status, defaulting legacy sensors to required.
+- Positive finite aggregation weight, defaulting to `1.0`.
+- Finite calibration offset in degrees Celsius, defaulting to `0.0`.
+- Positive finite maximum age in seconds, defaulting legacy sensors to `1800` seconds.
+- Designated-reference status when the zone uses reference aggregation.
+
+Every zone must contain at least one temperature sensor.
+An all-optional sensor set is valid, but the zone blocks whenever none of those observations is usable.
+Exactly one configured sensor must be designated when the selected aggregation policy is designated reference.
+Unknown metadata keys, duplicate entity IDs, invalid weights, invalid maximum ages, multiple reference sensors, and a reference outside the configured sensor set must fail topology validation.
+Legacy `temperature_sensor`, `temperature_sensors`, and `temperature_sensor_weights` data must decode with required status, zero calibration, existing weights, and the `1800` second maximum-age default.
+Freshness enforcement is an intentional Milestone 3 behavior change for legacy configurations and must be visible in release notes and explanations.
+
+Aggregation must produce a structured result containing the aggregate value, usable sensor IDs, excluded optional sensor IDs, blocking required sensor IDs, and an explanation.
+Calibration offsets are applied before aggregation.
+An observation is unusable when it is missing, non-finite, lacks a usable observation timestamp, or is older than its configured maximum age at evaluation time.
+An unusable optional sensor is excluded from the aggregate and appears in diagnostics.
+An unusable required sensor blocks the zone immediately.
+If no usable readings remain, the zone is blocked even when every failed sensor is optional.
+A required-sensor block overrides minimum active duration and releases zone demand immediately because fail-closed safety takes precedence over comfort timing.
+
+The supported aggregation policies are designated reference, mean, median, weighted mean, heating-oriented minimum, and cooling-oriented maximum.
+Every policy must have deterministic tests for ordering independence and calibrated values.
+Weighted mean must not be offered in the Home Assistant UI until every selected sensor has a complete editable weight path.
+
+Zone demand runtime must use a dedicated immutable zone runtime record containing at least the current demand state and the time of the last demand-state transition.
+When an active zone reaches its stop threshold before the minimum active deadline, demand remains active and the explanation reports the hold deadline.
+When an idle zone reaches its start threshold before the minimum idle deadline, demand remains idle and the explanation reports the lockout deadline.
+Setpoint and preset changes trigger immediate reevaluation but do not bypass a remaining minimum active or minimum idle duration.
+Zero-duration defaults preserve the behavior of existing configurations.
+Restored runtime state without a trustworthy transition timestamp must apply the conservative behavior defined by the controller tests and must not silently assume that a duration has elapsed.
+
+Controller diagnostics must distinguish requested, satisfied, duration-held, duration-locked, and sensor-blocked zone decisions.
+Existing human-readable reason strings may remain for entity display, but structured status must be available so adapter entities never infer safety state by parsing prose.
+
+Topology compilation must expose non-fatal structured warnings separately from validation errors and the human-readable logic summary.
+The initial warning code is `shared_valve_limits_independent_control`.
+It is emitted when one valve belongs to more than one circuit and identifies the affected valve, circuits, and zones.
+A warning must never reject an otherwise valid topology.
+
+#### Preset contract
+
+Milestone 3 supports the standard Home Assistant `comfort`, `eco`, and `away` preset names.
+Each zone may configure a finite target temperature for any of these presets.
+Only configured presets appear in `preset_modes`.
+The climate entity advertises `ClimateEntityFeature.PRESET_MODE` only when at least one preset is configured.
+
+Selecting a preset persists the selected preset and its target temperature, then immediately reevaluates shadow demand.
+Setting a target temperature manually clears the active preset to `none` before reevaluation.
+Reconfiguring or removing the active preset clears the preset selection while preserving the current target temperature.
+Reload reconstructs both the current target and active preset deterministically.
+Preset targets use the same temperature bounds and finite-number validation as manual targets.
+
+#### Home Assistant configuration and entity work
+
+Zone setup and reconfiguration must expose required versus optional sensors, maximum age, calibration, aggregation policy, designated reference, weights when applicable, heating start and stop deltas, minimum active duration, minimum idle duration, and preset targets.
+If the Home Assistant selector framework cannot express per-sensor metadata clearly in one form, use a small multi-step zone flow instead of encoding metadata into free-form strings.
+Reconfiguration must remain atomic and must preserve the zone UUID and retained delivery-route UUIDs.
+
+Milestone 3 completes these heating-zone entities:
+
+- Climate entity with target-temperature and optional preset support.
+- Demand binary sensor.
+- Aggregated temperature sensor.
+- Blocked binary sensor.
+- Blocked-reason sensor.
+- Existing human-readable explanation sensor.
+
+The aggregated humidity sensor remains deferred to Milestone 6.
+The active-circuit count sensor may be added in Milestone 3 if it can be derived without changing the controller contract, but it is not a Milestone 3 completion gate.
+
+The runtime scheduler must wake the controller at the earliest valve deadline, pump-overrun deadline, zone minimum-duration deadline, or sensor-staleness deadline.
+Staleness must therefore be detected even when Home Assistant emits no new state event.
+Listener and timer replacement must remain idempotent across refresh, reload, unload, and stop.
+
+Configuration review and reconfiguration confirmation steps must show structured topology warnings before saving.
+The topology preview entity must expose warnings in a separate attribute rather than mixing them into `logic_summary`.
+Warning text must explain that separate climate entities cannot independently control circuits coupled by the same physical valve.
+
+#### Parallel implementation sequence
+
+Only one writer may modify the core contract during Gate 0.
+After Gate 0 passes, the remaining chunks may proceed in parallel with the file ownership below.
+Agents are not allowed to edit files owned by another active chunk or revert another agent's work.
+
+Gate 0, core contract freeze:
+
+- Owner: primary implementation agent.
+- Files: `custom_components/hydronicus/core/model.py` plus the smallest compile-safe signature updates required across current callers and tests.
+- Deliverable: immutable sensor metadata, structured aggregation and decision results, zone runtime timing state, structured topology warnings, legacy defaults, documented safety precedence, and a green compatibility baseline.
+- Constraint: Gate 0 may touch files later owned by Chunks A, B, and C only to establish the shared public contract, and it must stop changing those files once parallel ownership begins.
+- Gate: `make verify` passes before parallel writers start.
+
+Chunk A, deterministic controller and topology:
+
+- Files: `custom_components/hydronicus/core/controller.py`, `custom_components/hydronicus/core/topology.py`, `tests/core/test_controller.py`, `tests/core/test_topology.py`, `tests/core/test_properties.py`, `tests/scenarios/harness.py`, and `tests/scenarios/test_operating_scenarios.py`.
+- Deliverable: all aggregation policies, optional exclusion, required blocking, calibration, staleness, hysteresis, minimum active and idle behavior, structured warnings, and named time-ordered scenarios.
+- Narrow gates: `make test-core`, `make test-scenarios`, and `make typecheck`.
+
+Chunk B, persistence and configuration flows:
+
+- Files: `custom_components/hydronicus/core/configuration.py`, `custom_components/hydronicus/entry_configuration.py`, `custom_components/hydronicus/config_flow.py`, `custom_components/hydronicus/const.py`, `custom_components/hydronicus/strings.json`, `custom_components/hydronicus/translations/en.json`, `tests/core/test_configuration.py`, and `tests/integration/test_config_flow.py`.
+- Deliverable: legacy-safe decoding, complete zone persistence, atomic setup and reconfiguration flows, preset fields, per-sensor metadata editing, and warning presentation.
+- Narrow gates: `uv run pytest tests/core/test_configuration.py` and `uv run pytest tests/integration/test_config_flow.py`.
+
+Chunk C, runtime and zone entities:
+
+- Files: `custom_components/hydronicus/runtime.py`, `custom_components/hydronicus/climate.py`, `custom_components/hydronicus/sensor.py`, `custom_components/hydronicus/binary_sensor.py`, `tests/test_runtime.py`, `tests/integration/test_init.py`, and `tests/integration/test_zone_subentry.py`.
+- Deliverable: deadline scheduling, preset behavior, structured blocked and explanation entities, aggregated temperature publication, setpoint recalculation, reload reconstruction, and unload cleanup.
+- Narrow gates: `uv run pytest tests/test_runtime.py tests/integration/test_init.py tests/integration/test_zone_subentry.py`.
+
+Integration and review are owned by the primary implementation agent after all three chunks report completion.
+The primary agent resolves contract mismatches, reviews the combined diff, and runs `make lint`, `make format-check`, `make typecheck`, `make test-core`, `make test-integration`, `make test-scenarios`, and `make verify`.
+No chunk may be declared complete while its selected acceptance evidence is missing or failing.
+
+#### Required Milestone 3 test evidence
+
+Pure controller tests must prove:
+
+- Every aggregation policy, including designated reference, is deterministic.
+- Calibration is applied before aggregation.
+- Invalid or stale optional sensors are excluded and reported.
+- Invalid or stale required sensors block immediately.
+- Required-sensor blocking overrides minimum active duration.
+- Minimum active and minimum idle deadlines hold the correct demand state.
+- Hysteresis and duration behavior remain deterministic across repeated evaluation.
+- Structured shared-valve warnings are stable and non-fatal.
+
+Property tests must prove evaluation determinism and unchanged-snapshot idempotence across generated sensor metadata and timing combinations.
+Property tests must also prove that a blocked required sensor never produces zone demand.
+
+Home Assistant adapter tests must prove:
+
+- Initial setup, zone add, reconfigure, reload, and delete preserve the new fields and UUID relationships.
+- Manual setpoint and preset changes persist and trigger immediate evaluation.
+- Staleness and duration deadlines schedule reevaluation without a state event.
+- Climate, demand, aggregate temperature, blocked, blocked-reason, and explanation entities update together from one evaluation.
+- Config flow warnings appear for valid shared-valve topologies without turning them into errors.
+- Unload and stop cancel every listener and timer.
+
+Named scenarios must include `zone_sensor_becomes_stale`, an optional-sensor degradation case, a minimum-active hold followed by release, and a minimum-idle lockout followed by demand.
+All scenario time advances use the fake clock.
+
+#### Development Home Assistant staging gate
+
+Local tests and CI remain the first two evidence layers.
+The disposable development Home Assistant instance is the final UI and runtime evidence layer and must remain isolated from production Home Assistant and physical control.
+Its address, credentials, deployment path, restart command, and log command remain in the site-specific local handoff and must not be committed to this repository.
+
+The development instance may still contain a pre-rename Hydronic Climate installation and config entries.
+The implementing agent must treat that state as legacy test data, deploy the renamed integration only as `config/custom_components/hydronicus`, and never recreate `custom_components/hydronic_climate`.
+Existing parent test plants must not be deleted or mutated destructively without explicit user approval.
+If the old domain prevents a clean Hydronicus setup, stop and request approval before uninstalling the old integration or deleting its config entries.
+
+Before deployment, run `make verify` and record the commit SHA.
+Deploy only to the disposable development instance in synthetic or shadow mode.
+Use synthetic temperature sensors for required, optional, stale, calibrated, and weighted observations.
+Do not bind the Milestone 3 plant to physical valve or pump entities when synthetic helpers can satisfy the topology.
+
+The staging pass must verify through the Home Assistant UI:
+
+1. Hydronicus loads under domain `hydronicus` with no manifest, import, config-flow, or translation error.
+2. A synthetic plant can be created, reconfigured, reloaded, and removed without affecting retained legacy test plants.
+3. Every configured aggregation policy produces the expected visible temperature.
+4. An unavailable optional sensor is excluded and explained.
+5. An unavailable or stale required sensor sets the blocked entities and releases demand immediately.
+6. Manual target and preset changes recalculate visible shadow demand.
+7. Minimum active and idle deadlines change explanations at the expected time without requiring a new sensor event.
+8. A shared valve produces a visible non-fatal configuration warning.
+9. Home Assistant logs contain no unexpected exception or repeated warning.
+10. No physical entity changes state and Hydronicus issues no physical service call.
+
+Record the Home Assistant version, Hydronicus commit SHA, scenario names, visible results, and only the minimal redacted log excerpts needed to explain failures.
+Staging evidence from the former Hydronic Climate package or domain does not satisfy the Milestone 3 gate after the rename.
+
 Release target: `v0.1.0-beta.1`
 
 ### Milestone 4: Heating actuator execution

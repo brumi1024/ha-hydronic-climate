@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
@@ -10,6 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import HydronicConfigEntry
 from .const import DOMAIN
 from .core.model import PumpState, ValveState
+from .runtime import HydronicRuntime
 
 
 class HydronicShadowEntity(BinarySensorEntity):
@@ -20,7 +23,7 @@ class HydronicShadowEntity(BinarySensorEntity):
 
     def __init__(self, entry: HydronicConfigEntry) -> None:
         """Bind the entity to one plant runtime."""
-        self._runtime = entry.runtime_data
+        self._runtime: HydronicRuntime = cast(HydronicRuntime, entry.runtime_data)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, self._runtime.plant_id)}, name=self._runtime.name
         )
@@ -42,7 +45,38 @@ class ZoneDemandBinarySensor(HydronicShadowEntity):
     @property
     def is_on(self) -> bool:
         """Return the cached calculated demand."""
-        return self._runtime.runtime_state.zone_demands.get(self._zone_id, False)
+        return bool(self._runtime.runtime_state.zone_demands.get(self._zone_id, False))
+
+
+class ZoneBlockedBinarySensor(HydronicShadowEntity):
+    """Whether sensor health currently blocks a zone from requesting heat."""
+
+    _attr_icon = "mdi:alert-circle-outline"
+
+    def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._zone_id = zone_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{zone_id}_blocked"
+        self._attr_name = f"{name} blocked"
+
+    @property
+    def is_on(self) -> bool:
+        """Return structured blocked state from the latest evaluation."""
+        return self._runtime.zone_is_blocked(self._zone_id)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose structured block diagnostics without parsing display prose."""
+        aggregation = self._runtime.zone_aggregation(self._zone_id)
+        return {
+            "reason": self._runtime.zone_blocked_reason(self._zone_id),
+            "blocking_required_sensor_ids": (
+                list(aggregation.blocking_required_sensor_ids) if aggregation is not None else []
+            ),
+            "excluded_optional_sensor_ids": (
+                list(aggregation.excluded_optional_sensor_ids) if aggregation is not None else []
+            ),
+        }
 
 
 class ActuatorRequestedBinarySensor(HydronicShadowEntity):
@@ -78,11 +112,14 @@ async def async_setup_entry(
     parent_entities: list[BinarySensorEntity] = []
     subentry_entities: dict[str, list[BinarySensorEntity]] = {}
     for zone in runtime.plant.zones.values():
-        entity = ZoneDemandBinarySensor(entry, zone.id, zone.name)
+        entities = [
+            ZoneDemandBinarySensor(entry, zone.id, zone.name),
+            ZoneBlockedBinarySensor(entry, zone.id, zone.name),
+        ]
         if subentry_id := runtime.zone_subentry_ids.get(zone.id):
-            subentry_entities.setdefault(subentry_id, []).append(entity)
+            subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
-            parent_entities.append(entity)
+            parent_entities.extend(entities)
     for valve in runtime.plant.valves.values():
         entity = ActuatorRequestedBinarySensor(entry, valve.id, valve.name, "valve")
         if subentry_id := runtime.actuator_subentry_ids.get(valve.id):

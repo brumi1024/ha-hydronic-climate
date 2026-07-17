@@ -10,6 +10,8 @@ from hydronicus_core.model import (
     DeliveryRoute,
     PlantConfiguration,
     Pump,
+    TemperatureAggregation,
+    TemperatureSensorMetadata,
     Valve,
     Zone,
 )
@@ -81,6 +83,85 @@ def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
         "Valve Shared valve is shared by circuits Floor loop, Ceiling loop.",
         "Pump Shared pump is shared by circuits Floor loop, Ceiling loop.",
     )
+
+
+def test_compile_topology_emits_stable_non_fatal_shared_valve_warning() -> None:
+    """Shared-valve coupling is diagnostic, not a topology rejection."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(
+            Zone("living", "Living room", 21.0, ("sensor.living_temperature",)),
+            Zone("office", "Office", 20.0, ("sensor.office_temperature",)),
+        ),
+        valves=(Valve("shared", "Shared valve", "switch.shared_valve"),),
+        pumps=(
+            Pump("floor-pump", "Floor pump", "switch.floor_pump"),
+            Pump("ceiling-pump", "Ceiling pump", "switch.ceiling_pump"),
+        ),
+        circuits=(
+            Circuit("floor", "Floor loop", ("shared",), "floor-pump"),
+            Circuit("ceiling", "Ceiling loop", ("shared",), "ceiling-pump"),
+        ),
+        routes=(
+            DeliveryRoute("living-floor", "living", "floor"),
+            DeliveryRoute("office-ceiling", "office", "ceiling"),
+        ),
+    )
+
+    compiled = compile_topology(plant)
+
+    assert len(compiled.warnings) == 1
+    warning = compiled.warnings[0]
+    assert warning.code == "shared_valve_limits_independent_control"
+    assert warning.valve_id == "shared"
+    assert warning.circuit_ids == ("ceiling", "floor")
+    assert warning.zone_ids == ("living", "office")
+    assert "cannot independently control" in warning.message
+
+
+def test_compile_topology_validates_first_class_sensor_metadata() -> None:
+    """Reference selection, age, and calibration metadata are topology inputs."""
+    base = dict(
+        id="plant-1",
+        valves=(Valve("valve", "Valve", "switch.valve"),),
+        pumps=(Pump("pump", "Pump", "switch.pump"),),
+        circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
+        routes=(DeliveryRoute("route", "zone", "circuit"),),
+    )
+    multiple_reference = PlantConfiguration(
+        **base,
+        zones=(
+            Zone(
+                "zone",
+                "Zone",
+                21.0,
+                temperature_sensor_metadata=(
+                    TemperatureSensorMetadata("sensor.a", designated_reference=True),
+                    TemperatureSensorMetadata("sensor.b", designated_reference=True),
+                ),
+                aggregation=TemperatureAggregation.DESIGNATED_REFERENCE,
+            ),
+        ),
+    )
+
+    with pytest.raises(TopologyValidationError, match="multiple designated reference"):
+        compile_topology(multiple_reference)
+
+    invalid_age = PlantConfiguration(
+        **base,
+        zones=(
+            Zone(
+                "zone",
+                "Zone",
+                21.0,
+                temperature_sensor_metadata=(
+                    TemperatureSensorMetadata("sensor.a", max_age_seconds=0),
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(TopologyValidationError, match="maximum age must be positive"):
+        compile_topology(invalid_age)
 
 
 def test_compile_topology_rejects_duplicate_delivery_route_relationships() -> None:
@@ -447,3 +528,152 @@ def test_compile_topology_rejects_invalid_temperature_sensor_weights() -> None:
         match="Zone zone-1 temperature sensor weights must be positive and finite",
     ):
         compile_topology(plant)
+
+
+def _metadata_plant(
+    zone: Zone, *, routes: tuple[DeliveryRoute, ...] | None = None
+) -> PlantConfiguration:
+    """Build the smallest topology needed for metadata validation tests."""
+    return PlantConfiguration(
+        id="metadata-plant",
+        zones=(zone,),
+        valves=(Valve("valve", "Valve", "switch.valve"),),
+        pumps=(Pump("pump", "Pump", "switch.pump"),),
+        circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
+        routes=routes or (DeliveryRoute("route", zone.id, "circuit"),),
+    )
+
+
+@pytest.mark.parametrize(
+    ("zone_kwargs", "message"),
+    [
+        (
+            {"heating_start_delta": -1},
+            "heating hysteresis deltas",
+        ),
+        (
+            {"minimum_active_duration_seconds": -1},
+            "minimum active duration",
+        ),
+        (
+            {"minimum_idle_duration_seconds": math.inf},
+            "minimum idle duration",
+        ),
+        (
+            {
+                "temperature_sensor_metadata": (
+                    TemperatureSensorMetadata("sensor", calibration_offset=math.inf),
+                )
+            },
+            "calibration offset",
+        ),
+        (
+            {
+                "temperature_sensor_metadata": (
+                    TemperatureSensorMetadata("sensor", designated_reference=1),
+                )
+            },
+            "reference status",
+        ),
+    ],
+)
+def test_compile_topology_rejects_unsafe_zone_metadata(
+    zone_kwargs: dict[str, object], message: str
+) -> None:
+    zone = Zone("zone", "Zone", 21.0, ("sensor",), **zone_kwargs)
+
+    with pytest.raises(TopologyValidationError, match=message):
+        compile_topology(_metadata_plant(zone))
+
+
+def test_compile_topology_requires_reference_for_designated_policy() -> None:
+    zone = Zone(
+        "zone",
+        "Zone",
+        21.0,
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor"),),
+        aggregation=TemperatureAggregation.DESIGNATED_REFERENCE,
+    )
+
+    with pytest.raises(TopologyValidationError, match="requires exactly one"):
+        compile_topology(_metadata_plant(zone))
+
+
+@pytest.mark.parametrize(
+    ("preset_targets", "message"),
+    [
+        ({"holiday": 20.0}, "unsupported preset target"),
+        ({"none": 20.0}, "unsupported preset target"),
+        ({"comfort": math.nan}, "preset target comfort must be finite"),
+        ({"comfort": 4.9}, "preset target comfort must be between 5 and 35"),
+        ({"eco": 35.1}, "preset target eco must be between 5 and 35"),
+    ],
+)
+def test_compile_topology_validates_preset_targets(
+    preset_targets: dict[str, float], message: str
+) -> None:
+    zone = Zone("zone", "Zone", 21.0, ("sensor",), preset_targets=preset_targets)
+
+    with pytest.raises(TopologyValidationError, match=message):
+        compile_topology(_metadata_plant(zone))
+
+
+def test_compile_topology_rejects_blank_bindings_and_unknown_routes() -> None:
+    blank_binding = PlantConfiguration(
+        id="plant",
+        zones=(Zone("zone", "Zone", 21.0, ("sensor",)),),
+        valves=(Valve("valve", "Valve", " "),),
+        pumps=(Pump("pump", "Pump", "switch.pump"),),
+        circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
+        routes=(DeliveryRoute("route", "zone", "circuit"),),
+    )
+    with pytest.raises(TopologyValidationError, match="non-empty entity binding"):
+        compile_topology(blank_binding)
+
+    unknown_zone = _metadata_plant(
+        Zone("zone", "Zone", 21.0, ("sensor",)),
+        routes=(DeliveryRoute("route", "missing", "circuit"),),
+    )
+    with pytest.raises(TopologyValidationError, match="unknown zone missing"):
+        compile_topology(unknown_zone)
+
+    unknown_circuit = _metadata_plant(
+        Zone("zone", "Zone", 21.0, ("sensor",)),
+        routes=(DeliveryRoute("route", "zone", "missing"),),
+    )
+    with pytest.raises(TopologyValidationError, match="unknown circuit missing"):
+        compile_topology(unknown_circuit)
+
+
+def test_compile_topology_accepts_a_disabled_route_when_other_routes_cover_the_graph() -> None:
+    plant = PlantConfiguration(
+        id="plant",
+        zones=(
+            Zone("living", "Living", 21.0, ("sensor.living",)),
+            Zone("office", "Office", 21.0, ("sensor.office",)),
+        ),
+        valves=(
+            Valve("valve", "Valve", "switch.valve"),
+            Valve("valve-two", "Valve two", "switch.valve_two"),
+        ),
+        pumps=(
+            Pump("pump", "Pump", "switch.pump"),
+            Pump("pump-two", "Pump two", "switch.pump_two"),
+        ),
+        circuits=(
+            Circuit("circuit", "Circuit", ("valve",), "pump"),
+            Circuit("circuit-two", "Circuit two", ("valve-two",), "pump-two"),
+        ),
+        routes=(
+            DeliveryRoute("living-route", "living", "circuit"),
+            DeliveryRoute("office-route", "office", "circuit-two"),
+            DeliveryRoute("disabled-route", "living", "circuit-two", enabled=False),
+        ),
+    )
+
+    compiled = compile_topology(plant)
+
+    assert compiled.routes == (
+        DeliveryRoute("living-route", "living", "circuit"),
+        DeliveryRoute("office-route", "office", "circuit-two"),
+    )

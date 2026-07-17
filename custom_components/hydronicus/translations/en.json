@@ -10,11 +10,38 @@
       },
       "zone": {
         "title": "Add the first comfort zone",
-        "description": "Select one or more temperature sensors and an aggregation policy. Every selected sensor must be available. Battery sensor readings remain usable between reports.",
+        "description": "Select one or more temperature sensors and an aggregation policy. Enable detailed sensor editing to configure required status, calibration, freshness, designated reference, and weights one sensor at a time.",
         "data": {
           "name": "Zone name",
           "target_temperature": "Target temperature",
           "temperature_sensors": "Temperature sensors",
+          "temperature_aggregation": "Temperature aggregation",
+          "configure_sensor_metadata": "Edit sensor metadata",
+          "heating_start_delta": "Heating start hysteresis",
+          "heating_stop_delta": "Heating stop hysteresis",
+          "minimum_active_duration_seconds": "Minimum active duration (seconds)",
+          "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
+          "comfort": "Comfort preset target",
+          "eco": "Eco preset target",
+          "away": "Away preset target"
+        }
+      },
+      "sensor_metadata": {
+        "title": "Edit temperature sensor",
+        "description": "Configure this sensor explicitly. A required sensor blocks the zone when stale or unavailable. Weighted mean is available only after every selected sensor has this editable path.",
+        "data": {
+          "sensor_entity": "Temperature sensor",
+          "required": "Required sensor",
+          "weight": "Aggregation weight",
+          "calibration_offset": "Calibration offset (degrees Celsius)",
+          "max_age_seconds": "Maximum age (seconds)",
+          "designated_reference": "Designated reference sensor"
+        }
+      },
+      "sensor_policy": {
+        "title": "Choose sensor aggregation",
+        "description": "All selected sensors have editable metadata.",
+        "data": {
           "temperature_aggregation": "Temperature aggregation"
         }
       },
@@ -31,12 +58,13 @@
       },
       "review": {
         "title": "Review shadow topology",
-        "description": "Zone {zone} will request circuit {circuit}. Hydronicus remains in shadow mode.\n\nCompiled topology:\n{logic}"
+        "description": "Zone {zone} will request circuit {circuit}. Hydronicus remains in shadow mode.\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}"
       }
     },
     "error": {
       "name_required": "A plant name is required.",
-      "invalid_topology": "The initial topology is not valid."
+      "invalid_topology": "The initial topology is not valid.",
+      "sensor_metadata_required": "Select detailed sensor editing before using weighted mean or designated reference aggregation."
     }
   },
   "config_subentries": {
@@ -66,11 +94,19 @@
             "opening_time_seconds": "Opening time (seconds)",
             "circuit_ids": "Circuits"
           }
+        },
+        "review": {
+          "title": "Review actuator warnings",
+          "description": "Review these non-fatal topology warnings before saving:\n{warnings}",
+          "data": {
+            "confirm": "I understand these warnings"
+          }
         }
       },
       "error": {
         "name_required": "An actuator name is required.",
-        "invalid_actuator": "The actuator cannot be attached to this topology."
+        "invalid_actuator": "The actuator cannot be attached to this topology.",
+        "confirm_required": "Confirm that you understand these warnings before saving."
       },
       "abort": {
         "no_circuits": "Add a hydraulic circuit before adding an actuator."
@@ -102,11 +138,19 @@
             "valve_ids": "Required valves",
             "pump_id": "Pump"
           }
+        },
+        "review": {
+          "title": "Review circuit warnings",
+          "description": "Review these non-fatal topology warnings before saving:\n{warnings}",
+          "data": {
+            "confirm": "I understand these warnings"
+          }
         }
       },
       "error": {
         "name_required": "A circuit name is required.",
-        "invalid_circuit": "The circuit cannot be added to this topology."
+        "invalid_circuit": "The circuit cannot be added to this topology.",
+        "confirm_required": "Confirm that you understand these warnings before saving."
       },
       "abort": {
         "incomplete_plant": "The plant needs at least one zone, valve, and pump before adding a circuit."
@@ -121,30 +165,74 @@
       "step": {
         "user": {
           "title": "Add a comfort zone",
-          "description": "Select one or more temperature sensors, choose an aggregation policy, and route the zone through existing circuits in shadow mode. Every selected sensor must be available. Battery sensor readings remain usable between reports.",
+          "description": "Select one or more temperature sensors, choose an aggregation policy, and route the zone through existing circuits in shadow mode. Enable detailed sensor editing to configure required status, calibration, freshness, designated reference, and weights one sensor at a time.",
           "data": {
             "name": "Zone name",
             "target_temperature": "Target temperature",
             "temperature_sensors": "Temperature sensors",
             "temperature_aggregation": "Temperature aggregation",
-            "circuit_ids": "Circuits"
+            "circuit_ids": "Circuits",
+            "configure_sensor_metadata": "Edit sensor metadata",
+            "heating_start_delta": "Heating start hysteresis",
+            "heating_stop_delta": "Heating stop hysteresis",
+            "minimum_active_duration_seconds": "Minimum active duration (seconds)",
+            "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
+            "comfort": "Comfort preset target",
+            "eco": "Eco preset target",
+            "away": "Away preset target"
           }
         },
         "reconfigure": {
           "title": "Update comfort zone",
-          "description": "Change the zone target, temperature sensors, aggregation policy, or available circuits. Every selected sensor must be available. Battery sensor readings remain usable between reports.",
+          "description": "Change the zone target, temperature sensors, aggregation policy, or available circuits. Enable detailed sensor editing to configure required status, calibration, freshness, designated reference, and weights one sensor at a time.",
           "data": {
             "name": "Zone name",
             "target_temperature": "Target temperature",
             "temperature_sensors": "Temperature sensors",
             "temperature_aggregation": "Temperature aggregation",
-            "circuit_ids": "Circuits"
+            "circuit_ids": "Circuits",
+            "configure_sensor_metadata": "Edit sensor metadata",
+            "heating_start_delta": "Heating start hysteresis",
+            "heating_stop_delta": "Heating stop hysteresis",
+            "minimum_active_duration_seconds": "Minimum active duration (seconds)",
+            "minimum_idle_duration_seconds": "Minimum idle duration (seconds)",
+            "comfort": "Comfort preset target",
+            "eco": "Eco preset target",
+            "away": "Away preset target"
+          }
+        },
+        "sensor_metadata": {
+          "title": "Edit temperature sensor",
+          "description": "Configure this sensor explicitly. Required sensors block the zone when stale or unavailable.",
+          "data": {
+            "sensor_entity": "Temperature sensor",
+            "required": "Required sensor",
+            "weight": "Aggregation weight",
+            "calibration_offset": "Calibration offset (degrees Celsius)",
+            "max_age_seconds": "Maximum age (seconds)",
+            "designated_reference": "Designated reference sensor"
+          }
+        },
+        "sensor_policy": {
+          "title": "Choose sensor aggregation",
+          "description": "All selected sensors have editable metadata.",
+          "data": {
+            "temperature_aggregation": "Temperature aggregation"
+          }
+        },
+        "review": {
+          "title": "Review zone warnings",
+          "description": "Review these non-fatal topology warnings before saving:\n{warnings}",
+          "data": {
+            "confirm": "I understand these warnings"
           }
         }
       },
       "error": {
         "name_required": "A zone name is required.",
-        "invalid_zone": "The zone cannot be added to this topology."
+        "invalid_zone": "The zone cannot be added to this topology.",
+        "sensor_metadata_required": "Enable detailed sensor editing before using weighted mean or designated reference aggregation.",
+        "confirm_required": "Confirm that you understand these warnings before saving."
       },
       "abort": {
         "no_circuits": "Add a hydraulic circuit before adding a zone."

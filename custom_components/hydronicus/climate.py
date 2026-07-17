@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.components.climate import (
     ATTR_TEMPERATURE,
+    PRESET_AWAY,
+    PRESET_COMFORT,
+    PRESET_ECO,
+    PRESET_NONE,
     ClimateEntity,
     ClimateEntityFeature,
     HVACAction,
@@ -18,6 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
 from .const import DOMAIN
+from .core.model import MAX_ZONE_TARGET_TEMPERATURE, MIN_ZONE_TARGET_TEMPERATURE
 from .runtime import HydronicRuntime
 
 
@@ -29,8 +34,8 @@ class ZoneClimate(ClimateEntity):
     _attr_hvac_modes = [HVACMode.HEAT]
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_min_temp = 5.0
-    _attr_max_temp = 35.0
+    _attr_min_temp = MIN_ZONE_TARGET_TEMPERATURE
+    _attr_max_temp = MAX_ZONE_TARGET_TEMPERATURE
     _attr_target_temperature_step = 0.5
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
@@ -43,11 +48,15 @@ class ZoneClimate(ClimateEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
         )
+        if self._configured_preset_modes:
+            self._attr_supported_features = (
+                ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.PRESET_MODE
+            )
 
     @property
     def _runtime(self) -> HydronicRuntime:
         """Resolve the current runtime after a config-entry reload."""
-        return self._entry.runtime_data
+        return cast(HydronicRuntime, self._entry.runtime_data)
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to runtime evaluations after registration."""
@@ -62,6 +71,26 @@ class ZoneClimate(ClimateEntity):
     def target_temperature(self) -> float:
         """Return the current persisted or in-session zone target."""
         return self._runtime.zone_target_temperatures[self._zone_id]
+
+    @property
+    def _configured_preset_modes(self) -> list[str]:
+        """Return configured standard presets in a stable Home Assistant order."""
+        zone = self._runtime.plant.zones[self._zone_id]
+        return [
+            preset
+            for preset in (PRESET_COMFORT, PRESET_ECO, PRESET_AWAY)
+            if preset in zone.preset_targets
+        ]
+
+    @property
+    def preset_modes(self) -> list[str]:
+        """Expose only presets that have a configured target temperature."""
+        return self._configured_preset_modes
+
+    @property
+    def preset_mode(self) -> str:
+        """Return the persisted active preset or the standard manual value."""
+        return cast(str, self._runtime.zone_preset_modes.get(self._zone_id, PRESET_NONE))
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -87,6 +116,10 @@ class ZoneClimate(ClimateEntity):
         await self._runtime.async_set_zone_target_temperature(
             self._zone_id, float(temperature), hass=self.hass
         )
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Persist the selected preset and recalculate shadow demand immediately."""
+        await self._runtime.async_set_zone_preset_mode(self._zone_id, preset_mode, hass=self.hass)
 
 
 async def async_setup_entry(

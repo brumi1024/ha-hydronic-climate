@@ -26,6 +26,16 @@ SECOND_CIRCUIT_ID = "00000000-0000-4000-8000-000000000007"
 SECOND_ROUTE_ID = "00000000-0000-4000-8000-000000000008"
 
 
+async def _confirm_warning_review(hass, result):
+    """Acknowledge non-fatal topology warnings when a flow presents them."""
+    if result.get("type") == FlowResultType.FORM and result.get("step_id") == "review":
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"], user_input={"confirm": True}
+        )
+        await hass.async_block_till_done()
+    return result
+
+
 def _plant_entry(*, with_second_circuit: bool = False) -> MockConfigEntry:
     circuits = [
         {
@@ -202,6 +212,7 @@ async def test_valve_subentry_can_be_shared_and_moved_between_circuits(hass) -> 
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(iter(entry.subentries.values()))
@@ -221,6 +232,7 @@ async def test_valve_subentry_can_be_shared_and_moved_between_circuits(hass) -> 
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["type"] == FlowResultType.ABORT
     assert entry.runtime_data is not runtime_after_add

@@ -6,20 +6,31 @@ import math
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hydronicus_core.controller import aggregate_zone_temperature, evaluate
+from hydronicus_core.controller import (
+    aggregate_temperature,
+    aggregate_zone_temperature,
+    aggregate_zone_temperature_result,
+    evaluate,
+    mean_zone_temperature,
+)
 from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
+    PumpRuntime,
     PumpState,
     RuntimeState,
     TemperatureAggregation,
     TemperatureObservation,
+    TemperatureSensorMetadata,
     Valve,
+    ValveRuntime,
     ValveState,
     Zone,
+    ZoneDecisionStatus,
+    ZoneRuntime,
 )
 from hydronicus_core.topology import compile_topology
 
@@ -96,6 +107,359 @@ def test_zone_temperature_aggregation_defaults_legacy_zones_to_mean() -> None:
     assert aggregate_zone_temperature(zone, snapshot) == 20.0
 
 
+def test_designated_reference_aggregation_is_calibrated_and_order_independent() -> None:
+    """The designated sensor wins regardless of configuration order and is calibrated."""
+    sensors = (
+        TemperatureSensorMetadata("temperature.window", calibration_offset=4.0),
+        TemperatureSensorMetadata(
+            "temperature.reference",
+            calibration_offset=-1.0,
+            designated_reference=True,
+        ),
+    )
+    reverse = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=tuple(reversed(sensors)),
+        aggregation=TemperatureAggregation.DESIGNATED_REFERENCE,
+    )
+    snapshot = PlantSnapshot(
+        {
+            "temperature.reference": TemperatureObservation(20.0, NOW),
+            "temperature.window": TemperatureObservation(12.0, NOW),
+        }
+    )
+
+    result = aggregate_zone_temperature_result(reverse, snapshot, now=NOW)
+
+    assert result.value == 19.0
+    assert result.usable_sensor_ids == (
+        "temperature.reference",
+        "temperature.window",
+    )
+    assert result.excluded_optional_sensor_ids == ()
+    assert result.blocking_required_sensor_ids == ()
+
+
+@pytest.mark.parametrize(
+    ("aggregation", "expected"),
+    [
+        (TemperatureAggregation.MEAN, 20.0),
+        (TemperatureAggregation.MEDIAN, 20.0),
+        (TemperatureAggregation.MINIMUM, 18.0),
+        (TemperatureAggregation.MAXIMUM, 22.0),
+        (TemperatureAggregation.WEIGHTED_MEAN, 20.5),
+    ],
+)
+def test_calibrated_aggregation_applies_offsets_before_every_policy(
+    aggregation: TemperatureAggregation, expected: float
+) -> None:
+    """All non-reference policies consume calibrated readings, not raw values."""
+    zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(
+            TemperatureSensorMetadata("temperature.living", calibration_offset=1.0),
+            TemperatureSensorMetadata("temperature.backup", calibration_offset=-1.0, weight=2.0),
+            TemperatureSensorMetadata("temperature.window", weight=1.0),
+        ),
+        aggregation=aggregation,
+    )
+    snapshot = PlantSnapshot(
+        {
+            "temperature.living": TemperatureObservation(17.0, NOW),
+            "temperature.backup": TemperatureObservation(23.0, NOW),
+            "temperature.window": TemperatureObservation(20.0, NOW),
+        }
+    )
+
+    result = aggregate_zone_temperature_result(zone, snapshot, now=NOW)
+
+    assert result.value == expected
+
+
+def test_optional_sensor_is_excluded_and_required_sensor_remains_usable() -> None:
+    """An unavailable optional observation cannot distort or block aggregation."""
+    zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(
+            TemperatureSensorMetadata("temperature.required"),
+            TemperatureSensorMetadata("temperature.optional", required=False),
+        ),
+    )
+    result = aggregate_zone_temperature_result(
+        zone,
+        PlantSnapshot(
+            {
+                "temperature.required": TemperatureObservation(19.0, NOW),
+                "temperature.optional": TemperatureObservation(None, NOW),
+            }
+        ),
+        now=NOW,
+    )
+
+    assert result.value == 19.0
+    assert result.usable_sensor_ids == ("temperature.required",)
+    assert result.excluded_optional_sensor_ids == ("temperature.optional",)
+    assert result.blocking_required_sensor_ids == ()
+    assert "Excluded optional sensors" in result.explanation
+
+
+def test_stale_required_sensor_blocks_immediately() -> None:
+    """Age-based freshness is enforced at evaluation time, not only on events."""
+    zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(
+            TemperatureSensorMetadata("temperature.required", max_age_seconds=30),
+        ),
+    )
+    result = aggregate_zone_temperature_result(
+        zone,
+        PlantSnapshot(
+            {"temperature.required": TemperatureObservation(19.0, NOW - timedelta(seconds=31))}
+        ),
+        now=NOW,
+    )
+
+    assert result.value is None
+    assert result.blocking_required_sensor_ids == ("temperature.required",)
+    assert "stale" in result.explanation
+
+
+def test_aggregation_reports_missing_and_invalid_timestamp_health() -> None:
+    """Missing observations and unusable timestamps are explicit sensor failures."""
+    optional_zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(
+            TemperatureSensorMetadata("temperature.optional", required=False),
+        ),
+    )
+    missing = aggregate_zone_temperature_result(optional_zone, PlantSnapshot({}), now=NOW)
+    assert missing.value is None
+    assert missing.excluded_optional_sensor_ids == ("temperature.optional",)
+    assert "no usable" in missing.explanation
+
+    required_zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(TemperatureSensorMetadata("temperature.required"),),
+    )
+    no_timestamp = aggregate_zone_temperature_result(
+        required_zone,
+        PlantSnapshot({"temperature.required": TemperatureObservation(19.0, None)}),
+        now=NOW,
+    )
+    invalid_timestamp = aggregate_zone_temperature_result(
+        required_zone,
+        PlantSnapshot(
+            {"temperature.required": TemperatureObservation(19.0, NOW.replace(tzinfo=None))}
+        ),
+        now=NOW,
+    )
+    assert no_timestamp.blocking_required_sensor_ids == ("temperature.required",)
+    assert "missing timestamp" in no_timestamp.explanation
+    assert invalid_timestamp.blocking_required_sensor_ids == ("temperature.required",)
+    assert "invalid timestamp" in invalid_timestamp.explanation
+
+
+def test_aggregation_rejects_non_finite_calibration_result_and_bad_weight() -> None:
+    """Runtime arithmetic remains fail-closed even when topology was bypassed."""
+    overflow_zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(
+            TemperatureSensorMetadata("temperature.required", calibration_offset=1e308),
+        ),
+    )
+    overflow = aggregate_zone_temperature_result(
+        overflow_zone,
+        PlantSnapshot({"temperature.required": TemperatureObservation(1e308, NOW)}),
+        now=NOW,
+    )
+    weighted_zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(TemperatureSensorMetadata("temperature.weight", weight=0),),
+        aggregation=TemperatureAggregation.WEIGHTED_MEAN,
+    )
+    weighted = aggregate_zone_temperature_result(
+        weighted_zone,
+        PlantSnapshot({"temperature.weight": TemperatureObservation(19.0, NOW)}),
+        now=NOW,
+    )
+
+    assert overflow.blocking_required_sensor_ids == ("temperature.required",)
+    assert "non-finite after calibration" in overflow.explanation
+    assert weighted.value is None
+    assert "designated reference" not in weighted.explanation
+
+
+def test_optional_designated_reference_does_not_fallback_to_another_policy() -> None:
+    """A selected reference policy cannot silently substitute a different sensor."""
+    zone = Zone(
+        "living",
+        "Living",
+        21.0,
+        temperature_sensor_metadata=(
+            TemperatureSensorMetadata(
+                "temperature.reference", required=False, designated_reference=True
+            ),
+            TemperatureSensorMetadata("temperature.backup"),
+        ),
+        aggregation=TemperatureAggregation.DESIGNATED_REFERENCE,
+    )
+    result = aggregate_temperature(
+        zone,
+        PlantSnapshot({"temperature.backup": TemperatureObservation(19.0, NOW)}),
+        now=NOW,
+    )
+
+    assert result.value is None
+    assert result.usable_sensor_ids == ("temperature.backup",)
+    assert result.excluded_optional_sensor_ids == ("temperature.reference",)
+    assert "designated reference" in result.explanation
+
+
+def test_legacy_aggregation_helpers_preserve_value_only_contract() -> None:
+    """The adapter compatibility helpers expose values while structured callers use results."""
+    snapshot = PlantSnapshot(
+        {
+            "temperature.a": TemperatureObservation(19.0, NOW),
+            "temperature.b": TemperatureObservation(21.0, NOW),
+        }
+    )
+    zone = Zone("living", "Living", 21.0, ("temperature.a", "temperature.b"))
+
+    assert aggregate_zone_temperature(zone, snapshot) == 20.0
+    assert mean_zone_temperature(("temperature.a", "temperature.b"), snapshot) == 20.0
+
+
+def _timed_plant(
+    *, active: float = 0, idle: float = 0, max_age: float = 1800
+) -> PlantConfiguration:
+    return PlantConfiguration(
+        id="timed-plant",
+        zones=(
+            Zone(
+                "living",
+                "Living",
+                21.0,
+                temperature_sensor_metadata=(
+                    TemperatureSensorMetadata("temperature.living", max_age_seconds=max_age),
+                ),
+                minimum_active_duration_seconds=active,
+                minimum_idle_duration_seconds=idle,
+            ),
+        ),
+        valves=(Valve("valve", "Valve", "switch.valve", 0),),
+        pumps=(Pump("pump", "Pump", "switch.pump", 0),),
+        circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
+        routes=(DeliveryRoute("route", "living", "circuit"),),
+    )
+
+
+def _timed_snapshot(value: float, observed_at: datetime) -> PlantSnapshot:
+    return PlantSnapshot({"temperature.living": TemperatureObservation(value, observed_at)})
+
+
+def test_required_sensor_block_overrides_minimum_active_duration() -> None:
+    """Fail-closed sensor safety releases active demand without waiting."""
+    plant = compile_topology(_timed_plant(active=60, max_age=30))
+    active = evaluate(plant, _timed_snapshot(19.0, NOW), RuntimeState(), NOW)
+    blocked = evaluate(
+        plant,
+        _timed_snapshot(22.0, NOW - timedelta(seconds=31)),
+        active.next_runtime,
+        NOW + timedelta(seconds=1),
+    )
+
+    decision = blocked.diagnostics.zone_decisions["living"]
+    assert active.next_runtime.zone_demands["living"] is True
+    assert blocked.next_runtime.zone_demands["living"] is False
+    assert decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+    assert blocked.control_plan.valve_consumers == {}
+
+
+def test_minimum_active_and_idle_deadlines_are_structured_and_deterministic() -> None:
+    """Demand transitions honor both deadlines after hysteresis is applied."""
+    plant = compile_topology(_timed_plant(active=60, idle=30))
+    runtime = RuntimeState(
+        zone_demands={"living": False},
+        zone_runtime={
+            "living": ZoneRuntime(False, NOW - timedelta(seconds=30)),
+        },
+    )
+    active = evaluate(plant, _timed_snapshot(19.0, NOW), runtime, NOW)
+    held = evaluate(
+        plant,
+        _timed_snapshot(22.0, NOW + timedelta(seconds=10)),
+        active.next_runtime,
+        NOW + timedelta(seconds=10),
+    )
+    released = evaluate(
+        plant,
+        _timed_snapshot(22.0, NOW + timedelta(seconds=60)),
+        held.next_runtime,
+        NOW + timedelta(seconds=60),
+    )
+    locked = evaluate(
+        plant,
+        _timed_snapshot(19.0, NOW + timedelta(seconds=70)),
+        released.next_runtime,
+        NOW + timedelta(seconds=70),
+    )
+    requested = evaluate(
+        plant,
+        _timed_snapshot(19.0, NOW + timedelta(seconds=90)),
+        locked.next_runtime,
+        NOW + timedelta(seconds=90),
+    )
+
+    assert active.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.REQUESTED
+    assert held.next_runtime.zone_demands["living"] is True
+    assert held.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.DURATION_HELD
+    assert held.diagnostics.zone_decisions["living"].deadline == NOW + timedelta(seconds=60)
+    assert released.next_runtime.zone_demands["living"] is False
+    assert released.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.SATISFIED
+    assert locked.next_runtime.zone_demands["living"] is False
+    assert locked.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.DURATION_LOCKED
+    assert locked.diagnostics.zone_decisions["living"].deadline == NOW + timedelta(seconds=90)
+    assert requested.next_runtime.zone_demands["living"] is True
+    assert requested.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.REQUESTED
+
+
+def test_restored_runtime_without_timestamp_uses_conservative_timing() -> None:
+    """Unknown restored age cannot bypass a configured minimum active duration."""
+    plant = compile_topology(_timed_plant(active=60))
+    runtime = RuntimeState(
+        zone_demands={"living": True},
+        zone_runtime={"living": ZoneRuntime(True, None)},
+    )
+
+    held = evaluate(plant, _timed_snapshot(22.0, NOW), runtime, NOW)
+    released = evaluate(
+        plant,
+        _timed_snapshot(22.0, NOW + timedelta(seconds=60)),
+        held.next_runtime,
+        NOW + timedelta(seconds=60),
+    )
+
+    assert held.next_runtime.zone_demands["living"] is True
+    assert held.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.DURATION_HELD
+    assert released.next_runtime.zone_demands["living"] is False
+
+
 def test_controller_uses_zone_aggregation_policy_for_demand() -> None:
     """Demand evaluation must use the same aggregate exposed to climate entities."""
     plant = compile_topology(
@@ -167,6 +531,21 @@ def test_removing_demand_overruns_pump_before_closing_valve() -> None:
         ("pump.floor", "turn_off"),
         ("valve.floor", "close"),
     }
+
+
+def test_restored_actuator_without_timestamp_is_conservative() -> None:
+    """Restored opening and overrun states do not assume their durations elapsed."""
+    plant = compile_topology(_plant())
+    snapshot = _snapshot(20.0)
+    runtime = RuntimeState(
+        valves={"valve.floor": ValveRuntime(ValveState.OPENING, None)},
+        pumps={"pump.floor": PumpRuntime(PumpState.OVERRUN, None)},
+    )
+
+    result = evaluate(plant, snapshot, runtime, NOW)
+
+    assert result.next_runtime.valves["valve.floor"].state is ValveState.OPENING
+    assert result.next_runtime.pumps["pump.floor"].state is PumpState.OVERRUN
 
 
 def test_shared_pump_remains_running_when_one_consumer_releases_demand() -> None:
@@ -264,25 +643,15 @@ def test_shared_valve_and_pump_remain_active_until_last_consumer_releases() -> N
     )
 
     opening = evaluate(plant, both_request, RuntimeState(), NOW)
-    running = evaluate(
-        plant, both_request, opening.next_runtime, NOW + timedelta(seconds=1)
-    )
-    one_released = evaluate(
-        plant, only_office, running.next_runtime, NOW + timedelta(seconds=2)
-    )
+    running = evaluate(plant, both_request, opening.next_runtime, NOW + timedelta(seconds=1))
+    one_released = evaluate(plant, only_office, running.next_runtime, NOW + timedelta(seconds=2))
     overrun = evaluate(
         plant, neither_requests, one_released.next_runtime, NOW + timedelta(seconds=3)
     )
-    stopped = evaluate(
-        plant, neither_requests, overrun.next_runtime, NOW + timedelta(seconds=13)
-    )
+    stopped = evaluate(plant, neither_requests, overrun.next_runtime, NOW + timedelta(seconds=13))
 
-    assert one_released.control_plan.valve_consumers == {
-        "shared": frozenset({"ceiling"})
-    }
-    assert one_released.control_plan.pump_consumers == {
-        "pump": frozenset({"ceiling"})
-    }
+    assert one_released.control_plan.valve_consumers == {"shared": frozenset({"ceiling"})}
+    assert one_released.control_plan.pump_consumers == {"pump": frozenset({"ceiling"})}
     assert one_released.next_runtime.valves["shared"].state is ValveState.OPEN
     assert one_released.next_runtime.pumps["pump"].state is PumpState.RUNNING
     assert one_released.control_plan.commands == ()
@@ -344,8 +713,8 @@ def test_unchanged_running_snapshot_produces_no_new_commands() -> None:
     assert unchanged.control_plan.commands == ()
 
 
-def test_zone_demand_uses_mean_of_multiple_battery_sensor_readings() -> None:
-    """Old but usable battery readings should contribute without an implicit timeout."""
+def test_zone_demand_blocks_when_a_legacy_sensor_exceeds_default_maximum_age() -> None:
+    """Legacy sensors use the frozen 1800-second freshness default."""
     plant = compile_topology(
         PlantConfiguration(
             id="plant",
@@ -368,19 +737,16 @@ def test_zone_demand_uses_mean_of_multiple_battery_sensor_readings() -> None:
     )
     snapshot = PlantSnapshot(
         {
-            "temperature.living_wall": TemperatureObservation(
-                19.0, NOW - timedelta(hours=12)
-            ),
+            "temperature.living_wall": TemperatureObservation(19.0, NOW - timedelta(hours=12)),
             "temperature.living_window": TemperatureObservation(21.0, NOW),
         }
     )
 
     result = evaluate(plant, snapshot, RuntimeState(), NOW)
 
-    assert result.next_runtime.zone_demands == {"living": True}
-    assert result.diagnostics.zone_reasons["living"].startswith(
-        "Heating requested: 20.0"
-    )
+    assert result.next_runtime.zone_demands == {"living": False}
+    assert result.diagnostics.zone_decisions["living"].status is ZoneDecisionStatus.SENSOR_BLOCKED
+    assert "stale" in result.diagnostics.zone_reasons["living"]
 
 
 @pytest.mark.parametrize("unusable_value", [None, math.nan, math.inf, -math.inf])
@@ -435,9 +801,7 @@ def test_circuit_waits_for_every_series_valve_before_pump_request() -> None:
     )
 
     opening = evaluate(plant, _snapshot(20.0), RuntimeState(), NOW)
-    one_ready = evaluate(
-        plant, _snapshot(20.0), opening.next_runtime, NOW + timedelta(seconds=10)
-    )
+    one_ready = evaluate(plant, _snapshot(20.0), opening.next_runtime, NOW + timedelta(seconds=10))
     all_ready = evaluate(
         plant, _snapshot(20.0), one_ready.next_runtime, NOW + timedelta(seconds=30)
     )
@@ -447,7 +811,6 @@ def test_circuit_waits_for_every_series_valve_before_pump_request() -> None:
     assert one_ready.next_runtime.pumps["pump"].state is PumpState.OFF
     assert all_ready.next_runtime.pumps["pump"].state is PumpState.RUNNING
     commands = [
-        (command.actuator_id, command.action)
-        for command in all_ready.control_plan.commands
+        (command.actuator_id, command.action) for command in all_ready.control_plan.commands
     ]
     assert commands == [("pump", "turn_on")]

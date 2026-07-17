@@ -13,10 +13,14 @@ from hydronicus_core.model import (
     Pump,
     PumpState,
     RuntimeState,
+    TemperatureAggregation,
     TemperatureObservation,
+    TemperatureSensorMetadata,
     Valve,
     ValveState,
     Zone,
+    ZoneDecisionStatus,
+    ZoneRuntime,
 )
 from hydronicus_core.topology import compile_topology
 from hypothesis import given
@@ -178,3 +182,151 @@ def test_unchanged_generated_snapshot_produces_no_new_commands(
     )
 
     assert unchanged.control_plan.commands == ()
+
+
+@st.composite
+def _weighted_sensor_case(
+    draw: st.DrawFn,
+) -> tuple[tuple[TemperatureSensorMetadata, ...], tuple[float, ...]]:
+    count = draw(st.integers(min_value=1, max_value=6))
+    values = tuple(
+        draw(
+            st.lists(
+                st.floats(min_value=15, max_value=25, allow_nan=False, allow_infinity=False),
+                min_size=count,
+                max_size=count,
+            )
+        )
+    )
+    weights = tuple(
+        draw(
+            st.lists(
+                st.floats(min_value=0.1, max_value=10, allow_nan=False, allow_infinity=False),
+                min_size=count,
+                max_size=count,
+            )
+        )
+    )
+    offsets = tuple(
+        draw(
+            st.lists(
+                st.floats(min_value=-2, max_value=2, allow_nan=False, allow_infinity=False),
+                min_size=count,
+                max_size=count,
+            )
+        )
+    )
+    metadata = tuple(
+        TemperatureSensorMetadata(
+            f"sensor.generated_{index}",
+            weight=weights[index],
+            calibration_offset=offsets[index],
+        )
+        for index in range(count)
+    )
+    return metadata, values
+
+
+@given(_weighted_sensor_case())
+def test_generated_sensor_metadata_order_produces_identical_evaluation(
+    sensor_case: tuple[tuple[TemperatureSensorMetadata, ...], tuple[float, ...]],
+) -> None:
+    """Calibration and weighted aggregation are invariant to configuration order."""
+    metadata, values = sensor_case
+    base = dict(
+        id="generated-order-plant",
+        valves=(Valve("valve", "Valve", "switch.valve"),),
+        pumps=(Pump("pump", "Pump", "switch.pump"),),
+        circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
+        routes=(DeliveryRoute("route", "zone", "circuit"),),
+    )
+    plant = compile_topology(
+        PlantConfiguration(
+            **base,
+            zones=(
+                Zone(
+                    "zone",
+                    "Zone",
+                    21.0,
+                    temperature_sensor_metadata=metadata,
+                    aggregation=TemperatureAggregation.WEIGHTED_MEAN,
+                ),
+            ),
+        )
+    )
+    reverse_plant = compile_topology(
+        PlantConfiguration(
+            **base,
+            zones=(
+                Zone(
+                    "zone",
+                    "Zone",
+                    21.0,
+                    temperature_sensor_metadata=tuple(reversed(metadata)),
+                    aggregation=TemperatureAggregation.WEIGHTED_MEAN,
+                ),
+            ),
+        )
+    )
+    snapshot = PlantSnapshot(
+        {
+            sensor.entity_id: TemperatureObservation(values[index], NOW)
+            for index, sensor in enumerate(metadata)
+        }
+    )
+
+    assert evaluate(plant, snapshot, RuntimeState(), NOW) == evaluate(
+        reverse_plant, snapshot, RuntimeState(), NOW
+    )
+
+
+@given(
+    zone_count=st.integers(min_value=1, max_value=6),
+    bad_index=st.integers(min_value=0, max_value=5),
+    active_seconds=st.integers(min_value=0, max_value=300),
+    idle_seconds=st.integers(min_value=0, max_value=300),
+)
+def test_blocked_required_sensor_never_produces_zone_demand(
+    zone_count: int,
+    bad_index: int,
+    active_seconds: int,
+    idle_seconds: int,
+) -> None:
+    """No generated duration state can turn a required-sensor failure into demand."""
+    bad_index %= zone_count
+    sensor_ids = tuple(f"sensor.generated_{index}" for index in range(zone_count))
+    metadata = tuple(TemperatureSensorMetadata(sensor_id) for sensor_id in sensor_ids)
+    plant = compile_topology(
+        PlantConfiguration(
+            id="blocked-generated-plant",
+            zones=(
+                Zone(
+                    "zone",
+                    "Zone",
+                    21.0,
+                    temperature_sensor_metadata=metadata,
+                    minimum_active_duration_seconds=active_seconds,
+                    minimum_idle_duration_seconds=idle_seconds,
+                ),
+            ),
+            valves=(Valve("valve", "Valve", "switch.valve"),),
+            pumps=(Pump("pump", "Pump", "switch.pump"),),
+            circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
+            routes=(DeliveryRoute("route", "zone", "circuit"),),
+        )
+    )
+    snapshot = PlantSnapshot(
+        {
+            sensor_id: TemperatureObservation(None if index == bad_index else 19.0, NOW)
+            for index, sensor_id in enumerate(sensor_ids)
+        }
+    )
+    runtime = RuntimeState(
+        zone_demands={"zone": True},
+        zone_runtime={"zone": ZoneRuntime(True, NOW - timedelta(seconds=1))},
+    )
+
+    result = evaluate(plant, snapshot, runtime, NOW)
+
+    assert result.next_runtime.zone_demands["zone"] is False
+    assert result.diagnostics.zone_decisions["zone"].status is ZoneDecisionStatus.SENSOR_BLOCKED

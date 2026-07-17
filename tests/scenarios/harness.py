@@ -13,6 +13,7 @@ from hydronicus_core.model import (
     RuntimeState,
     TemperatureObservation,
     ValveState,
+    ZoneDecisionStatus,
 )
 
 if TYPE_CHECKING:
@@ -30,6 +31,9 @@ class ScenarioStep:
     valves: Mapping[str, ValveState] = field(default_factory=dict)
     pumps: Mapping[str, PumpState] = field(default_factory=dict)
     commands: frozenset[tuple[str, str]] = frozenset()
+    observations: Mapping[str, TemperatureObservation] | None = None
+    zone_demands: Mapping[str, bool] = field(default_factory=dict)
+    zone_statuses: Mapping[str, ZoneDecisionStatus] = field(default_factory=dict)
 
 
 def run_scenario(
@@ -44,7 +48,9 @@ def run_scenario(
     for step in steps:
         now += step.after
         snapshot = PlantSnapshot(
-            {
+            step.observations
+            if step.observations is not None
+            else {
                 entity_id: TemperatureObservation(value, now)
                 for entity_id, value in step.temperatures.items()
             }
@@ -63,4 +69,13 @@ def run_scenario(
             )
             == step.commands
         )
+        if step.zone_demands:
+            assert {
+                zone_id: result.next_runtime.zone_demands[zone_id] for zone_id in step.zone_demands
+            } == step.zone_demands
+        if step.zone_statuses:
+            assert {
+                zone_id: result.diagnostics.zone_decisions[zone_id].status
+                for zone_id in step.zone_statuses
+            } == step.zone_statuses
         runtime = result.next_runtime

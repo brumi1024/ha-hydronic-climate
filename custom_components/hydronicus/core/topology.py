@@ -1,11 +1,19 @@
-"""Validation and compilation of an explicitly configured plant topology."""
+"""Validation and deterministic compilation of an explicitly configured topology."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from math import isfinite
 
-from .model import CompiledPlant, PlantConfiguration, TemperatureAggregation
+from .model import (
+    MAX_ZONE_TARGET_TEMPERATURE,
+    MIN_ZONE_TARGET_TEMPERATURE,
+    CompiledPlant,
+    PlantConfiguration,
+    TemperatureAggregation,
+    TopologyWarning,
+    Zone,
+)
 
 
 class TopologyValidationError(ValueError):
@@ -20,6 +28,110 @@ def _duplicates(values: Iterable[str]) -> set[str]:
             duplicates.add(value)
         seen.add(value)
     return duplicates
+
+
+def _finite_non_negative(value: object) -> bool:
+    return isinstance(value, (int, float)) and isfinite(float(value)) and float(value) >= 0
+
+
+def _finite_positive(value: object) -> bool:
+    return isinstance(value, (int, float)) and isfinite(float(value)) and float(value) > 0
+
+
+def _validate_zone(zone: Zone) -> None:
+    """Validate all pure controller inputs owned by one comfort zone."""
+    # The object is a Zone at the call site.  Keeping validation here based on
+    # its public contract makes malformed restored/configured values fail closed.
+    zone_id = zone.id
+    if not isinstance(zone.aggregation, TemperatureAggregation):
+        raise TopologyValidationError(
+            f"Zone {zone_id} temperature aggregation must be a supported policy."
+        )
+    if not isinstance(zone.target_temperature, (int, float)) or not isfinite(
+        float(zone.target_temperature)
+    ):
+        raise TopologyValidationError(f"Zone {zone_id} target temperature must be finite.")
+    if not zone.temperature_sensors:
+        raise TopologyValidationError(f"Zone {zone_id} requires at least one temperature sensor.")
+    if not _finite_non_negative(zone.heating_start_delta) or not _finite_non_negative(
+        zone.heating_stop_delta
+    ):
+        raise TopologyValidationError(
+            f"Zone {zone_id} heating hysteresis deltas must be finite and non-negative."
+        )
+    if not _finite_non_negative(zone.minimum_active_duration_seconds):
+        raise TopologyValidationError(
+            f"Zone {zone_id} minimum active duration must be finite and non-negative."
+        )
+    if not _finite_non_negative(zone.minimum_idle_duration_seconds):
+        raise TopologyValidationError(
+            f"Zone {zone_id} minimum idle duration must be finite and non-negative."
+        )
+
+    metadata = tuple(zone.sensor_metadata)
+    if not all(
+        isinstance(sensor.entity_id, str) and sensor.entity_id.strip() for sensor in metadata
+    ):
+        raise TopologyValidationError(
+            f"Zone {zone_id} temperature sensors must be non-empty entity ids."
+        )
+    sensor_ids = tuple(sensor.entity_id for sensor in metadata)
+    if duplicates := _duplicates(sensor_ids):
+        raise TopologyValidationError(
+            f"Zone {zone_id} temperature sensors must not contain duplicates: "
+            + ", ".join(sorted(duplicates))
+            + "."
+        )
+    for sensor in metadata:
+        if not isinstance(sensor.required, bool):
+            raise TopologyValidationError(
+                f"Zone {zone_id} sensor {sensor.entity_id} required status must be boolean."
+            )
+        if not _finite_positive(sensor.weight):
+            raise TopologyValidationError(
+                f"Zone {zone_id} temperature sensor weights must be positive and finite."
+            )
+        if not isinstance(sensor.calibration_offset, (int, float)) or not isfinite(
+            float(sensor.calibration_offset)
+        ):
+            raise TopologyValidationError(
+                f"Zone {zone_id} sensor {sensor.entity_id} calibration offset must be finite."
+            )
+        if not _finite_positive(sensor.max_age_seconds):
+            raise TopologyValidationError(
+                f"Zone {zone_id} sensor {sensor.entity_id} maximum age must be positive and finite."
+            )
+        if not isinstance(sensor.designated_reference, bool):
+            raise TopologyValidationError(
+                f"Zone {zone_id} sensor {sensor.entity_id} reference status must be boolean."
+            )
+
+    reference_ids = tuple(
+        sorted(sensor.entity_id for sensor in metadata if sensor.designated_reference)
+    )
+    if len(reference_ids) > 1:
+        raise TopologyValidationError(
+            f"Zone {zone_id} has multiple designated reference sensors: "
+            + ", ".join(reference_ids)
+            + "."
+        )
+    if zone.aggregation is TemperatureAggregation.DESIGNATED_REFERENCE and len(reference_ids) != 1:
+        raise TopologyValidationError(
+            f"Zone {zone_id} designated reference aggregation requires exactly one "
+            "designated reference sensor."
+        )
+
+    allowed_presets = {"comfort", "eco", "away"}
+    for preset, target in zone.preset_targets.items():
+        if preset not in allowed_presets:
+            raise TopologyValidationError(f"Zone {zone_id} has unsupported preset target {preset}.")
+        if not isinstance(target, (int, float)) or not isfinite(float(target)):
+            raise TopologyValidationError(f"Zone {zone_id} preset target {preset} must be finite.")
+        if not MIN_ZONE_TARGET_TEMPERATURE <= float(target) <= MAX_ZONE_TARGET_TEMPERATURE:
+            raise TopologyValidationError(
+                f"Zone {zone_id} preset target {preset} must be between "
+                f"{MIN_ZONE_TARGET_TEMPERATURE:g} and {MAX_ZONE_TARGET_TEMPERATURE:g} °C."
+            )
 
 
 def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
@@ -40,13 +152,13 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     ):
         if not ids:
             continue
-        if not all(ids):
+        if not all(isinstance(value, str) and value for value in ids):
             raise TopologyValidationError(f"Every {object_name} requires a non-empty id.")
         if duplicates := _duplicates(ids):
             raise TopologyValidationError(
                 f"Duplicate {object_name} ids: {', '.join(sorted(duplicates))}."
             )
-    if not all(route_ids):
+    if not all(isinstance(value, str) and value for value in route_ids):
         raise TopologyValidationError("Every route requires a non-empty id.")
     if duplicates := _duplicates(route_ids):
         raise TopologyValidationError(f"Duplicate route ids: {', '.join(sorted(duplicates))}.")
@@ -59,56 +171,14 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         )
 
     for zone in configuration.zones:
-        if not isinstance(zone.aggregation, TemperatureAggregation):
-            raise TopologyValidationError(
-                f"Zone {zone.id} temperature aggregation must be a supported policy."
-            )
-        if not isfinite(zone.target_temperature):
-            raise TopologyValidationError(
-                f"Zone {zone.id} target temperature must be finite."
-            )
-        if not zone.temperature_sensors:
-            raise TopologyValidationError(
-                f"Zone {zone.id} requires at least one temperature sensor."
-            )
-        if not all(
-            isinstance(sensor_id, str) and sensor_id.strip()
-            for sensor_id in zone.temperature_sensors
-        ):
-            raise TopologyValidationError(
-                f"Zone {zone.id} temperature sensors must be non-empty entity ids."
-            )
-        if duplicates := _duplicates(zone.temperature_sensors):
-            raise TopologyValidationError(
-                f"Zone {zone.id} temperature sensors must not contain duplicates: "
-                + ", ".join(sorted(duplicates))
-                + "."
-            )
-        unknown_weight_sensors = sorted(
-            set(zone.temperature_sensor_weights) - set(zone.temperature_sensors)
-        )
-        if unknown_weight_sensors:
-            raise TopologyValidationError(
-                f"Zone {zone.id} temperature sensor weights reference unknown sensors: "
-                + ", ".join(unknown_weight_sensors)
-                + "."
-            )
-        if any(
-            not isinstance(weight, (int, float))
-            or not isfinite(float(weight))
-            or float(weight) <= 0
-            for weight in zone.temperature_sensor_weights.values()
-        ):
-            raise TopologyValidationError(
-                f"Zone {zone.id} temperature sensor weights must be positive and finite."
-            )
+        _validate_zone(zone)
     for valve in configuration.valves:
-        if not isfinite(valve.opening_time_seconds) or valve.opening_time_seconds < 0:
+        if not _finite_non_negative(valve.opening_time_seconds):
             raise TopologyValidationError(
                 f"Valve {valve.id} opening time must be finite and non-negative."
             )
     for pump in configuration.pumps:
-        if not isfinite(pump.overrun_seconds) or pump.overrun_seconds < 0:
+        if not _finite_non_negative(pump.overrun_seconds):
             raise TopologyValidationError(
                 f"Pump {pump.id} overrun must be finite and non-negative."
             )
@@ -117,24 +187,27 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         *(valve.entity_id for valve in configuration.valves),
         *(pump.entity_id for pump in configuration.pumps),
     ]
-    if not all(actuator_entity_ids):
+    if not all(
+        isinstance(entity_id, str) and entity_id.strip() for entity_id in actuator_entity_ids
+    ):
         raise TopologyValidationError("Every actuator requires a non-empty entity binding.")
     if duplicates := _duplicates(actuator_entity_ids):
         raise TopologyValidationError(
             f"Duplicate actuator entity bindings: {', '.join(sorted(duplicates))}."
         )
 
-    zones = {zone.id: zone for zone in configuration.zones}
-    valves = {valve.id: valve for valve in configuration.valves}
-    pumps = {pump.id: pump for pump in configuration.pumps}
-    circuits = {circuit.id: circuit for circuit in configuration.circuits}
+    zones = {zone.id: zone for zone in sorted(configuration.zones, key=lambda zone: zone.id)}
+    valves = {valve.id: valve for valve in sorted(configuration.valves, key=lambda valve: valve.id)}
+    pumps = {pump.id: pump for pump in sorted(configuration.pumps, key=lambda pump: pump.id)}
+    circuits = {
+        circuit.id: circuit
+        for circuit in sorted(configuration.circuits, key=lambda circuit: circuit.id)
+    }
     referenced_valves: set[str] = set()
     referenced_pumps: set[str] = set()
     for circuit in configuration.circuits:
         if not circuit.valve_ids:
-            raise TopologyValidationError(
-                f"Circuit {circuit.id} requires at least one valve."
-            )
+            raise TopologyValidationError(f"Circuit {circuit.id} requires at least one valve.")
         unknown_valves = sorted(set(circuit.valve_ids) - set(valves))
         if unknown_valves:
             raise TopologyValidationError(
@@ -146,6 +219,7 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             )
         referenced_valves.update(circuit.valve_ids)
         referenced_pumps.add(circuit.pump_id)
+
     referenced_zones: set[str] = set()
     referenced_circuits: set[str] = set()
     for route in configuration.routes:
@@ -178,6 +252,13 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             details.append(f"orphaned circuits: {', '.join(orphaned_circuits)}")
         raise TopologyValidationError("; ".join(details) + ".")
 
+    enabled_routes = tuple(
+        sorted(
+            (route for route in configuration.routes if route.enabled),
+            key=lambda route: (route.zone_id, route.circuit_id, route.id),
+        )
+    )
+    summary_routes = tuple(route for route in configuration.routes if route.enabled)
     summary = [
         (
             f"Circuit {circuit.name} opens valves "
@@ -188,42 +269,61 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     ]
     for zone in configuration.zones:
         route_circuits = [
-            circuits[route.circuit_id].name
-            for route in configuration.routes
-            if route.enabled and route.zone_id == zone.id
+            circuits[route.circuit_id].name for route in summary_routes if route.zone_id == zone.id
         ]
         noun = "circuit" if len(route_circuits) == 1 else "circuits"
-        summary.append(
-            f"Zone {zone.name} can request {noun} {', '.join(route_circuits)}."
+        summary.append(f"Zone {zone.name} can request {noun} {', '.join(route_circuits)}.")
+
+    warnings: list[TopologyWarning] = []
+    for valve_id, valve in valves.items():
+        shared_circuits = tuple(
+            sorted(circuit.id for circuit in circuits.values() if valve_id in circuit.valve_ids)
         )
-    for valve in configuration.valves:
-        shared_circuits = [
-            circuit.name
-            for circuit in configuration.circuits
-            if valve.id in circuit.valve_ids
-        ]
-        if len(shared_circuits) > 1:
-            summary.append(
-                f"Valve {valve.name} is shared by circuits "
-                f"{', '.join(shared_circuits)}."
+        if len(shared_circuits) <= 1:
+            continue
+        summary_circuits = tuple(
+            circuit.id for circuit in configuration.circuits if valve_id in circuit.valve_ids
+        )
+        summary_circuit_names = ", ".join(
+            circuits[circuit_id].name for circuit_id in summary_circuits
+        )
+        warning_circuit_names = ", ".join(
+            circuits[circuit_id].name for circuit_id in shared_circuits
+        )
+        summary.append(f"Valve {valve.name} is shared by circuits {summary_circuit_names}.")
+        affected_zones = tuple(
+            sorted(
+                {route.zone_id for route in enabled_routes if route.circuit_id in shared_circuits}
             )
-    for pump in configuration.pumps:
-        shared_circuits = [
-            circuit.name
-            for circuit in configuration.circuits
-            if pump.id == circuit.pump_id
-        ]
+        )
+        warnings.append(
+            TopologyWarning(
+                code="shared_valve_limits_independent_control",
+                message=(
+                    f"Valve {valve.name} is shared by circuits {warning_circuit_names}; "
+                    "separate climate entities cannot independently control circuits "
+                    "coupled by the same physical valve."
+                ),
+                valve_id=valve_id,
+                circuit_ids=shared_circuits,
+                zone_ids=affected_zones,
+            )
+        )
+
+    for pump_id, pump in pumps.items():
+        shared_circuits = tuple(
+            sorted(circuit.id for circuit in circuits.values() if pump_id == circuit.pump_id)
+        )
         if len(shared_circuits) > 1:
+            summary_circuits = tuple(
+                circuit.id for circuit in configuration.circuits if pump_id == circuit.pump_id
+            )
             summary.append(
                 f"Pump {pump.name} is shared by circuits "
-                f"{', '.join(shared_circuits)}."
+                + ", ".join(circuits[circuit_id].name for circuit_id in summary_circuits)
+                + "."
             )
-    enabled_routes = tuple(
-        sorted(
-            (route for route in configuration.routes if route.enabled),
-            key=lambda route: (route.zone_id, route.circuit_id, route.id),
-        )
-    )
+
     return CompiledPlant(
         id=configuration.id,
         zones=zones,
@@ -232,4 +332,5 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         circuits=circuits,
         routes=enabled_routes,
         logic_summary=tuple(summary),
+        warnings=tuple(warnings),
     )

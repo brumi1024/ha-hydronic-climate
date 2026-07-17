@@ -52,6 +52,7 @@ async def test_configured_zone_climate_unloads_with_entry(hass) -> None:
                         "name": "Test zone",
                         "target_temperature": 21.0,
                         "temperature_sensor": "sensor.test_zone_temperature",
+                        "preset_targets": {"comfort": 22.0, "eco": 19.0},
                     }
                 ],
                 "valves": [
@@ -91,6 +92,41 @@ async def test_configured_zone_climate_unloads_with_entry(hass) -> None:
     assert await hass.config_entries.async_setup(entry.entry_id)
     climate_entity_id = "climate.hydronic_plant_test_zone"
     assert hass.states.get(climate_entity_id) is not None
+    assert hass.states.get("sensor.hydronic_plant_test_zone_aggregate_temperature").state == "18.0"
+    assert hass.states.get("binary_sensor.hydronic_plant_test_zone_blocked").state == "off"
+    assert hass.states.get("sensor.hydronic_plant_test_zone_blocked_reason").state == "none"
+    assert hass.states.get(climate_entity_id).attributes["preset_modes"] == [
+        "comfort",
+        "eco",
+    ]
+
+    await hass.services.async_call(
+        "climate",
+        "set_preset_mode",
+        {"entity_id": climate_entity_id, "preset_mode": "comfort"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(climate_entity_id).attributes["preset_mode"] == "comfort"
+    assert hass.states.get(climate_entity_id).attributes["temperature"] == 22.0
+
+    await hass.services.async_call(
+        "climate",
+        "set_temperature",
+        {"entity_id": climate_entity_id, "temperature": 18.5},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(climate_entity_id).attributes["preset_mode"] == "none"
+    assert hass.states.get(climate_entity_id).attributes["temperature"] == 18.5
+
+    hass.states.async_set("sensor.test_zone_temperature", "unavailable")
+    await hass.async_block_till_done()
+    assert hass.states.get("binary_sensor.hydronic_plant_test_zone_blocked").state == "on"
+    assert hass.states.get("binary_sensor.hydronic_plant_test_zone_demand").state == "off"
+    assert hass.states.get("sensor.hydronic_plant_test_zone_blocked_reason").state.startswith(
+        "Blocked:"
+    )
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert hass.states.get(climate_entity_id).state == "unavailable"

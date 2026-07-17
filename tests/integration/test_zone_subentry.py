@@ -34,7 +34,19 @@ LEGACY_ZONE_ID = "00000000-0000-4000-8000-000000000009"
 LEGACY_ROUTE_ID = "00000000-0000-4000-8000-000000000010"
 
 
-def _plant_entry(*, with_second_circuit: bool = False) -> MockConfigEntry:
+async def _confirm_warning_review(hass, result):
+    """Acknowledge non-fatal topology warnings when a flow presents them."""
+    if result.get("type") == FlowResultType.FORM and result.get("step_id") == "review":
+        result = await hass.config_entries.subentries.async_configure(
+            result["flow_id"], user_input={"confirm": True}
+        )
+        await hass.async_block_till_done()
+    return result
+
+
+def _plant_entry(
+    *, with_second_circuit: bool = False, preset_targets: dict[str, float] | None = None
+) -> MockConfigEntry:
     """Return one valid parent-owned zone and hydraulic path."""
     circuits = [
         {
@@ -67,6 +79,14 @@ def _plant_entry(*, with_second_circuit: bool = False) -> MockConfigEntry:
                 "circuit_id": SECOND_CIRCUIT_ID,
             }
         )
+    zone_data = {
+        "id": BASE_ZONE_ID,
+        "name": "Living room",
+        "target_temperature": 21.0,
+        "temperature_sensor": "sensor.living_temperature",
+    }
+    if preset_targets is not None:
+        zone_data["preset_targets"] = preset_targets
     return MockConfigEntry(
         domain=DOMAIN,
         title="Hydronic plant",
@@ -75,14 +95,7 @@ def _plant_entry(*, with_second_circuit: bool = False) -> MockConfigEntry:
             "plant_id": PLANT_ID,
             "shadow_mode": True,
             "topology": {
-                "zones": [
-                    {
-                        "id": BASE_ZONE_ID,
-                        "name": "Living room",
-                        "target_temperature": 21.0,
-                        "temperature_sensor": "sensor.living_temperature",
-                    }
-                ],
+                "zones": [zone_data],
                 "valves": [
                     {
                         "id": VALVE_ID,
@@ -112,7 +125,7 @@ async def _add_zone(hass, entry, *, circuit_ids: list[str]):
         (entry.entry_id, SUBENTRY_TYPE_ZONE),
         context={"source": config_entries.SOURCE_USER},
     )
-    return await hass.config_entries.subentries.async_configure(
+    result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         user_input={
             CONF_NAME: "Office",
@@ -121,6 +134,7 @@ async def _add_zone(hass, entry, *, circuit_ids: list[str]):
             CONF_CIRCUIT_IDS: circuit_ids,
         },
     )
+    return await _confirm_warning_review(hass, result)
 
 
 async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None:
@@ -153,9 +167,7 @@ async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None
     assert result["type"] == FlowResultType.CREATE_ENTRY
     assert entry.runtime_data is not initial_runtime
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
     zone_id = subentry.data["id"]
     assert str(UUID(zone_id)) == zone_id
@@ -163,9 +175,7 @@ async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None
     assert zone.name == "Office"
     assert zone.target_temperature == 20.0
     assert zone.temperature_sensors == ("sensor.office_temperature",)
-    routes = [
-        route for route in entry.runtime_data.plant.routes if route.zone_id == zone_id
-    ]
+    routes = [route for route in entry.runtime_data.plant.routes if route.zone_id == zone_id]
     assert len(routes) == 1
     assert routes[0].circuit_id == CIRCUIT_ID
     assert str(UUID(routes[0].id)) == routes[0].id
@@ -174,6 +184,9 @@ async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None
     explanation_entity_id = "sensor.hydronic_plant_office_explanation"
     assert hass.states.get(demand_entity_id).state == "on"
     assert hass.states.get(explanation_entity_id).state.startswith("Heating requested:")
+    assert hass.states.get("sensor.hydronic_plant_office_aggregate_temperature").state == "18.0"
+    assert hass.states.get("binary_sensor.hydronic_plant_office_blocked").state == "off"
+    assert hass.states.get("sensor.hydronic_plant_office_blocked_reason").state == "none"
     registry = er.async_get(hass)
     assert registry.async_get(demand_entity_id).config_subentry_id == subentry.subentry_id
     assert registry.async_get(explanation_entity_id).config_subentry_id == subentry.subentry_id
@@ -198,6 +211,46 @@ async def test_add_zone_subentry_composes_route_and_owned_entities(hass) -> None
     assert climate_state.attributes["hvac_action"] == "idle"
     assert climate_state.attributes["temperature"] == 17.0
     assert subentry.data[CONF_TARGET_TEMPERATURE] == 17.0
+
+
+async def test_zone_presets_recalculate_and_manual_target_clears_mode(hass) -> None:
+    """Configured presets persist their target and manual control returns to none."""
+    hass.states.async_set("sensor.living_temperature", "18.0")
+    entry = _plant_entry(preset_targets={"comfort": 22.0, "eco": 19.0})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    climate_entity_id = "climate.hydronic_plant_living_room"
+    climate_state = hass.states.get(climate_entity_id)
+    assert climate_state is not None
+    assert climate_state.attributes["preset_modes"] == ["comfort", "eco"]
+    assert climate_state.attributes["preset_mode"] == "none"
+
+    await hass.services.async_call(
+        "climate",
+        "set_preset_mode",
+        {"entity_id": climate_entity_id, "preset_mode": "comfort"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    climate_state = hass.states.get(climate_entity_id)
+    assert climate_state is not None
+    assert climate_state.attributes["preset_mode"] == "comfort"
+    assert climate_state.attributes["temperature"] == 22.0
+
+    await hass.services.async_call(
+        "climate",
+        "set_temperature",
+        {"entity_id": climate_entity_id, "temperature": 18.5},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    climate_state = hass.states.get(climate_entity_id)
+    assert climate_state is not None
+    assert climate_state.attributes["preset_mode"] == "none"
+    assert climate_state.attributes["temperature"] == 18.5
 
 
 async def test_add_zone_subentry_aggregates_multiple_battery_sensors(hass) -> None:
@@ -229,9 +282,7 @@ async def test_add_zone_subentry_aggregates_multiple_battery_sensors(hass) -> No
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
     zone_id = subentry.data["id"]
     assert entry.runtime_data.plant.zones[zone_id].temperature_sensors == (
@@ -263,9 +314,7 @@ async def test_add_zone_subentry_aggregates_multiple_battery_sensors(hass) -> No
     await hass.async_block_till_done()
 
     assert hass.states.get("binary_sensor.hydronic_plant_office_demand").state == "off"
-    assert hass.states.get("sensor.hydronic_plant_office_explanation").state.startswith(
-        "Blocked:"
-    )
+    assert hass.states.get("sensor.hydronic_plant_office_explanation").state.startswith("Blocked:")
 
 
 async def test_reconfigure_migrates_legacy_single_sensor_subentry(hass) -> None:
@@ -300,9 +349,7 @@ async def test_reconfigure_migrates_legacy_single_sensor_subentry(hass) -> None:
         "sensor.legacy_office_temperature",
     )
 
-    result = await entry.start_subentry_reconfigure_flow(
-        hass, legacy_subentry.subentry_id
-    )
+    result = await entry.start_subentry_reconfigure_flow(hass, legacy_subentry.subentry_id)
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         user_input={
@@ -316,6 +363,7 @@ async def test_reconfigure_migrates_legacy_single_sensor_subentry(hass) -> None:
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["type"] == FlowResultType.ABORT
     assert legacy_subentry.data["id"] == LEGACY_ZONE_ID
@@ -339,20 +387,14 @@ async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) ->
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
 
-    result = await _add_zone(
-        hass, entry, circuit_ids=[CIRCUIT_ID, SECOND_CIRCUIT_ID]
-    )
+    result = await _add_zone(hass, entry, circuit_ids=[CIRCUIT_ID, SECOND_CIRCUIT_ID])
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
     zone_id = subentry.data["id"]
-    route_ids = {
-        route["circuit_id"]: route["id"] for route in subentry.data["routes"]
-    }
+    route_ids = {route["circuit_id"]: route["id"] for route in subentry.data["routes"]}
     runtime_after_add = entry.runtime_data
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
@@ -368,6 +410,7 @@ async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) ->
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["type"] == FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
@@ -384,9 +427,7 @@ async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) ->
     assert zone.name == "Study"
     assert zone.target_temperature == 21.5
     assert zone.temperature_sensors == ("sensor.study_temperature",)
-    routes = [
-        route for route in entry.runtime_data.plant.routes if route.zone_id == zone_id
-    ]
+    routes = [route for route in entry.runtime_data.plant.routes if route.zone_id == zone_id]
     assert [(route.id, route.circuit_id) for route in routes] == [
         (route_ids[SECOND_CIRCUIT_ID], SECOND_CIRCUIT_ID)
     ]
@@ -407,19 +448,13 @@ async def test_reconfigure_zone_preserves_retained_route_enablement(hass) -> Non
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
 
-    result = await _add_zone(
-        hass, entry, circuit_ids=[CIRCUIT_ID, SECOND_CIRCUIT_ID]
-    )
+    result = await _add_zone(hass, entry, circuit_ids=[CIRCUIT_ID, SECOND_CIRCUIT_ID])
     await hass.async_block_till_done()
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
     disabled_route_id = next(
-        route["id"]
-        for route in subentry.data["routes"]
-        if route["circuit_id"] == CIRCUIT_ID
+        route["id"] for route in subentry.data["routes"] if route["circuit_id"] == CIRCUIT_ID
     )
     updated_data = {
         **subentry.data,
@@ -440,6 +475,7 @@ async def test_reconfigure_zone_preserves_retained_route_enablement(hass) -> Non
         },
     )
     await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
 
     assert result["reason"] == "reconfigure_successful"
     assert subentry.data["routes"][0] == {
@@ -460,9 +496,7 @@ async def test_add_rejects_stale_circuit_without_mutating_entry(hass) -> None:
     )
 
     updated_data = deepcopy(dict(entry.data))
-    updated_data["topology"]["circuits"] = [
-        updated_data["topology"]["circuits"][0]
-    ]
+    updated_data["topology"]["circuits"] = [updated_data["topology"]["circuits"][0]]
     updated_data["topology"]["routes"] = [updated_data["topology"]["routes"][0]]
     hass.config_entries.async_update_entry(entry, data=updated_data)
     await hass.async_block_till_done()
@@ -517,9 +551,7 @@ async def test_add_and_reconfigure_reject_non_finite_target_atomically(hass) -> 
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
     original_data = dict(subentry.data)
     valid_runtime = entry.runtime_data
@@ -550,17 +582,13 @@ async def test_reconfigure_rejects_stale_circuit_atomically(hass) -> None:
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
     assert result["type"] == FlowResultType.FORM
     updated_data = deepcopy(dict(entry.data))
-    updated_data["topology"]["circuits"] = [
-        updated_data["topology"]["circuits"][0]
-    ]
+    updated_data["topology"]["circuits"] = [updated_data["topology"]["circuits"][0]]
     updated_data["topology"]["routes"] = [updated_data["topology"]["routes"][0]]
     hass.config_entries.async_update_entry(entry, data=updated_data)
     await hass.async_block_till_done()
@@ -594,9 +622,7 @@ async def test_delete_zone_subentry_removes_routes_and_owned_entities(hass) -> N
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
     zone_id = subentry.data["id"]
     demand_entity_id = "binary_sensor.hydronic_plant_office_demand"
@@ -627,9 +653,7 @@ async def test_reload_reconstructs_persisted_zone_subentry(hass) -> None:
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
     zone_id = subentry.data["id"]
     route_ids = {route["id"] for route in subentry.data["routes"]}
@@ -641,21 +665,15 @@ async def test_reload_reconstructs_persisted_zone_subentry(hass) -> None:
     assert entry.runtime_data is not runtime_after_add
     assert entry.runtime_data.plant.zones[zone_id].name == "Office"
     assert {
-        route.id
-        for route in entry.runtime_data.plant.routes
-        if route.zone_id == zone_id
+        route.id for route in entry.runtime_data.plant.routes if route.zone_id == zone_id
     } == route_ids
     registry = er.async_get(hass)
     assert (
-        registry.async_get(
-            "binary_sensor.hydronic_plant_office_demand"
-        ).config_subentry_id
+        registry.async_get("binary_sensor.hydronic_plant_office_demand").config_subentry_id
         == subentry.subentry_id
     )
     assert (
-        registry.async_get(
-            "sensor.hydronic_plant_office_explanation"
-        ).config_subentry_id
+        registry.async_get("sensor.hydronic_plant_office_explanation").config_subentry_id
         == subentry.subentry_id
     )
 
@@ -671,9 +689,7 @@ async def test_dynamic_zone_can_share_parent_circuit_demand(hass) -> None:
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.CREATE_ENTRY
     subentry = next(
-        item
-        for item in entry.subentries.values()
-        if item.subentry_type == SUBENTRY_TYPE_ZONE
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
     )
     zone_id = subentry.data["id"]
 
