@@ -83,6 +83,27 @@ def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
     )
 
 
+def test_compile_topology_rejects_duplicate_delivery_route_relationships() -> None:
+    """A zone-to-circuit relationship must have one stable route identity."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(
+            DeliveryRoute("route-1", "zone-1", "circuit-1"),
+            DeliveryRoute("route-2", "zone-1", "circuit-1", enabled=False),
+        ),
+    )
+
+    with pytest.raises(
+        TopologyValidationError,
+        match="Duplicate delivery routes: zone-1 -> circuit-1",
+    ):
+        compile_topology(plant)
+
+
 def test_compile_topology_rejects_orphans() -> None:
     """A topology with unreferenced objects should fail closed."""
     plant = PlantConfiguration(

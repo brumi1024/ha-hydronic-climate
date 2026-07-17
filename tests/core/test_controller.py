@@ -205,6 +205,48 @@ def test_shared_valve_and_pump_remain_active_until_last_consumer_releases() -> N
     assert stopped.next_runtime.pumps["pump"].state is PumpState.OFF
 
 
+def test_one_zone_requests_every_enabled_delivery_route() -> None:
+    """Heating-only arbitration retains the legacy any-demand behavior."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="plant",
+            zones=(Zone("living", "Living", 21.0, ("temperature.living",)),),
+            valves=(
+                Valve("floor-valve", "Floor valve", "switch.floor_valve", 1),
+                Valve("ceiling-valve", "Ceiling valve", "switch.ceiling_valve", 1),
+            ),
+            pumps=(
+                Pump("floor-pump", "Floor pump", "switch.floor_pump"),
+                Pump("ceiling-pump", "Ceiling pump", "switch.ceiling_pump"),
+            ),
+            circuits=(
+                Circuit("floor", "Floor", ("floor-valve",), "floor-pump"),
+                Circuit("ceiling", "Ceiling", ("ceiling-valve",), "ceiling-pump"),
+            ),
+            routes=(
+                DeliveryRoute("living-floor", "living", "floor"),
+                DeliveryRoute("living-ceiling", "living", "ceiling"),
+            ),
+        )
+    )
+
+    opening = evaluate(plant, _snapshot(20.0), RuntimeState(), NOW)
+    ready = evaluate(plant, _snapshot(20.0), opening.next_runtime, NOW + timedelta(seconds=1))
+
+    assert opening.control_plan.valve_consumers == {
+        "floor-valve": frozenset({"floor"}),
+        "ceiling-valve": frozenset({"ceiling"}),
+    }
+    assert ready.control_plan.pump_consumers == {
+        "floor-pump": frozenset({"floor"}),
+        "ceiling-pump": frozenset({"ceiling"}),
+    }
+    assert opening.diagnostics.circuit_reasons["floor"] == (
+        "Waiting for valve readiness after eligible delivery route living-floor "
+        "requested this circuit."
+    )
+
+
 def test_unchanged_running_snapshot_produces_no_new_commands() -> None:
     plant = compile_topology(_plant())
     opening = evaluate(plant, _snapshot(20.0), RuntimeState(), NOW)

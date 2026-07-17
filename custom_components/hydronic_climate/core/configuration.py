@@ -75,6 +75,14 @@ def _temperature_sensors(mapping: Mapping[str, Any]) -> tuple[str, ...]:
     return (sensor,)
 
 
+def _route_enabled(mapping: Mapping[str, Any]) -> bool:
+    """Read the optional route flag without coercing malformed stored data."""
+    enabled = mapping.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise StoredTopologyError("Stored route enabled must be a boolean.")
+    return enabled
+
+
 def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfiguration:
     """Build a generic plant configuration from one config entry's persisted data."""
     raw_topology = data.get("topology", {})
@@ -170,7 +178,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
             id=_id(item, "id", require_uuid=require_uuid),
             zone_id=_id(item, "zone_id", require_uuid=require_uuid),
             circuit_id=_id(item, "circuit_id", require_uuid=require_uuid),
-            enabled=bool(item.get("enabled", True)),
+            enabled=_route_enabled(item),
         )
         for item in _objects(raw_topology, "routes")
     )

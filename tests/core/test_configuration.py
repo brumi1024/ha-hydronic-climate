@@ -46,6 +46,26 @@ def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
     assert plant.routes[0].zone_id == "zone-1"
 
 
+def test_rejects_nonboolean_route_enablement() -> None:
+    """A malformed flag must not silently enable a delivery route."""
+    with pytest.raises(StoredTopologyError, match="route enabled must be a boolean"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant-1",
+                "topology": {
+                    "routes": [
+                        {
+                            "id": "route-1",
+                            "zone_id": "zone-1",
+                            "circuit_id": "circuit-1",
+                            "enabled": "false",
+                        }
+                    ]
+                },
+            }
+        )
+
+
 def test_decodes_temperature_sensor_list_from_config_entry_data() -> None:
     plant = plant_configuration_from_entry_data(
         {

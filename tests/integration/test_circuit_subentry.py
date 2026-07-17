@@ -263,6 +263,70 @@ async def test_reconfigure_circuit_preserves_retained_relationship_uuids(hass) -
     ]
 
 
+async def test_reconfigure_circuit_preserves_retained_route_enablement(hass) -> None:
+    """Reconfiguration must not silently re-enable a retained route."""
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_CIRCUIT),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Ceiling loop",
+            CONF_ZONE_IDS: [LIVING_ZONE_ID, OFFICE_ZONE_ID],
+            CONF_VALVE_IDS: [VALVE_ID],
+            CONF_PUMP_ID: PUMP_ID,
+        },
+    )
+    await hass.async_block_till_done()
+    subentry = next(
+        item
+        for item in entry.subentries.values()
+        if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+    )
+    disabled_route_id = next(
+        route["id"]
+        for route in subentry.data["routes"]
+        if route["zone_id"] == LIVING_ZONE_ID
+    )
+    updated_data = {
+        **subentry.data,
+        "routes": [dict(route) for route in subentry.data["routes"]],
+    }
+    updated_data["routes"][0]["enabled"] = False
+    hass.config_entries.async_update_subentry(entry, subentry, data=updated_data)
+    await hass.async_block_till_done()
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Ceiling loop",
+            CONF_ZONE_IDS: [LIVING_ZONE_ID, OFFICE_ZONE_ID],
+            CONF_VALVE_IDS: [VALVE_ID],
+            CONF_PUMP_ID: PUMP_ID,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry.data["routes"] == [
+        {"id": disabled_route_id, "zone_id": LIVING_ZONE_ID, "enabled": False},
+        {
+            "id": next(
+                route["id"]
+                for route in updated_data["routes"]
+                if route["zone_id"] == OFFICE_ZONE_ID
+            ),
+            "zone_id": OFFICE_ZONE_ID,
+        },
+    ]
+
+
 async def test_add_rejects_unknown_relationship_without_mutating_entry(hass) -> None:
     """A stale topology selection should fail before persistence or reload."""
     entry = _plant_entry()

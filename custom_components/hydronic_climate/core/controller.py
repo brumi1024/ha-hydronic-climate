@@ -11,6 +11,7 @@ from .model import (
     CompiledPlant,
     ControllerDiagnostics,
     ControlPlan,
+    DeliveryRoute,
     Evaluation,
     PlantSnapshot,
     PumpRuntime,
@@ -59,6 +60,17 @@ def _mean_zone_temperature(
     return sum(readings) / len(readings) if readings else None
 
 
+def resolve_delivery_routes(
+    plant: CompiledPlant, zone_demands: dict[str, bool]
+) -> tuple[DeliveryRoute, ...]:
+    """Return eligible routes under the deterministic heating-only any-demand policy."""
+    return tuple(
+        route
+        for route in plant.routes
+        if zone_demands.get(route.zone_id, False)
+    )
+
+
 def evaluate(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -80,9 +92,11 @@ def evaluate(
         zone_demands[zone.id] = demand
         zone_reasons[zone.id] = reason
 
-    requested_circuits = {
-        route.circuit_id for route in plant.routes if zone_demands.get(route.zone_id, False)
-    }
+    eligible_routes = resolve_delivery_routes(plant, zone_demands)
+    requested_circuits = {route.circuit_id for route in eligible_routes}
+    route_ids_by_circuit: dict[str, list[str]] = defaultdict(list)
+    for route in eligible_routes:
+        route_ids_by_circuit[route.circuit_id].append(route.id)
     valve_consumers: dict[str, set[str]] = defaultdict(set)
     for circuit_id in requested_circuits:
         circuit = plant.circuits[circuit_id]
@@ -182,11 +196,15 @@ def evaluate(
 
     circuit_reasons = {
         circuit.id: (
-            "Ready: valve is open and the circuit has demand."
+            "Ready: eligible delivery route "
+            + ", ".join(route_ids_by_circuit[circuit.id])
+            + " has valve-ready demand."
             if circuit.id in ready_circuits
-            else "Waiting for valve readiness."
+            else "Waiting for valve readiness after eligible delivery route "
+            + ", ".join(route_ids_by_circuit[circuit.id])
+            + " requested this circuit."
             if circuit.id in requested_circuits
-            else "Idle: no eligible zone currently requests this circuit."
+            else "Idle: no eligible delivery route currently requests this circuit."
         )
         for circuit in plant.circuits.values()
     }

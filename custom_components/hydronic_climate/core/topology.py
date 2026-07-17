@@ -50,6 +50,13 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         raise TopologyValidationError("Every route requires a non-empty id.")
     if duplicates := _duplicates(route_ids):
         raise TopologyValidationError(f"Duplicate route ids: {', '.join(sorted(duplicates))}.")
+    route_relationships = [
+        f"{route.zone_id} -> {route.circuit_id}" for route in configuration.routes
+    ]
+    if duplicates := _duplicates(route_relationships):
+        raise TopologyValidationError(
+            "Duplicate delivery routes: " + ", ".join(sorted(duplicates)) + "."
+        )
 
     for zone in configuration.zones:
         if not isfinite(zone.target_temperature):
@@ -189,12 +196,18 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
                 f"Pump {pump.name} is shared by circuits "
                 f"{', '.join(shared_circuits)}."
             )
+    enabled_routes = tuple(
+        sorted(
+            (route for route in configuration.routes if route.enabled),
+            key=lambda route: (route.zone_id, route.circuit_id, route.id),
+        )
+    )
     return CompiledPlant(
         id=configuration.id,
         zones=zones,
         valves=valves,
         pumps=pumps,
         circuits=circuits,
-        routes=tuple(route for route in configuration.routes if route.enabled),
+        routes=enabled_routes,
         logic_summary=tuple(summary),
     )

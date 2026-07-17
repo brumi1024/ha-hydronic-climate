@@ -99,6 +99,14 @@ def _temperature_sensors(data: Mapping[str, Any]) -> tuple[str, ...]:
     return (sensor,)
 
 
+def _route_enabled(data: Mapping[str, Any]) -> bool:
+    """Read an optional route flag without coercing malformed persisted values."""
+    enabled = data.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise StoredTopologyError("Route enabled must be a boolean.")
+    return enabled
+
+
 def _circuit_routes(
     data: Mapping[str, Any], circuit_id: str, zone_ids: tuple[str, ...]
 ) -> tuple[DeliveryRoute, ...]:
@@ -114,6 +122,7 @@ def _circuit_routes(
                 id=_uuid(raw_route, "id"),
                 zone_id=_uuid(raw_route, "zone_id"),
                 circuit_id=circuit_id,
+                enabled=_route_enabled(raw_route),
             )
         )
     if len(routes) != len(zone_ids) or {route.zone_id for route in routes} != set(zone_ids):
@@ -138,6 +147,7 @@ def _zone_routes(
                 id=_uuid(raw_route, "id"),
                 zone_id=zone_id,
                 circuit_id=_uuid(raw_route, "circuit_id"),
+                enabled=_route_enabled(raw_route),
             )
         )
     if len(routes) != len(circuit_ids) or {

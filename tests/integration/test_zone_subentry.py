@@ -380,6 +380,54 @@ async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) ->
     )
 
 
+async def test_reconfigure_zone_preserves_retained_route_enablement(hass) -> None:
+    """Reconfiguration must not silently re-enable a retained route."""
+    entry = _plant_entry(with_second_circuit=True)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await _add_zone(
+        hass, entry, circuit_ids=[CIRCUIT_ID, SECOND_CIRCUIT_ID]
+    )
+    await hass.async_block_till_done()
+    subentry = next(
+        item
+        for item in entry.subentries.values()
+        if item.subentry_type == SUBENTRY_TYPE_ZONE
+    )
+    disabled_route_id = next(
+        route["id"]
+        for route in subentry.data["routes"]
+        if route["circuit_id"] == CIRCUIT_ID
+    )
+    updated_data = {
+        **subentry.data,
+        "routes": [dict(route) for route in subentry.data["routes"]],
+    }
+    updated_data["routes"][0]["enabled"] = False
+    hass.config_entries.async_update_subentry(entry, subentry, data=updated_data)
+    await hass.async_block_till_done()
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: subentry.data[CONF_NAME],
+            CONF_TARGET_TEMPERATURE: subentry.data[CONF_TARGET_TEMPERATURE],
+            CONF_TEMPERATURE_SENSORS: subentry.data[CONF_TEMPERATURE_SENSORS],
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID, SECOND_CIRCUIT_ID],
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry.data["routes"][0] == {
+        "id": disabled_route_id,
+        "circuit_id": CIRCUIT_ID,
+        "enabled": False,
+    }
+
+
 async def test_add_rejects_stale_circuit_without_mutating_entry(hass) -> None:
     """A stale circuit selection should fail before persistence or reload."""
     entry = _plant_entry(with_second_circuit=True)

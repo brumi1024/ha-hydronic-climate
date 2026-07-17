@@ -61,16 +61,37 @@ class CircuitOptions:
     pumps: list[selector.SelectOptionDict]
 
 
+def _routes_with_retained_fields(
+    existing_routes: Sequence[Mapping[str, Any]] | None,
+    *,
+    relationship_key: str,
+    relationship_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Create relationship records while preserving retained route metadata."""
+    routes_by_relationship = {
+        str(route[relationship_key]): route for route in existing_routes or []
+    }
+    return [
+        {
+            "id": str(routes_by_relationship.get(relationship_id, {}).get("id", uuid4())),
+            relationship_key: relationship_id,
+            **(
+                {"enabled": routes_by_relationship[relationship_id]["enabled"]}
+                if relationship_id in routes_by_relationship
+                and "enabled" in routes_by_relationship[relationship_id]
+                else {}
+            ),
+        }
+        for relationship_id in relationship_ids
+    ]
+
+
 def _circuit_data(
     user_input: Mapping[str, Any],
     circuit_id: str,
     existing_routes: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize one circuit and preserve route UUIDs for retained zones."""
-    route_ids = {
-        str(route["zone_id"]): str(route["id"])
-        for route in existing_routes or []
-    }
     zone_ids = list(user_input[CONF_ZONE_IDS])
     return {
         "id": circuit_id,
@@ -78,13 +99,11 @@ def _circuit_data(
         CONF_ZONE_IDS: zone_ids,
         CONF_VALVE_IDS: list(user_input[CONF_VALVE_IDS]),
         CONF_PUMP_ID: user_input[CONF_PUMP_ID],
-        CONF_ROUTES: [
-            {
-                "id": route_ids.get(zone_id, str(uuid4())),
-                "zone_id": zone_id,
-            }
-            for zone_id in zone_ids
-        ],
+        CONF_ROUTES: _routes_with_retained_fields(
+            existing_routes,
+            relationship_key="zone_id",
+            relationship_ids=zone_ids,
+        ),
     }
 
 
@@ -258,10 +277,6 @@ def _zone_data(
     existing_routes: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize one zone and preserve route UUIDs for retained circuits."""
-    route_ids = {
-        str(route["circuit_id"]): str(route["id"])
-        for route in existing_routes or []
-    }
     circuit_ids = list(user_input[CONF_CIRCUIT_IDS])
     return {
         "id": zone_id,
@@ -269,13 +284,11 @@ def _zone_data(
         CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
         CONF_TEMPERATURE_SENSORS: list(user_input[CONF_TEMPERATURE_SENSORS]),
         CONF_CIRCUIT_IDS: circuit_ids,
-        CONF_ROUTES: [
-            {
-                "id": route_ids.get(circuit_id, str(uuid4())),
-                "circuit_id": circuit_id,
-            }
-            for circuit_id in circuit_ids
-        ],
+        CONF_ROUTES: _routes_with_retained_fields(
+            existing_routes,
+            relationship_key="circuit_id",
+            relationship_ids=circuit_ids,
+        ),
     }
 
 
