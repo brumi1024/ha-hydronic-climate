@@ -40,6 +40,10 @@
   },
   "config_subentries": {
     "actuator": {
+      "entry_type": "Actuator",
+      "initiate_flow": {
+        "user": "Add actuator"
+      },
       "title": "Actuator",
       "step": {
         "user": {

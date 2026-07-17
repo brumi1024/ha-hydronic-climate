@@ -4,8 +4,8 @@
   "codeowners": ["@brumi1024"],
   "config_flow": true,
   "documentation": "https://github.com/brumi1024/ha-hydronic-climate",
-  "issue_tracker": "https://github.com/brumi1024/ha-hydronic-climate/issues",
-  "version": "0.1.0-alpha.1",
+  "integration_type": "hub",
   "iot_class": "local_push",
-  "integration_type": "hub"
+  "issue_tracker": "https://github.com/brumi1024/ha-hydronic-climate/issues",
+  "version": "0.1.0-alpha.1"
 }
