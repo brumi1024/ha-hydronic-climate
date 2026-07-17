@@ -29,6 +29,31 @@ class PumpState(StrEnum):
     OVERRUN = "overrun"
 
 
+class PlantMode(StrEnum):
+    """Operating mode shared by heating, cooling, and idle evaluations."""
+
+    IDLE = "idle"
+    HEATING = "heating"
+    COOLING = "cooling"
+
+
+class ActuatorAction(StrEnum):
+    """Explicit actuator operations accepted by the executor boundary."""
+
+    OPEN = "open"
+    CLOSE = "close"
+    TURN_ON = "turn_on"
+    TURN_OFF = "turn_off"
+
+
+class InterlockStatus(StrEnum):
+    """Result of one safety interlock evaluation."""
+
+    PERMITTED = "permitted"
+    BLOCKED = "blocked"
+    UNKNOWN = "unknown"
+
+
 class TemperatureAggregation(StrEnum):
     """Policy used to combine a zone's configured temperature readings."""
 
@@ -254,6 +279,29 @@ class TopologyWarning:
 
 
 @dataclass(frozen=True, slots=True)
+class SafetyInterlockResult:
+    """Structured result for a safety permit used by future control modes."""
+
+    interlock_id: str
+    status: InterlockStatus
+    reason: str
+
+    @property
+    def permits(self) -> bool:
+        """Return whether this result permits the guarded operation."""
+        return self.status is InterlockStatus.PERMITTED
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecommendation:
+    """Shadow source choice and explanation without issuing an actuator call."""
+
+    source_id: str | None
+    explanation: str
+    eligible_source_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Valve:
     """A topology-owned valve with one Home Assistant entity binding."""
 
@@ -329,9 +377,19 @@ class TemperatureObservation:
 
 @dataclass(frozen=True, slots=True)
 class PlantSnapshot:
-    """All Home Assistant observations required by the pure controller."""
+    """All observations required by the pure controller.
+
+    The optional mappings are extension points for cooling safety and source
+    recommendation.  Heating-only callers can continue to provide only
+    ``temperatures``.
+    """
 
     temperatures: Mapping[str, TemperatureObservation]
+    humidities: Mapping[str, TemperatureObservation] = field(default_factory=dict)
+    supply_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
+    surface_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
+    source_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
+    source_availability: Mapping[str, bool] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,9 +413,12 @@ class RuntimeState:
     """Persistable controller state, separate from observed Home Assistant state."""
 
     zone_demands: Mapping[str, bool] = field(default_factory=dict)
+    cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
     zone_runtime: Mapping[str, ZoneRuntime] = field(default_factory=dict)
     valves: Mapping[str, ValveRuntime] = field(default_factory=dict)
     pumps: Mapping[str, PumpRuntime] = field(default_factory=dict)
+    plant_mode: PlantMode = PlantMode.IDLE
+    selected_source_id: str | None = None
 
     @property
     def zone_states(self) -> Mapping[str, ZoneRuntime]:
@@ -370,8 +431,12 @@ class ActuatorCommand:
     """An idempotent desired actuator command, never a toggle."""
 
     actuator_id: str
-    action: str
+    action: ActuatorAction
     reason: str
+
+    def __post_init__(self) -> None:
+        """Normalize legacy string construction while rejecting unknown actions."""
+        object.__setattr__(self, "action", ActuatorAction(self.action))
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +446,10 @@ class ControlPlan:
     commands: tuple[ActuatorCommand, ...]
     valve_consumers: Mapping[str, frozenset[str]]
     pump_consumers: Mapping[str, frozenset[str]]
+    plant_mode: PlantMode = PlantMode.IDLE
+    cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
+    source_recommendation: SourceRecommendation | None = None
+    interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +460,9 @@ class ControllerDiagnostics:
     circuit_reasons: Mapping[str, str]
     actuator_reasons: Mapping[str, str]
     zone_decisions: Mapping[str, ZoneDecision] = field(default_factory=dict)
+    cooling_zone_decisions: Mapping[str, ZoneDecision] = field(default_factory=dict)
+    interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
+    source_recommendation: SourceRecommendation | None = None
 
     @property
     def zone_diagnostics(self) -> Mapping[str, ZoneDecision]:
