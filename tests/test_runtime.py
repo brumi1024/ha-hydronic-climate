@@ -174,6 +174,13 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertFalse(runtime.shadow_mode)
 
+    def test_zone_aggregation_requires_a_controller_evaluation(self) -> None:
+        """The adapter must not reimplement aggregation before the core evaluates."""
+        runtime = HydronicRuntime.from_entry(_configured_entry())
+        runtime.snapshot = SimpleNamespace(temperatures={})
+
+        self.assertIsNone(runtime.zone_aggregation(ZONE_UUID))
+
 
 class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
     """Verify Home Assistant wakes the controller for timed transitions."""

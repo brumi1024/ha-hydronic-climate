@@ -610,29 +610,29 @@ Acceptance criteria:
 
 #### Milestone 3 implementation status
 
-Status snapshot: 2026-07-17 at commit `14158cf`, after the integration rename to Hydronicus.
+Baseline snapshot: 2026-07-17 at commit `14158cf`, after the integration rename to Hydronicus.
 The canonical integration directory is `custom_components/hydronicus`, the integration domain is `hydronicus`, and new implementation or staging work must not recreate the former `hydronic_climate` package or domain.
 
 The baseline quality gate is green.
 `make verify` passes 100 tests with 93.70 percent branch coverage for `custom_components/hydronicus/core`.
 This baseline must remain green throughout the milestone.
 
-Current coverage:
+Completion coverage:
 
-| Deliverable or criterion | Status | Current evidence and remaining gap |
+| Deliverable or criterion | Status | Evidence |
 | --- | --- | --- |
 | Climate entities | Implemented | `climate.py` publishes one target-temperature climate entity per configured zone and integration tests cover setup, unload, and target changes. |
-| Presets | Missing | The climate entity exposes target temperature only and has no preset model, preset configuration, or `async_set_preset_mode` implementation. |
-| Sensor aggregation policies | Partial | Mean, median, minimum, maximum, and weighted mean exist in the pure controller, but designated-reference aggregation is missing and weighted mean is not user-configurable because the UI has no per-sensor weight editor. |
-| Hysteresis | Partial | The pure controller has separate heating start and stop deltas, but they are not yet part of the supported zone configuration contract. |
-| Minimum demand and idle times | Missing | Zone runtime state records only a demand Boolean and cannot represent demand or idle deadlines. |
-| Stale-sensor handling | Partial | The Home Assistant adapter records `last_reported`, but the controller does not compare observation age with a configured maximum age. |
-| Active and blocked explanations | Partial | The controller publishes a human-readable zone reason, but blocked state, excluded optional sensors, and timing lockouts are not represented as structured diagnostics or dedicated zone entities. |
-| Every aggregation policy has deterministic tests | Partial | Every currently implemented policy is parameterized in core tests, but designated-reference aggregation is absent and weighted-mean configuration is not covered through the UI. |
-| Failed optional sensor is excluded | Missing | Every configured temperature sensor is currently treated as required. |
-| Failed required sensor blocks the zone | Implemented | Core and Home Assistant adapter tests prove that an unavailable or invalid configured reading blocks demand. |
+| Presets | Implemented | The climate entity exposes configured comfort, eco, and away presets; preset and manual target changes persist and reevaluate shadow demand. |
+| Sensor aggregation policies | Implemented | Designated reference, mean, median, minimum, maximum, and weighted mean use first-class editable sensor metadata in the pure controller. |
+| Hysteresis | Implemented | Separate heating start and stop deltas are persisted through setup and reconfiguration and applied by the controller. |
+| Minimum demand and idle times | Implemented | Immutable Zone runtime state records the last demand transition and enforces minimum-active and minimum-idle deadlines. |
+| Stale-sensor handling | Implemented | The controller applies per-observation maximum ages and the runtime schedules reevaluation at freshness deadlines. |
+| Active and blocked explanations | Implemented | Structured Zone decisions drive aggregate-temperature, blocked-state, blocked-reason, demand, and explanation entities. |
+| Every aggregation policy has deterministic tests | Implemented | Core tests cover every policy, calibrated values, ordering independence, and weighted metadata; integration tests cover the editable metadata path. |
+| Failed optional sensor is excluded | Implemented | Core, property, and named-scenario tests prove optional degradation is reported without blocking while a usable observation remains. |
+| Failed required sensor blocks the zone | Implemented | Core and Home Assistant adapter tests prove unavailable, invalid, or stale required observations block and release demand immediately. |
 | Setpoint changes recalculate shadow demand | Implemented | The climate service persists the target and immediately refreshes the shadow evaluation. |
-| Shared-valve limitations appear as configuration warnings | Partial | Shared equipment appears in topology preview prose, but there is no structured non-fatal warning channel or warning presentation in the configuration flow. |
+| Shared-valve limitations appear as configuration warnings | Implemented | Topology compilation produces a stable non-fatal warning that configuration review presents and topology-preview attributes publish separately from logic prose. |
 
 #### Milestone 3 scope decisions
 

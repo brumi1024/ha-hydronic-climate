@@ -10,7 +10,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
-from statistics import median
 from typing import Any, cast
 
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
@@ -31,7 +30,6 @@ from .core.model import (
     PlantSnapshot,
     PumpState,
     RuntimeState,
-    TemperatureAggregation,
     TemperatureObservation,
     ValveState,
     ZoneDecision,
@@ -175,13 +173,10 @@ class HydronicRuntime:
 
     def zone_aggregation(self, zone_id: str) -> AggregationResult | None:
         """Return the structured aggregate for a zone from the last evaluation."""
-        if self.snapshot is None or zone_id not in self.plant.zones:
+        if self.evaluation is None or zone_id not in self.plant.zones:
             return None
-        if self.evaluation is not None:
-            decision = self.evaluation.diagnostics.zone_decisions.get(zone_id)
-            if decision is not None and decision.aggregation is not None:
-                return decision.aggregation
-        return _adapter_aggregation(self.plant.zones[zone_id], self.snapshot, self._now())
+        decision = self.evaluation.diagnostics.zone_decisions.get(zone_id)
+        return decision.aggregation if decision is not None else None
 
     def zone_decision(self, zone_id: str) -> ZoneDecision | None:
         """Return the structured controller decision for one zone, when available."""
@@ -416,71 +411,3 @@ def _zone_preset_mode_update(
         for raw_zone in raw_zones
     ]
     return {**data, "topology": {**topology, "zones": zones}}
-
-
-def _adapter_aggregation(zone: Any, snapshot: PlantSnapshot, now: datetime) -> AggregationResult:
-    """Provide a compatibility aggregate until the structured controller result is present."""
-    usable: list[tuple[Any, float]] = []
-    excluded: list[str] = []
-    blocked: list[str] = []
-    for sensor in zone.sensor_metadata:
-        observation = snapshot.temperatures.get(sensor.entity_id)
-        valid = observation is not None and observation.value is not None
-        if valid:
-            try:
-                age = (now - observation.observed_at).total_seconds()
-                valid = observation.observed_at is not None and age <= sensor.max_age_seconds
-            except AttributeError, TypeError, ValueError:
-                valid = False
-        if valid:
-            value = float(observation.value) + sensor.calibration_offset
-            valid = isfinite(value)
-        if not valid:
-            if sensor.required:
-                blocked.append(sensor.entity_id)
-            else:
-                excluded.append(sensor.entity_id)
-            continue
-        usable.append((sensor, value))
-
-    if blocked or not usable:
-        reason = (
-            "Blocked: required temperature sensor(s) unavailable or stale: " + ", ".join(blocked)
-            if blocked
-            else "Blocked: no usable temperature sensors remain."
-        )
-        return AggregationResult(
-            value=None,
-            usable_sensor_ids=tuple(sensor.entity_id for sensor, _ in usable),
-            excluded_optional_sensor_ids=tuple(excluded),
-            blocking_required_sensor_ids=tuple(blocked),
-            explanation=reason,
-        )
-
-    values = [value for _sensor, value in usable]
-    aggregation = zone.aggregation
-    if aggregation is TemperatureAggregation.DESIGNATED_REFERENCE:
-        value = next((value for sensor, value in usable if sensor.designated_reference), None)
-    elif aggregation is TemperatureAggregation.MEAN:
-        value = sum(values) / len(values)
-    elif aggregation is TemperatureAggregation.MEDIAN:
-        value = float(median(values))
-    elif aggregation is TemperatureAggregation.MINIMUM:
-        value = min(values)
-    elif aggregation is TemperatureAggregation.MAXIMUM:
-        value = max(values)
-    else:
-        weights = [sensor.weight for sensor, _value in usable]
-        value = sum(
-            reading * weight for reading, weight in zip(values, weights, strict=True)
-        ) / sum(weights)
-    return AggregationResult(
-        value=value,
-        usable_sensor_ids=tuple(sensor.entity_id for sensor, _ in usable),
-        excluded_optional_sensor_ids=tuple(excluded),
-        explanation=(
-            "Aggregated temperature from "
-            + ", ".join(sensor.entity_id for sensor, _ in usable)
-            + "."
-        ),
-    )

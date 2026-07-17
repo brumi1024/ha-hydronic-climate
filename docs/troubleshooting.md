@@ -46,26 +46,37 @@ Hydronicus rejects orphaned and inconsistent graphs rather than guessing a relat
 
 ### The Zone is unavailable or demand is off
 
-The current evaluator requires every selected Zone temperature sensor to provide a usable numeric value.
-If one selected sensor is missing, unavailable, unknown, non-numeric, or otherwise unusable, the aggregate value cannot be calculated.
-The Zone then reports a blocked explanation and does not request heat.
+An unavailable, unknown, non-numeric, non-finite, untimestamped, or stale required sensor blocks the Zone immediately.
+The blocked binary sensor turns on, the blocked-reason sensor explains the failure, and the Zone releases demand even during a minimum-active hold.
+An unusable optional sensor is excluded from aggregation and appears in the aggregate-temperature and blocked-state attributes.
+If no usable sensor remains, the Zone blocks even when every configured observation is optional.
 
 Check the sensor state in **Developer tools > States**.
 Use a numeric Celsius value for the simulated sensor.
+Check the observation's configured required status, maximum age, and calibration offset before changing the topology.
 Do not paste private device attributes into a public report.
 
 ### A battery sensor appears stale
 
-Battery readings can remain usable between reports when Home Assistant retains the last valid state.
-The current alpha implementation does not provide the complete stale-sensor policy described in the roadmap.
-Treat a battery sensor with an uncertain or unavailable state as invalid for a safety-sensitive test.
+Hydronicus uses Home Assistant's latest report timestamp and the observation's configured maximum age.
+The runtime schedules reevaluation at the freshness deadline, so a Zone can become blocked without another state-change event.
+Increase the maximum age only when the sensor's real reporting behavior justifies it.
+Do not use a longer software timeout as a substitute for reliable sensing or independent physical protection.
 
 ### Multiple sensors give an unexpected aggregate
 
-Check the selected aggregation policy and the current state of every required sensor.
-Mean and median use all usable readings selected for the Zone.
+Check the selected aggregation policy and the current state of every usable sensor.
+Mean and median use all usable calibrated readings selected for the Zone.
 Minimum and maximum intentionally bias the aggregate toward one extreme.
-The current UI does not expose per-sensor weights.
+Designated reference requires exactly one configured reference observation.
+Weighted mean uses the positive weights configured through detailed sensor editing.
+Inspect the aggregate-temperature sensor attributes to confirm which observations were usable or excluded.
+
+### Demand remains on or off after crossing the threshold
+
+Inspect the Zone explanation for a minimum-active hold or minimum-idle lockout deadline.
+Changing a target or preset reevaluates the Zone immediately but does not bypass a remaining duration.
+A required-sensor failure is the exception: it blocks and releases demand immediately.
 
 ## Warnings, explanations, and virtual states
 
@@ -91,6 +102,12 @@ Inspect the topology preview and the Zone demand entities to identify the remain
 Reload the config entry after changing a subentry.
 Then inspect the topology preview attributes and the Home Assistant log for a reload exception.
 Do not assume that a display name identifies the persisted object relationship.
+
+### A shared-valve warning appears during configuration
+
+The proposed topology is valid, but the named Circuits share a valve that limits independent hydraulic control.
+Review the affected valve, Circuits, and Zones before confirming the non-fatal warning.
+Do not suppress the warning by modeling one physical valve as several independent actuators.
 
 ## Logs and diagnostics
 

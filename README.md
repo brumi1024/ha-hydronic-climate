@@ -25,11 +25,15 @@ The current implementation includes:
 - One Home Assistant config entry per Plant.
 - A first Plant setup flow for one Comfort Zone and one Hydraulic Circuit.
 - Additional Zone, Circuit, and valve Actuator subentries.
-- Multiple temperature sensors with mean, median, minimum, or maximum aggregation.
+- Required and optional temperature sensors with freshness limits and calibration offsets.
+- Mean, median, minimum, maximum, designated-reference, and weighted-mean aggregation.
+- Comfort, eco, and away preset targets.
+- Configurable heating hysteresis plus minimum active and idle durations.
 - Multiple zones per circuit and multiple circuits per zone.
 - Shared valve and pump modeling with active-consumer tracking.
 - Heating demand with hysteresis and virtual valve opening and pump overrun timing.
-- Shadow climate, demand, actuator-request, topology-preview, and explanation entities.
+- Shadow climate, demand, aggregate-temperature, blocked-state, actuator-request, topology-preview, and explanation entities.
+- Structured non-fatal warnings when shared valves limit independent control.
 
 Cooling, humidity and dew-point protection, source coordination, physical actuator execution, Repairs, downloadable diagnostics, and production rollout controls remain milestone work.
 Treat the roadmap as a statement of intent rather than a promise that those features are available in this release.
@@ -139,6 +143,6 @@ See [the staging contract](docs/home-server-staging.md) for synthetic and shadow
 See [the implementation plan](docs/implementation-plan.md) for the roadmap and milestone boundaries.
 
 Documentation in this repository describes the current alpha where it can be verified.
-Public-beta feature accuracy, complete translations, and final release packaging remain pending the stabilization of Milestones 3 through 7.
+Public-beta feature accuracy and final release packaging will continue to be reviewed as Milestones 4 through 7 add active control, safety interlocks, cooling, and source coordination.
 
 Contributions are welcome while the project is taking shape.

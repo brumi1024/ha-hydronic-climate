@@ -407,21 +407,30 @@ def _zone_data(
     user_input: Mapping[str, Any],
     zone_id: str,
     existing_routes: list[Mapping[str, Any]] | None = None,
+    existing_metadata: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Normalize one zone and preserve route UUIDs for retained circuits."""
     circuit_ids = list(user_input[CONF_CIRCUIT_IDS])
     sensor_ids = [str(sensor_id) for sensor_id in user_input[CONF_TEMPERATURE_SENSORS]]
     raw_metadata = user_input.get(CONF_TEMPERATURE_SENSOR_METADATA)
     if raw_metadata is None:
+        metadata_by_entity = {
+            str(sensor_data.get("entity_id")): dict(sensor_data)
+            for sensor_data in existing_metadata or ()
+            if sensor_data.get("entity_id") is not None
+        }
         metadata = [
-            {
-                "entity_id": sensor_id,
-                CONF_REQUIRED: True,
-                CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
-                CONF_CALIBRATION_OFFSET: 0.0,
-                CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
-                CONF_DESIGNATED_REFERENCE: False,
-            }
+            metadata_by_entity.get(
+                sensor_id,
+                {
+                    "entity_id": sensor_id,
+                    CONF_REQUIRED: True,
+                    CONF_WEIGHT: DEFAULT_SENSOR_WEIGHT,
+                    CONF_CALIBRATION_OFFSET: 0.0,
+                    CONF_MAX_AGE: DEFAULT_SENSOR_MAX_AGE,
+                    CONF_DESIGNATED_REFERENCE: False,
+                },
+            )
             for sensor_id in sensor_ids
         ]
     elif isinstance(raw_metadata, Mapping):
@@ -828,6 +837,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 user_input,
                 subentry.data["id"],
                 subentry.data[CONF_ROUTES],
+                subentry.data.get(CONF_TEMPERATURE_SENSOR_METADATA),
             )
             if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
                 self._zone_draft = data

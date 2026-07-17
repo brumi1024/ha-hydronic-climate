@@ -36,17 +36,27 @@ The flow stores the Plant in shadow mode.
 
 Give the Zone a descriptive generic name such as `Simulated zone`.
 Select one or more numeric temperature sensors.
-Every selected sensor is currently required for aggregation.
+Selected sensors are required by default.
+Enable detailed sensor editing to configure each observation as required or optional and set its calibration offset, maximum age, aggregation weight, or designated-reference status.
+An unusable required sensor blocks the Zone immediately.
+An unusable optional sensor is excluded and reported, but the Zone still blocks if no usable observation remains.
 Select one of the available policies:
 
 - **Mean** calculates the arithmetic mean.
 - **Median** selects the middle value after sorting the readings.
 - **Heating-oriented minimum** uses the lowest reading.
 - **Cooling-oriented maximum** is exposed as a topology option, but production cooling is not implemented in this release.
+- **Designated reference** uses the one observation marked as the reference.
+- **Weighted mean** applies the positive weights configured through detailed sensor editing.
+
+Designated-reference and weighted-mean policies become available after completing the detailed sensor editor because they depend on per-sensor metadata.
 
 Set a target temperature.
-The current controller starts heating demand below the target by its start threshold and stops it above the target by its stop threshold.
-The exact default thresholds are implementation details and should not be treated as a safety limit.
+Configure the heating start and stop deltas to define the hysteresis band around that target.
+Minimum active duration holds an already-requested Zone until its deadline unless a required sensor blocks it.
+Minimum idle duration prevents a satisfied Zone from requesting heat again until its deadline.
+Optional comfort, eco, and away target fields expose the corresponding Home Assistant climate presets.
+Changing the target or preset reevaluates demand immediately without bypassing a remaining duration deadline.
 
 ### Add a Hydraulic Circuit
 
@@ -67,8 +77,10 @@ The useful states for a first simulation are:
 
 - The Zone climate entity, which reports the aggregate current temperature and target.
 - The Zone demand binary sensor, which reports the calculated virtual heat demand.
+- The aggregate-temperature sensor, which identifies usable and excluded observations in its attributes.
+- The blocked binary sensor and blocked-reason sensor, which expose fail-closed sensor decisions without parsing prose.
 - The valve requested and pump requested binary sensors, which report virtual requests.
-- The topology preview sensor, which reports object counts and exposes the compiled logic summary as attributes.
+- The topology preview sensor, which reports object counts and exposes compiled logic and structured warnings as separate attributes.
 - The Zone explanation sensor, which reports why demand is requested, idle, or blocked.
 
 Change the synthetic temperature below the target and wait for the configured virtual valve opening time.
@@ -97,6 +109,45 @@ Pumps are selected by Circuits from the pumps already present in the Plant topol
 Every relationship is stored by a generated identifier rather than by a display name.
 Renaming an object should therefore not be used as a substitute for reviewing the resulting topology.
 Always open the topology preview after a reconfiguration.
+
+## Independent and shared equipment examples
+
+Use these object assignments when reviewing the topology produced by the UI.
+The names are logical placeholders and do not imply a particular installation.
+
+### Independent valves and pumps
+
+| Circuit | Zone | Valves | Pump |
+| --- | --- | --- | --- |
+| Circuit A | Zone A | Valve A | Pump A |
+| Circuit B | Zone B | Valve B | Pump B |
+
+Each Circuit has its own valve path and pump.
+Demand from Zone A therefore does not add a consumer to Valve B or Pump B.
+
+### Independent valves with a shared pump
+
+| Circuit | Zone | Valves | Pump |
+| --- | --- | --- | --- |
+| Circuit A | Zone A | Valve A | Pump shared |
+| Circuit B | Zone B | Valve B | Pump shared |
+
+Select the same existing pump for both Circuits while keeping their valve selections distinct.
+The shared pump remains requested until both ready Circuit consumer sets are empty.
+
+### Shared valve and pump
+
+| Circuit | Zone | Valves | Pump |
+| --- | --- | --- | --- |
+| Circuit A | Zone A | Valve shared | Pump shared |
+| Circuit B | Zone B | Valve shared | Pump shared |
+
+Attach the same valve Actuator and pump to both Circuits.
+Hydronicus presents a non-fatal warning because separate climate entities cannot provide independent hydraulic control through the shared valve.
+Confirm that this coupling represents the real plant before accepting the review step.
+
+These examples describe topology configuration, not pump sizing, flow capacity, or physical safety.
+Read [supported topology patterns](topology.md) for the ownership and coupling rules behind them.
 
 ## Configuration checklist
 

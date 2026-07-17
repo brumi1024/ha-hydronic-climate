@@ -17,6 +17,7 @@ from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_SENSOR,
+    CONF_TEMPERATURE_SENSOR_METADATA,
     CONF_TEMPERATURE_SENSORS,
     DOMAIN,
     SUBENTRY_TYPE_ZONE,
@@ -440,6 +441,54 @@ async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) ->
         registry.async_get("sensor.hydronic_plant_office_explanation").unique_id
         == f"{PLANT_ID}_{zone_id}_explanation"
     )
+
+
+async def test_reconfigure_zone_preserves_sensor_metadata(hass) -> None:
+    """The basic reconfigure form must retain detailed metadata for selected sensors."""
+    hass.states.async_set("sensor.living_temperature", "21.5")
+    hass.states.async_set("sensor.office_temperature", "18.0")
+    entry = _plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await _add_zone(hass, entry, circuit_ids=[CIRCUIT_ID])
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    subentry = next(
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_ZONE
+    )
+    metadata = [
+        {
+            "entity_id": "sensor.office_temperature",
+            "required": False,
+            "weight": 2.5,
+            "calibration_offset": -0.4,
+            "max_age_seconds": 900.0,
+            "designated_reference": True,
+        }
+    ]
+    hass.config_entries.async_update_subentry(
+        entry,
+        subentry,
+        data={**subentry.data, CONF_TEMPERATURE_SENSOR_METADATA: metadata},
+    )
+    await hass.async_block_till_done()
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Office renamed",
+            CONF_TARGET_TEMPERATURE: 20.5,
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
+            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+        },
+    )
+    await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry.data[CONF_TEMPERATURE_SENSOR_METADATA] == metadata
 
 
 async def test_reconfigure_zone_preserves_retained_route_enablement(hass) -> None:

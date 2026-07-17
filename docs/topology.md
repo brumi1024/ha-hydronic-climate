@@ -47,7 +47,8 @@ The shared valve remains requested while either Circuit is an active consumer.
 
 This is a physically coupled delivery group when the shared valve controls the common path.
 Separate climate entities can express separate comfort targets, but they cannot create independent flow through a component that is physically common.
-Hydronicus should explain or warn about this limitation as the relevant milestone behavior becomes available.
+Hydronicus emits the non-fatal `shared_valve_limits_independent_control` warning and identifies the affected valve, Circuits, and Zones during configuration review.
+The topology-preview entity exposes the warning separately from its compiled logic summary.
 
 Do not model a shared valve as independent per-zone control unless the real hydraulic installation contains another independently controlled path.
 
