@@ -9,6 +9,7 @@ from math import fsum, isfinite
 from statistics import median
 
 from .model import (
+    ActuatorAction,
     ActuatorCommand,
     AggregationResult,
     CompiledPlant,
@@ -16,6 +17,7 @@ from .model import (
     ControlPlan,
     DeliveryRoute,
     Evaluation,
+    PlantMode,
     PlantSnapshot,
     PumpRuntime,
     PumpState,
@@ -380,7 +382,11 @@ def evaluate(
             if previous.state is ValveState.CLOSED:
                 current = ValveRuntime(ValveState.OPENING, now)
                 commands.append(
-                    ActuatorCommand(valve.id, "open", "A requesting circuit needs this valve.")
+                    ActuatorCommand(
+                        valve.id,
+                        ActuatorAction.OPEN,
+                        "A requesting circuit needs this valve.",
+                    )
                 )
                 actuator_reasons[valve.id] = "Opening for active circuit consumers."
             elif previous.state is ValveState.OPENING and _elapsed(
@@ -416,7 +422,11 @@ def evaluate(
             if previous.state is not PumpState.RUNNING:
                 current = PumpRuntime(PumpState.RUNNING, now)
                 commands.append(
-                    ActuatorCommand(pump.id, "turn_on", "A ready circuit needs this pump.")
+                    ActuatorCommand(
+                        pump.id,
+                        ActuatorAction.TURN_ON,
+                        "A ready circuit needs this pump.",
+                    )
                 )
             else:
                 current = previous
@@ -431,7 +441,13 @@ def evaluate(
             actuator_reasons[pump.id] = "Overrun is still protecting the hydraulic circuit."
         elif previous.state is PumpState.OVERRUN:
             current = PumpRuntime(PumpState.OFF, now)
-            commands.append(ActuatorCommand(pump.id, "turn_off", "Pump overrun has completed."))
+            commands.append(
+                ActuatorCommand(
+                    pump.id,
+                    ActuatorAction.TURN_OFF,
+                    "Pump overrun has completed.",
+                )
+            )
             actuator_reasons[pump.id] = "Idle because no ready circuit requires this pump."
         else:
             current = previous
@@ -452,7 +468,7 @@ def evaluate(
             commands.append(
                 ActuatorCommand(
                     valve_id,
-                    "close",
+                    ActuatorAction.CLOSE,
                     "No active consumer remains after pump overrun.",
                 )
             )
@@ -478,6 +494,7 @@ def evaluate(
             zone_runtime=zone_runtime,
             valves=valves,
             pumps=pumps,
+            plant_mode=PlantMode.HEATING if any(zone_demands.values()) else PlantMode.IDLE,
         ),
         control_plan=ControlPlan(
             commands=tuple(commands),
@@ -485,6 +502,7 @@ def evaluate(
                 key: frozenset(value) for key, value in sorted(valve_consumers.items())
             },
             pump_consumers={key: frozenset(value) for key, value in sorted(pump_consumers.items())},
+            plant_mode=PlantMode.HEATING if any(zone_demands.values()) else PlantMode.IDLE,
         ),
         diagnostics=ControllerDiagnostics(
             zone_reasons=zone_reasons,
