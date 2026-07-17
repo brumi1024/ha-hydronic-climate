@@ -55,6 +55,8 @@ from .const import (
     CONF_WEIGHT,
     CONF_ZONE_IDS,
     CONF_ZONES,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
     DEFAULT_HEATING_START_DELTA,
     DEFAULT_HEATING_STOP_DELTA,
     DEFAULT_MINIMUM_ACTIVE_DURATION,
@@ -1079,7 +1081,8 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
 class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle creation of a hydronic plant config entry."""
 
-    VERSION = 1
+    VERSION = CONFIG_ENTRY_VERSION
+    MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
     _draft: dict[str, Any]
     _zone_draft: dict[str, Any]

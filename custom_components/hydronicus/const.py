@@ -4,6 +4,8 @@ from typing import Final
 
 DOMAIN: Final = "hydronicus"
 PLATFORMS: Final = ("binary_sensor", "climate", "sensor")
+CONFIG_ENTRY_VERSION: Final = 2
+CONFIG_ENTRY_MINOR_VERSION: Final = 1
 CONF_NAME: Final = "name"
 CONF_ACTUATOR_KIND: Final = "actuator_kind"
 CONF_PLANT_ID: Final = "plant_id"
