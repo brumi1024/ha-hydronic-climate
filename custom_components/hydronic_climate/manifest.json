@@ -1,10 +1,10 @@
 {
   "domain": "hydronic_climate",
   "name": "Hydronic Climate",
-  "codeowners": ["@benjaminteke"],
+  "codeowners": ["@brumi1024"],
   "config_flow": true,
-  "documentation": "https://github.com/benjaminteke/ha-hydronic-climate",
-  "issue_tracker": "https://github.com/benjaminteke/ha-hydronic-climate/issues",
+  "documentation": "https://github.com/brumi1024/ha-hydronic-climate",
+  "issue_tracker": "https://github.com/brumi1024/ha-hydronic-climate/issues",
   "version": "0.1.0-alpha.1",
   "iot_class": "local_push",
   "integration_type": "hub"
