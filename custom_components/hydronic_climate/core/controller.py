@@ -78,7 +78,6 @@ def aggregate_zone_temperature(zone: Zone, snapshot: PlantSnapshot) -> float | N
         return sum(
             reading * weight for reading, weight in zip(readings, weights, strict=True)
         ) / sum(weights)
-    return None
 
 
 def mean_zone_temperature(
