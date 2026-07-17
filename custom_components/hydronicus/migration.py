@@ -52,6 +52,11 @@ def _migrate_v1_to_v2(data: Mapping[str, Any]) -> StoredEntryData:
 
 
 MIGRATION_DISPATCH: dict[ConfigEntryVersion, MigrationStep] = {
+    (1, 0): MigrationStep(
+        source=(1, 0),
+        target=CURRENT_CONFIG_ENTRY_VERSION,
+        migrate=_migrate_v1_to_v2,
+    ),
     (1, 1): MigrationStep(
         source=(1, 1),
         target=CURRENT_CONFIG_ENTRY_VERSION,

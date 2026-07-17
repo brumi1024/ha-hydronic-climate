@@ -44,24 +44,36 @@ def test_migration_dispatch_is_versioned_and_deterministic() -> None:
     fixture_entry = _fixture_entry()
     source_data = deepcopy(fixture_entry["data"])
 
-    first = migrate_entry_data(
-        source_data,
-        version=fixture_entry["version"],
-        minor_version=fixture_entry["minor_version"],
-    )
-    second = migrate_entry_data(
-        source_data,
-        version=fixture_entry["version"],
-        minor_version=fixture_entry["minor_version"],
-    )
+    first_by_source = {
+        minor_version: migrate_entry_data(
+            source_data,
+            version=fixture_entry["version"],
+            minor_version=minor_version,
+        )
+        for minor_version in (0, 1)
+    }
+    second_by_source = {
+        minor_version: migrate_entry_data(
+            source_data,
+            version=fixture_entry["version"],
+            minor_version=minor_version,
+        )
+        for minor_version in (0, 1)
+    }
 
     assert CURRENT_CONFIG_ENTRY_VERSION == (CONFIG_ENTRY_VERSION, CONFIG_ENTRY_MINOR_VERSION)
     assert (HydronicClimateConfigFlow.VERSION, HydronicClimateConfigFlow.MINOR_VERSION) == (
         CONFIG_ENTRY_VERSION,
         CONFIG_ENTRY_MINOR_VERSION,
     )
+    assert {
+        (1, 0),
+        (1, 1),
+    }.issubset(MIGRATION_DISPATCH)
+    assert MIGRATION_DISPATCH[(1, 0)].target == CURRENT_CONFIG_ENTRY_VERSION
     assert MIGRATION_DISPATCH[(1, 1)].target == CURRENT_CONFIG_ENTRY_VERSION
-    assert first == second == source_data
+    assert first_by_source == second_by_source
+    assert first_by_source[0] == first_by_source[1] == source_data
 
 
 def test_invalid_migration_does_not_mutate_source_data() -> None:
@@ -71,7 +83,7 @@ def test_invalid_migration_does_not_mutate_source_data() -> None:
     original_data = deepcopy(invalid_data)
 
     with pytest.raises(ConfigEntryMigrationError):
-        migrate_entry_data(invalid_data, version=1, minor_version=1)
+        migrate_entry_data(invalid_data, version=1, minor_version=0)
 
     assert invalid_data == original_data
 
@@ -130,7 +142,7 @@ async def test_invalid_historical_topology_does_not_update_entry(hass) -> None:
 
     assert await async_migrate_entry(hass, entry) is False
     assert dict(entry.data) == original_data
-    assert (entry.version, entry.minor_version) == (1, 1)
+    assert (entry.version, entry.minor_version) == (1, 0)
 
 
 def test_historical_fixture_uses_only_synthetic_entity_ids() -> None:
