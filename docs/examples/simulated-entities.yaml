@@ -1,0 +1,50 @@
+# Disposable entities for a Hydronicus shadow-mode test.
+# Do not use these entities as a substitute for physical safety controls.
+
+input_number:
+  hydronicus_simulated_zone_temperature:
+    name: Hydronicus simulated zone temperature
+    min: 5
+    max: 35
+    step: 0.5
+    initial: 18
+    mode: slider
+
+input_boolean:
+  hydronicus_simulated_zone_valve:
+    name: Hydronicus simulated zone valve
+  hydronicus_simulated_zone_pump:
+    name: Hydronicus simulated zone pump
+
+template:
+  - sensor:
+      - name: Hydronicus simulated zone temperature
+        unique_id: hydronicus_simulated_zone_temperature
+        device_class: temperature
+        unit_of_measurement: "°C"
+        state: "{{ states('input_number.hydronicus_simulated_zone_temperature') }}"
+
+  - switch:
+      - name: Hydronicus simulated zone valve
+        unique_id: hydronicus_simulated_zone_valve
+        state: "{{ is_state('input_boolean.hydronicus_simulated_zone_valve', 'on') }}"
+        turn_on:
+          action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.hydronicus_simulated_zone_valve
+        turn_off:
+          action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.hydronicus_simulated_zone_valve
+
+      - name: Hydronicus simulated zone pump
+        unique_id: hydronicus_simulated_zone_pump
+        state: "{{ is_state('input_boolean.hydronicus_simulated_zone_pump', 'on') }}"
+        turn_on:
+          action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.hydronicus_simulated_zone_pump
+        turn_off:
+          action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.hydronicus_simulated_zone_pump
