@@ -1,4 +1,4 @@
-# Hydronic Climate domain glossary
+# Hydronicus domain glossary
 
 ## Delivery Route
 

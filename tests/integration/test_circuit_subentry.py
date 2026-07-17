@@ -9,7 +9,7 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronic_climate.const import (
+from custom_components.hydronicus.const import (
     CONF_NAME,
     CONF_PUMP_ID,
     CONF_VALVE_IDS,

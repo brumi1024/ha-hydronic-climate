@@ -1,10 +1,10 @@
-# Hydronic Climate implementation plan
+# Hydronicus implementation plan
 
 Status: Draft
 
 ## Purpose
 
-Hydronic Climate is a standalone Home Assistant custom integration for dynamically configured hydronic heating and cooling plants.
+Hydronicus is a standalone Home Assistant custom integration for dynamically configured hydronic heating and cooling plants.
 It exposes climate controls for comfort zones while safely coordinating shared hydraulic circuits, valves, pumps, heat sources, and safety interlocks.
 The integration is generic and must not contain entity IDs, topology, names, or assumptions belonging to any particular home.
 
@@ -58,7 +58,7 @@ Version 1 does not include:
 - Arbitrary templates or unrestricted Boolean expressions.
 - An internal scheduling system.
 
-Home Assistant automations, schedules, and dashboards may change climate targets without Hydronic Climate owning scheduling policy.
+Home Assistant automations, schedules, and dashboards may change climate targets without Hydronicus owning scheduling policy.
 
 ## Domain model
 
@@ -472,9 +472,9 @@ Detailed actuator diagnostics are disabled by default to reduce Recorder load an
 ## Repository structure
 
 ```text
-ha-hydronic-climate/
+ha-hydronicus/
 ├── custom_components/
-│   └── hydronic_climate/
+│   └── hydronicus/
 │       ├── __init__.py
 │       ├── manifest.json
 │       ├── const.py
@@ -830,7 +830,7 @@ Cooling and source switching each repeat the staged rollout independently.
 - Use semantic versioning.
 - Publish GitHub Releases rather than tags alone.
 - Run HACS validation and Hassfest on pushes, pull requests, and scheduled checks.
-- Keep the integration under one `custom_components/hydronic_climate` directory.
+- Keep the integration under one `custom_components/hydronicus` directory.
 - Keep all runtime files inside the integration directory.
 - Include root-level `hacs.json`.
 - Include `domain`, `documentation`, `issue_tracker`, `codeowners`, `name`, and `version` in `manifest.json`.
@@ -840,8 +840,8 @@ Cooling and source switching each repeat the staged rollout independently.
 
 ## Initial architectural decisions
 
-- Repository name: `ha-hydronic-climate`.
-- Integration domain: `hydronic_climate`.
+- Repository name: `ha-hydronicus`.
+- Integration domain: `hydronicus`.
 - License: MIT.
 - Implementation language: Python.
 - Runtime style: asynchronous.

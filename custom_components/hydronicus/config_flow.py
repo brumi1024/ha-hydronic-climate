@@ -1,4 +1,4 @@
-"""Config flow for Hydronic Climate."""
+"""Config flow for Hydronicus."""
 
 from __future__ import annotations
 

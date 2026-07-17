@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from hydronic_climate_core.controller import evaluate
-from hydronic_climate_core.model import (
+from hydronicus_core.controller import evaluate
+from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
@@ -18,7 +18,7 @@ from hydronic_climate_core.model import (
     ValveState,
     Zone,
 )
-from hydronic_climate_core.topology import compile_topology
+from hydronicus_core.topology import compile_topology
 from hypothesis import given
 from hypothesis import strategies as st
 

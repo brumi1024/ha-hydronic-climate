@@ -9,7 +9,7 @@ Use a separate Home Assistant instance or a separate disposable configuration di
 ## Required shape
 
 - Run the same Home Assistant release declared in `hacs.json` or the compatibility version currently under test.
-- Mount or synchronize this checkout into `config/custom_components/hydronic_climate`.
+- Mount or synchronize this checkout into `config/custom_components/hydronicus`.
 - Use synthetic temperature sensors and input booleans for the first validation stage.
 - Use shadow mode when observing real sensors or equipment.
 - Keep credentials, server addresses, tokens, and site-specific paths outside the repository.

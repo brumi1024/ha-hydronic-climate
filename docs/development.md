@@ -36,7 +36,7 @@ Home Assistant setup, subentry, entity, reload, and adapter behavior belongs und
 Multi-step behavior with a fake clock belongs under `tests/scenarios/` and should use the reusable scenario harness.
 Safety invariants that must hold across many topology shapes or timings belong in property-based tests.
 
-The current coverage threshold applies only to `custom_components/hydronic_climate/core`.
+The current coverage threshold applies only to `custom_components/hydronicus/core`.
 This keeps the safety-critical deterministic package measurable without obscuring incomplete adapter milestones behind a repository-wide percentage.
 
 ## Dependency changes

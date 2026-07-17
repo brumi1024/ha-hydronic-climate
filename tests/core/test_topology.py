@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from hydronic_climate_core.model import (
+from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
@@ -13,7 +13,7 @@ from hydronic_climate_core.model import (
     Valve,
     Zone,
 )
-from hydronic_climate_core.topology import TopologyValidationError, compile_topology
+from hydronicus_core.topology import TopologyValidationError, compile_topology
 
 
 def test_compile_topology_produces_summary() -> None:

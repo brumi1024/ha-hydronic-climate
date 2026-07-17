@@ -6,8 +6,8 @@ import math
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hydronic_climate_core.controller import aggregate_zone_temperature, evaluate
-from hydronic_climate_core.model import (
+from hydronicus_core.controller import aggregate_zone_temperature, evaluate
+from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
@@ -21,7 +21,7 @@ from hydronic_climate_core.model import (
     ValveState,
     Zone,
 )
-from hydronic_climate_core.topology import compile_topology
+from hydronicus_core.topology import compile_topology
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 

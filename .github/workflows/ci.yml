@@ -20,4 +20,4 @@ jobs:
       - name: Check Python syntax
         run: uv run python -m compileall custom_components tests
       - name: Check JSON files
-        run: uv run python -m json.tool custom_components/hydronic_climate/manifest.json >/dev/null
+        run: uv run python -m json.tool custom_components/hydronicus/manifest.json >/dev/null

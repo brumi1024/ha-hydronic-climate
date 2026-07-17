@@ -12,7 +12,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronic_climate.const import (
+from custom_components.hydronicus.const import (
     CONF_CIRCUIT_IDS,
     CONF_NAME,
     CONF_TARGET_TEMPERATURE,

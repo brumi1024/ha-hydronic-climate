@@ -1,1 +1,1 @@
-"""Core tests for Hydronic Climate."""
+"""Core tests for Hydronicus."""

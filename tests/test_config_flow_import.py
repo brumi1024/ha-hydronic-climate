@@ -9,7 +9,7 @@ from pathlib import Path
 def test_selector_is_imported_from_homeassistant_helpers() -> None:
     """The config flow must use Home Assistant's public selector module."""
     config_flow_path = (
-        Path(__file__).parents[1] / "custom_components" / "hydronic_climate" / "config_flow.py"
+        Path(__file__).parents[1] / "custom_components" / "hydronicus" / "config_flow.py"
     )
     tree = ast.parse(config_flow_path.read_text())
     imports = {

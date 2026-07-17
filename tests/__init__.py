@@ -1,1 +1,1 @@
-"""Test package for Hydronic Climate."""
+"""Test package for Hydronicus."""

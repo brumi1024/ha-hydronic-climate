@@ -1,9 +1,9 @@
 ---
-name: hydronic-climate-verify
-description: Verify Hydronic Climate implementation chunks against docs/implementation-plan.md, safety invariants, Home Assistant adapter behavior, and named operating scenarios. Use when implementing, reviewing, or declaring a milestone chunk complete in this repository.
+name: hydronicus-verify
+description: Verify Hydronicus implementation chunks against docs/implementation-plan.md, safety invariants, Home Assistant adapter behavior, and named operating scenarios. Use when implementing, reviewing, or declaring a milestone chunk complete in this repository.
 ---
 
-# Hydronic Climate Verify
+# Hydronicus Verify
 
 Treat repository commands as the source of truth and produce explicit evidence for the selected implementation-plan acceptance criteria.
 

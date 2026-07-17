@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from hydronic_climate_core.configuration import (
+from hydronicus_core.configuration import (
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
-from hydronic_climate_core.model import TemperatureAggregation
+from hydronicus_core.model import TemperatureAggregation
 
 
 def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:

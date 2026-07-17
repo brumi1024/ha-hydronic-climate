@@ -1,4 +1,4 @@
-"""Hydronic Climate integration setup."""
+"""Hydronicus integration setup."""
 
 from __future__ import annotations
 

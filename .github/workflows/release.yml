@@ -11,4 +11,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Package release metadata
-        run: echo "Hydronic Climate release workflow placeholder"
+        run: echo "Hydronicus release workflow placeholder"

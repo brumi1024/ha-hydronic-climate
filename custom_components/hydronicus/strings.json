@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Create a Hydronic Climate plant",
+        "title": "Create a Hydronicus plant",
         "description": "New plants begin in shadow mode and do not control equipment.",
         "data": {
           "name": "Plant name"
@@ -31,7 +31,7 @@
       },
       "review": {
         "title": "Review shadow topology",
-        "description": "Zone {zone} will request circuit {circuit}. Hydronic Climate remains in shadow mode.\n\nCompiled topology:\n{logic}"
+        "description": "Zone {zone} will request circuit {circuit}. Hydronicus remains in shadow mode.\n\nCompiled topology:\n{logic}"
       }
     },
     "error": {

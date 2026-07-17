@@ -1,10 +1,10 @@
-"""Tests for config flow setup of Hydronic Climate."""
+"""Tests for config flow setup of Hydronicus."""
 
 from __future__ import annotations
 
 from homeassistant.data_entry_flow import FlowResultType
 
-from custom_components.hydronic_climate.const import (
+from custom_components.hydronicus.const import (
     CONF_PUMP_ENTITY,
     CONF_PUMP_OVERRUN,
     CONF_TARGET_TEMPERATURE,

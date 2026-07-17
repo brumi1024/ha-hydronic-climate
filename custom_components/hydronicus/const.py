@@ -1,8 +1,8 @@
-"""Constants for Hydronic Climate."""
+"""Constants for Hydronicus."""
 
 from typing import Final
 
-DOMAIN: Final = "hydronic_climate"
+DOMAIN: Final = "hydronicus"
 PLATFORMS: Final = ("binary_sensor", "climate", "sensor")
 CONF_NAME: Final = "name"
 CONF_ACTUATOR_KIND: Final = "actuator_kind"

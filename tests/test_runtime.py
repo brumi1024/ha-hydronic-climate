@@ -59,9 +59,9 @@ sys.modules.setdefault("homeassistant.core", homeassistant_core)
 sys.modules.setdefault("homeassistant.helpers", homeassistant_helpers)
 sys.modules.setdefault("homeassistant.helpers.event", homeassistant_helpers_event)
 
-CONF_SHADOW_MODE = import_module("custom_components.hydronic_climate.const").CONF_SHADOW_MODE
-CONF_PLANT_ID = import_module("custom_components.hydronic_climate.const").CONF_PLANT_ID
-runtime_module = import_module("custom_components.hydronic_climate.runtime")
+CONF_SHADOW_MODE = import_module("custom_components.hydronicus.const").CONF_SHADOW_MODE
+CONF_PLANT_ID = import_module("custom_components.hydronicus.const").CONF_PLANT_ID
+runtime_module = import_module("custom_components.hydronicus.runtime")
 HydronicRuntime = runtime_module.HydronicRuntime
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)

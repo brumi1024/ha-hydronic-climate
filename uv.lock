@@ -981,7 +981,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ha-hydronic-climate"
+name = "ha-hydronicus"
 version = "0.1.0a1"
 source = { virtual = "." }
 

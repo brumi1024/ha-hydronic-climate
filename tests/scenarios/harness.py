@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from hydronic_climate_core.controller import evaluate
-from hydronic_climate_core.model import (
+from hydronicus_core.controller import evaluate
+from hydronicus_core.model import (
     PlantSnapshot,
     PumpState,
     RuntimeState,
@@ -18,7 +18,7 @@ from hydronic_climate_core.model import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from hydronic_climate_core.model import CompiledPlant
+    from hydronicus_core.model import CompiledPlant
 
 
 @dataclass(frozen=True, slots=True)
