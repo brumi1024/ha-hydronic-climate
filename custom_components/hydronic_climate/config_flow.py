@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from .const import (
     CONF_OVERRUN,
     CONF_PLANT_ID,
     CONF_PUMP_ENTITY,
+    CONF_PUMP_ID,
     CONF_PUMP_OVERRUN,
     CONF_PUMPS,
     CONF_ROUTES,
@@ -33,6 +35,7 @@ from .const import (
     CONF_VALVE_IDS,
     CONF_VALVE_OPENING_TIME,
     CONF_VALVES,
+    CONF_ZONE_IDS,
     CONF_ZONES,
     DEFAULT_PLANT_NAME,
     DEFAULT_PUMP_OVERRUN,
@@ -40,10 +43,209 @@ from .const import (
     DEFAULT_VALVE_OPENING_TIME,
     DOMAIN,
     SUBENTRY_TYPE_ACTUATOR,
+    SUBENTRY_TYPE_CIRCUIT,
 )
 from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
 from .core.topology import TopologyValidationError, compile_topology
 from .entry_configuration import effective_plant_configuration
+
+
+@dataclass(frozen=True, slots=True)
+class CircuitOptions:
+    """Parent-owned topology choices available to a circuit flow."""
+
+    zones: list[selector.SelectOptionDict]
+    valves: list[selector.SelectOptionDict]
+    pumps: list[selector.SelectOptionDict]
+
+
+def _circuit_data(
+    user_input: Mapping[str, Any],
+    circuit_id: str,
+    existing_routes: list[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Normalize one circuit and preserve route UUIDs for retained zones."""
+    route_ids = {
+        str(route["zone_id"]): str(route["id"])
+        for route in existing_routes or []
+    }
+    zone_ids = list(user_input[CONF_ZONE_IDS])
+    return {
+        "id": circuit_id,
+        CONF_NAME: str(user_input[CONF_NAME]).strip(),
+        CONF_ZONE_IDS: zone_ids,
+        CONF_VALVE_IDS: list(user_input[CONF_VALVE_IDS]),
+        CONF_PUMP_ID: user_input[CONF_PUMP_ID],
+        CONF_ROUTES: [
+            {
+                "id": route_ids.get(zone_id, str(uuid4())),
+                "zone_id": zone_id,
+            }
+            for zone_id in zone_ids
+        ],
+    }
+
+
+def _topology_select(
+    options: list[selector.SelectOptionDict],
+    *,
+    multiple: bool,
+) -> selector.SelectSelector:
+    """Build a UUID-backed topology object selector."""
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(options=options, multiple=multiple)
+    )
+
+
+def _circuit_schema(
+    options: CircuitOptions,
+    *,
+    defaults: Mapping[str, Any] | None = None,
+) -> vol.Schema:
+    """Build the shared circuit form schema."""
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)
+            ): str,
+            vol.Required(
+                CONF_ZONE_IDS, default=defaults.get(CONF_ZONE_IDS, vol.UNDEFINED)
+            ): _topology_select(options.zones, multiple=True),
+            vol.Required(
+                CONF_VALVE_IDS, default=defaults.get(CONF_VALVE_IDS, vol.UNDEFINED)
+            ): _topology_select(options.valves, multiple=True),
+            vol.Required(
+                CONF_PUMP_ID, default=defaults.get(CONF_PUMP_ID, vol.UNDEFINED)
+            ): _topology_select(options.pumps, multiple=False),
+        }
+    )
+
+
+def _effective_topology_is_valid(
+    entry: config_entries.ConfigEntry,
+    *,
+    proposed_actuators: Sequence[Mapping[str, Any]] = (),
+    proposed_circuits: Sequence[Mapping[str, Any]] = (),
+    excluded_subentry_id: str | None = None,
+) -> bool:
+    """Compile a complete proposed topology without mutating the config entry."""
+    try:
+        effective = effective_plant_configuration(
+            entry,
+            proposed_actuators=proposed_actuators,
+            proposed_circuits=proposed_circuits,
+            excluded_subentry_id=excluded_subentry_id,
+        )
+        compile_topology(effective.configuration)
+    except (StoredTopologyError, TopologyValidationError):
+        return False
+    return True
+
+
+def _circuit_validation_error(
+    entry: config_entries.ConfigEntry,
+    data: Mapping[str, Any],
+    *,
+    excluded_subentry_id: str | None = None,
+) -> str | None:
+    """Return a flow error after validating a proposed circuit atomically."""
+    if not data[CONF_NAME]:
+        return "name_required"
+    if not _effective_topology_is_valid(
+        entry,
+        proposed_circuits=(data,),
+        excluded_subentry_id=excluded_subentry_id,
+    ):
+        return "invalid_circuit"
+    return None
+
+
+class CircuitSubentryFlowHandler(config_entries.ConfigSubentryFlow):
+    """Add a circuit and its delivery routes to existing plant objects."""
+
+    def _options(self) -> CircuitOptions:
+        """Return parent-owned dependencies with deletion-safe lifecycles."""
+        configuration = plant_configuration_from_entry_data(self._get_entry().data)
+        return CircuitOptions(
+            zones=[
+                selector.SelectOptionDict(value=zone.id, label=zone.name)
+                for zone in configuration.zones
+            ],
+            valves=[
+                selector.SelectOptionDict(value=valve.id, label=valve.name)
+                for valve in configuration.valves
+            ],
+            pumps=[
+                selector.SelectOptionDict(value=pump.id, label=pump.name)
+                for pump in configuration.pumps
+            ],
+        )
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Create one circuit serving one or more existing zones."""
+        entry = self._get_entry()
+        options = self._options()
+        if not options.zones or not options.valves or not options.pumps:
+            return self.async_abort(reason="incomplete_plant")
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            circuit_id = str(uuid4())
+            data = _circuit_data(user_input, circuit_id)
+            if error := _circuit_validation_error(entry, data):
+                errors["base"] = error
+            else:
+                return self.async_create_entry(
+                    title=data[CONF_NAME],
+                    data=data,
+                    unique_id=circuit_id,
+                )
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_circuit_schema(options),
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Update a circuit without changing retained circuit or route UUIDs."""
+        entry = self._get_entry()
+        subentry = self._get_reconfigure_subentry()
+        options = self._options()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = _circuit_data(
+                user_input,
+                subentry.data["id"],
+                subentry.data[CONF_ROUTES],
+            )
+            if error := _circuit_validation_error(
+                entry,
+                data,
+                excluded_subentry_id=subentry.subentry_id,
+            ):
+                errors["base"] = error
+            else:
+                return self.async_update_and_abort(
+                    entry,
+                    subentry,
+                    title=data[CONF_NAME],
+                    data=data,
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_circuit_schema(
+                options,
+                defaults=subentry.data,
+            ),
+            errors=errors,
+        )
 
 
 def _valve_actuator_data(
@@ -102,14 +304,11 @@ def _actuator_validation_error(
     """Return a flow error after validating the complete proposed topology."""
     if not data[CONF_NAME]:
         return "name_required"
-    try:
-        effective = effective_plant_configuration(
-            entry,
-            proposed_actuators=(data,),
-            excluded_subentry_id=excluded_subentry_id,
-        )
-        compile_topology(effective.configuration)
-    except (StoredTopologyError, TopologyValidationError):
+    if not _effective_topology_is_valid(
+        entry,
+        proposed_actuators=(data,),
+        excluded_subentry_id=excluded_subentry_id,
+    ):
         return "invalid_actuator"
     return None
 
@@ -197,7 +396,10 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         cls, config_entry: config_entries.ConfigEntry
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
         """Return dynamic object types supported by this plant."""
-        return {SUBENTRY_TYPE_ACTUATOR: ActuatorSubentryFlowHandler}
+        return {
+            SUBENTRY_TYPE_ACTUATOR: ActuatorSubentryFlowHandler,
+            SUBENTRY_TYPE_CIRCUIT: CircuitSubentryFlowHandler,
+        }
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

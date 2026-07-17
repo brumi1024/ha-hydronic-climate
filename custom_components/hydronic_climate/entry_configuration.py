@@ -14,15 +14,20 @@ from .const import (
     CONF_ENTITY_ID,
     CONF_NAME,
     CONF_OPENING_TIME,
+    CONF_PUMP_ID,
+    CONF_ROUTES,
+    CONF_VALVE_IDS,
+    CONF_ZONE_IDS,
     SUBENTRY_TYPE_ACTUATOR,
+    SUBENTRY_TYPE_CIRCUIT,
 )
 from .core.configuration import StoredTopologyError, plant_configuration_from_entry_data
-from .core.model import PlantConfiguration, Valve
+from .core.model import Circuit, DeliveryRoute, PlantConfiguration, Valve
 
 
 @dataclass(frozen=True, slots=True)
 class EffectivePlantConfiguration:
-    """A fully composed plant and its Home Assistant subentry ownership map."""
+    """A fully composed plant and its entity-owning actuator subentries."""
 
     configuration: PlantConfiguration
     actuator_subentry_ids: Mapping[str, str]
@@ -32,9 +37,7 @@ def _required(data: Mapping[str, Any], key: str) -> Any:
     try:
         return data[key]
     except KeyError as error:
-        raise StoredTopologyError(
-            f"Actuator subentry is missing required field {key!r}."
-        ) from error
+        raise StoredTopologyError(f"Subentry is missing required field {key!r}.") from error
 
 
 def _uuid(data: Mapping[str, Any], key: str) -> str:
@@ -42,9 +45,7 @@ def _uuid(data: Mapping[str, Any], key: str) -> str:
     try:
         return str(UUID(value))
     except ValueError as error:
-        raise StoredTopologyError(
-            f"Actuator subentry field {key!r} must be a UUID."
-        ) from error
+        raise StoredTopologyError(f"Subentry field {key!r} must be a UUID.") from error
 
 
 def _circuit_ids(data: Mapping[str, Any]) -> tuple[str, ...]:
@@ -59,26 +60,110 @@ def _circuit_ids(data: Mapping[str, Any]) -> tuple[str, ...]:
         ) from error
 
 
+def _uuid_list(data: Mapping[str, Any], key: str, owner: str) -> tuple[str, ...]:
+    value = _required(data, key)
+    if not isinstance(value, list) or not value:
+        raise StoredTopologyError(f"{owner} requires at least one {key} value.")
+    try:
+        result = tuple(str(UUID(str(item))) for item in value)
+    except ValueError as error:
+        raise StoredTopologyError(f"{owner} field {key!r} must contain UUIDs.") from error
+    if len(result) != len(set(result)):
+        raise StoredTopologyError(f"{owner} field {key!r} must not contain duplicates.")
+    return result
+
+
+def _circuit_routes(
+    data: Mapping[str, Any], circuit_id: str, zone_ids: tuple[str, ...]
+) -> tuple[DeliveryRoute, ...]:
+    raw_routes = _required(data, CONF_ROUTES)
+    if not isinstance(raw_routes, list):
+        raise StoredTopologyError("Circuit subentry routes must be a list.")
+    routes: list[DeliveryRoute] = []
+    for raw_route in raw_routes:
+        if not isinstance(raw_route, Mapping):
+            raise StoredTopologyError("Circuit subentry routes must be objects.")
+        routes.append(
+            DeliveryRoute(
+                id=_uuid(raw_route, "id"),
+                zone_id=_uuid(raw_route, "zone_id"),
+                circuit_id=circuit_id,
+            )
+        )
+    if len(routes) != len(zone_ids) or {route.zone_id for route in routes} != set(zone_ids):
+        raise StoredTopologyError(
+            "Circuit subentry routes must match its selected zone ids."
+        )
+    return tuple(routes)
+
+
 def effective_plant_configuration(
     entry: Any,
     *,
     proposed_actuators: Sequence[Mapping[str, Any]] = (),
+    proposed_circuits: Sequence[Mapping[str, Any]] = (),
     excluded_subentry_id: str | None = None,
 ) -> EffectivePlantConfiguration:
-    """Build an atomic effective topology from embedded data and actuator subentries."""
+    """Build one atomic topology from embedded data and dynamic subentries."""
     base = plant_configuration_from_entry_data(entry.data)
     actuator_records: list[tuple[str | None, Mapping[str, Any]]] = []
+    circuit_records: list[tuple[str | None, Mapping[str, Any]]] = []
     for subentry in getattr(entry, "subentries", {}).values():
         if (
             subentry.subentry_type == SUBENTRY_TYPE_ACTUATOR
             and subentry.subentry_id != excluded_subentry_id
         ):
             actuator_records.append((subentry.subentry_id, subentry.data))
+        elif (
+            subentry.subentry_type == SUBENTRY_TYPE_CIRCUIT
+            and subentry.subentry_id != excluded_subentry_id
+        ):
+            circuit_records.append((subentry.subentry_id, subentry.data))
     actuator_records.extend((None, data) for data in proposed_actuators)
+    circuit_records.extend((None, data) for data in proposed_circuits)
 
     valves = list(base.valves)
     circuits = list(base.circuits)
-    known_circuit_ids = {circuit.id for circuit in circuits}
+    routes = list(base.routes)
+    parent_circuit_ids = {circuit.id for circuit in circuits}
+    parent_zone_ids = {zone.id for zone in base.zones}
+    parent_valve_ids = {valve.id for valve in base.valves}
+    parent_pump_ids = {pump.id for pump in base.pumps}
+    # Keep this tracer deletion-safe by referencing only parent-owned objects.
+    # Cross-subentry dependencies need an explicit cascade or repair policy first.
+    for _subentry_id, data in circuit_records:
+        circuit_id = _uuid(data, "id")
+        zone_ids = _uuid_list(data, CONF_ZONE_IDS, "Circuit subentry")
+        valve_ids = _uuid_list(data, CONF_VALVE_IDS, "Circuit subentry")
+        pump_id = _uuid(data, CONF_PUMP_ID)
+        unknown_zone_ids = sorted(set(zone_ids) - parent_zone_ids)
+        unknown_valve_ids = sorted(set(valve_ids) - parent_valve_ids)
+        if unknown_zone_ids:
+            raise StoredTopologyError(
+                "Circuit subentry references unknown zones: "
+                + ", ".join(unknown_zone_ids)
+                + "."
+            )
+        if unknown_valve_ids:
+            raise StoredTopologyError(
+                "Circuit subentry references unknown valves: "
+                + ", ".join(unknown_valve_ids)
+                + "."
+            )
+        if pump_id not in parent_pump_ids:
+            raise StoredTopologyError(
+                f"Circuit subentry references unknown pump {pump_id}."
+            )
+        circuits.append(
+            Circuit(
+                id=circuit_id,
+                name=str(_required(data, CONF_NAME)),
+                valve_ids=valve_ids,
+                pump_id=pump_id,
+            )
+        )
+        routes.extend(_circuit_routes(data, circuit_id, zone_ids))
+
     actuator_subentry_ids: dict[str, str] = {}
     for subentry_id, data in actuator_records:
         kind = str(_required(data, CONF_ACTUATOR_KIND))
@@ -86,7 +171,7 @@ def effective_plant_configuration(
             raise StoredTopologyError(f"Unsupported actuator subentry kind {kind!r}.")
         actuator_id = _uuid(data, "id")
         selected_circuit_ids = _circuit_ids(data)
-        unknown_circuit_ids = sorted(set(selected_circuit_ids) - known_circuit_ids)
+        unknown_circuit_ids = sorted(set(selected_circuit_ids) - parent_circuit_ids)
         if unknown_circuit_ids:
             raise StoredTopologyError(
                 "Actuator subentry references unknown circuits: "
@@ -118,6 +203,11 @@ def effective_plant_configuration(
             actuator_subentry_ids[actuator_id] = subentry_id
 
     return EffectivePlantConfiguration(
-        configuration=replace(base, valves=tuple(valves), circuits=tuple(circuits)),
+        configuration=replace(
+            base,
+            valves=tuple(valves),
+            circuits=tuple(circuits),
+            routes=tuple(routes),
+        ),
         actuator_subentry_ids=actuator_subentry_ids,
     )

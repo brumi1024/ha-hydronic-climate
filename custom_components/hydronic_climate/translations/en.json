@@ -74,6 +74,42 @@
       "abort": {
         "no_circuits": "Add a hydraulic circuit before adding an actuator."
       }
+    },
+    "circuit": {
+      "entry_type": "Circuit",
+      "initiate_flow": {
+        "user": "Add circuit"
+      },
+      "title": "Circuit",
+      "step": {
+        "user": {
+          "title": "Add a hydraulic circuit",
+          "description": "Connect existing plant equipment to one or more comfort zones in shadow mode.",
+          "data": {
+            "name": "Circuit name",
+            "zone_ids": "Zones",
+            "valve_ids": "Required valves",
+            "pump_id": "Pump"
+          }
+        },
+        "reconfigure": {
+          "title": "Update hydraulic circuit",
+          "description": "Change the circuit name, equipment path, or served zones.",
+          "data": {
+            "name": "Circuit name",
+            "zone_ids": "Zones",
+            "valve_ids": "Required valves",
+            "pump_id": "Pump"
+          }
+        }
+      },
+      "error": {
+        "name_required": "A circuit name is required.",
+        "invalid_circuit": "The circuit cannot be added to this topology."
+      },
+      "abort": {
+        "incomplete_plant": "The plant needs at least one zone, valve, and pump before adding a circuit."
+      }
     }
   }
 }
