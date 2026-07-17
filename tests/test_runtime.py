@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 import unittest
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from types import SimpleNamespace
+from unittest import mock
 
 homeassistant = types.ModuleType("homeassistant")
 homeassistant_config_entries = types.ModuleType("homeassistant.config_entries")
@@ -39,11 +42,16 @@ def _track_state_change_event(*args, **kwargs):
     return lambda: None
 
 
+def _call_later(*args, **kwargs):
+    return lambda: None
+
+
 homeassistant_config_entries.ConfigEntry = _ConfigEntry
 homeassistant_core.HomeAssistant = _HomeAssistant
 homeassistant_core.Event = _Event
 homeassistant_core.EventStateChangedData = _EventStateChangedData
 homeassistant_core.callback = _callback
+homeassistant_helpers_event.async_call_later = _call_later
 homeassistant_helpers_event.async_track_state_change_event = _track_state_change_event
 sys.modules.setdefault("homeassistant", homeassistant)
 sys.modules.setdefault("homeassistant.config_entries", homeassistant_config_entries)
@@ -53,7 +61,66 @@ sys.modules.setdefault("homeassistant.helpers.event", homeassistant_helpers_even
 
 CONF_SHADOW_MODE = import_module("custom_components.hydronic_climate.const").CONF_SHADOW_MODE
 CONF_PLANT_ID = import_module("custom_components.hydronic_climate.const").CONF_PLANT_ID
-HydronicRuntime = import_module("custom_components.hydronic_climate.runtime").HydronicRuntime
+runtime_module = import_module("custom_components.hydronic_climate.runtime")
+HydronicRuntime = runtime_module.HydronicRuntime
+
+NOW = datetime(2026, 7, 17, tzinfo=UTC)
+
+
+class _State:
+    def __init__(self, state: str) -> None:
+        self.state = state
+        self.last_updated = NOW
+
+
+class _StateStore:
+    def __init__(self, state: str) -> None:
+        self.current = _State(state)
+
+    def get(self, entity_id: str) -> _State | None:
+        return self.current if entity_id == "sensor.test_temperature" else None
+
+
+class _RuntimeHomeAssistant:
+    def __init__(self, state: str) -> None:
+        self.states = _StateStore(state)
+        self.tasks: list[asyncio.Task[None]] = []
+
+    def async_create_task(self, coroutine) -> asyncio.Task[None]:
+        task = asyncio.create_task(coroutine)
+        self.tasks.append(task)
+        return task
+
+
+def _configured_entry() -> SimpleNamespace:
+    return SimpleNamespace(
+        data={
+            "name": "Hydronic plant",
+            "plant_id": "plant",
+            "shadow_mode": True,
+            "topology": {
+                "zones": [
+                    {
+                        "id": "zone",
+                        "name": "Test zone",
+                        "target_temperature": 21.0,
+                        "temperature_sensor": "sensor.test_temperature",
+                    }
+                ],
+                "circuits": [
+                    {
+                        "id": "circuit",
+                        "name": "Test circuit",
+                        "valve_id": "switch.test_valve",
+                        "pump_id": "switch.test_pump",
+                        "valve_opening_time_seconds": 30.0,
+                        "pump_overrun_seconds": 120.0,
+                    }
+                ],
+                "routes": [{"id": "route", "zone_id": "zone", "circuit_id": "circuit"}],
+            },
+        }
+    )
 
 
 class RuntimeTests(unittest.TestCase):
@@ -72,6 +139,73 @@ class RuntimeTests(unittest.TestCase):
         )
 
         self.assertFalse(runtime.shadow_mode)
+
+
+class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
+    """Verify Home Assistant wakes the controller for timed transitions."""
+
+    async def test_timers_advance_valve_readiness_and_pump_overrun(self) -> None:
+        runtime = HydronicRuntime.from_entry(_configured_entry())
+        hass = _RuntimeHomeAssistant("20.0")
+        scheduled: list[tuple[float, object, mock.Mock]] = []
+
+        def schedule(_hass, delay: float, action):
+            cancel = mock.Mock()
+            scheduled.append((delay, action, cancel))
+            return cancel
+
+        with (
+            mock.patch.object(runtime_module, "async_call_later", side_effect=schedule),
+            mock.patch.object(runtime_module, "datetime") as clock,
+        ):
+            clock.now.return_value = NOW
+            await runtime.async_start(hass)
+
+            self.assertEqual(scheduled[0][0], 30.0)
+            self.assertEqual(
+                runtime.runtime_state.valves["switch.test_valve"].state.value, "opening"
+            )
+
+            clock.now.return_value = NOW + timedelta(seconds=30)
+            scheduled[0][1](clock.now.return_value)
+            await hass.tasks[-1]
+
+            self.assertEqual(runtime.runtime_state.valves["switch.test_valve"].state.value, "open")
+            self.assertEqual(runtime.runtime_state.pumps["switch.test_pump"].state.value, "running")
+
+            hass.states.current = _State("22.0")
+            clock.now.return_value = NOW + timedelta(seconds=31)
+            await runtime.async_refresh(hass)
+
+            self.assertEqual(scheduled[1][0], 120.0)
+            self.assertEqual(runtime.runtime_state.pumps["switch.test_pump"].state.value, "overrun")
+
+            clock.now.return_value = NOW + timedelta(seconds=151)
+            scheduled[1][1](clock.now.return_value)
+            await hass.tasks[-1]
+
+            self.assertEqual(runtime.runtime_state.pumps["switch.test_pump"].state.value, "off")
+            self.assertEqual(
+                runtime.runtime_state.valves["switch.test_valve"].state.value, "closed"
+            )
+
+    async def test_stop_cancels_state_and_timer_listeners(self) -> None:
+        runtime = HydronicRuntime.from_entry(_configured_entry())
+        hass = _RuntimeHomeAssistant("20.0")
+        cancel_state = mock.Mock()
+        cancel_timer = mock.Mock()
+
+        with (
+            mock.patch.object(
+                runtime_module, "async_track_state_change_event", return_value=cancel_state
+            ),
+            mock.patch.object(runtime_module, "async_call_later", return_value=cancel_timer),
+        ):
+            await runtime.async_start(hass)
+            await runtime.async_stop()
+
+        cancel_state.assert_called_once_with()
+        cancel_timer.assert_called_once_with()
 
 
 if __name__ == "__main__":
