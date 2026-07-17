@@ -2,13 +2,40 @@
   "config": {
     "step": {
       "user": {
+        "title": "Create a Hydronic Climate plant",
+        "description": "New plants begin in shadow mode and do not control equipment.",
         "data": {
           "name": "Plant name"
         }
+      },
+      "zone": {
+        "title": "Add the first comfort zone",
+        "description": "Select the temperature sensor used for initial shadow demand.",
+        "data": {
+          "name": "Zone name",
+          "target_temperature": "Target temperature",
+          "temperature_sensor": "Temperature sensor"
+        }
+      },
+      "circuit": {
+        "title": "Add the first hydraulic circuit",
+        "description": "Equipment is observed only in this release. No service calls are made.",
+        "data": {
+          "name": "Circuit name",
+          "valve_entity": "Valve entity",
+          "pump_entity": "Pump entity",
+          "valve_opening_time_seconds": "Valve opening time (seconds)",
+          "pump_overrun_seconds": "Pump overrun (seconds)"
+        }
+      },
+      "review": {
+        "title": "Review shadow topology",
+        "description": "Zone {zone} will request circuit {circuit}. Hydronic Climate remains in shadow mode."
       }
     },
     "error": {
-      "name_required": "A plant name is required."
+      "name_required": "A plant name is required.",
+      "invalid_topology": "The initial topology is not valid."
     }
   }
 }

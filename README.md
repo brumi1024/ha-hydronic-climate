@@ -8,9 +8,9 @@ It starts as a shadow-mode plant model and will grow into a deterministic contro
 
 This repository is in early implementation.
 
-The current slice establishes the config flow and setup lifecycle for an empty plant.
-It also includes a deterministic, shadow-only heating controller for zones, circuits, valves, and pumps.
-No Home Assistant service calls are issued.
+The current slice establishes a shadow-only setup flow for one zone, temperature sensor, circuit, valve, pump, and delivery route.
+It persists that topology in the plant config entry after compiling and validating it.
+The deterministic controller remains read-only and never issues Home Assistant service calls.
 
 ## Installation
 
