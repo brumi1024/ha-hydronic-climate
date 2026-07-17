@@ -9,6 +9,7 @@ import pytest
 
 from scripts.package_release import (
     ReleaseValidationError,
+    _readme_states_minimum_version,
     build_archive,
     inspect_archive,
     normalize_version,
@@ -36,3 +37,24 @@ def test_normalize_version_rejects_invalid_semver(version: str) -> None:
 
     with pytest.raises(ReleaseValidationError):
         normalize_version(version)
+
+
+@pytest.mark.parametrize(
+    "readme",
+    [
+        "Hydronicus requires Home Assistant 2026.7.0 or newer.",
+        "The minimum Home Assistant version declared by this repository is `2026.7.0`.",
+    ],
+)
+def test_readme_minimum_version_check_allows_clear_prose(readme: str) -> None:
+    """Metadata validation must not depend on one exact documentation sentence."""
+
+    assert _readme_states_minimum_version(readme, "2026.7.0")
+
+
+def test_readme_minimum_version_check_rejects_unrelated_version() -> None:
+    """A README must state the configured version, not merely mention Home Assistant."""
+
+    assert not _readme_states_minimum_version(
+        "This integration supports Home Assistant.", "2026.7.0"
+    )
