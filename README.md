@@ -17,3 +17,8 @@ The deterministic controller remains read-only and never issues Home Assistant s
 Install the repository as a custom integration through HACS.
 
 Then add Hydronic Climate from the Home Assistant UI.
+
+## Development
+
+See [the development environment](docs/development.md) for reproducible setup and verification commands.
+Use [the home-server staging contract](docs/home-server-staging.md) for final Home Assistant UI and runtime checks.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hydronic Climate Verify"
+  short_description: "Verify safe milestone delivery evidence"
+  default_prompt: "Use $hydronic-climate-verify to verify this implementation chunk against its milestone acceptance criteria."

@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: Format changed Python files
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: repository-lint
+        name: Repository lint checks
+        entry: make lint
+        language: system
+        pass_filenames: false
+      - id: core-tests
+        name: Deterministic core tests
+        entry: uv run pytest -q tests/core
+        language: system
+        pass_filenames: false
