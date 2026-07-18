@@ -39,6 +39,7 @@ from .core.model import (
     PumpRuntime,
     PumpState,
     RuntimeState,
+    SafeShutdownPhase,
     SourceRecommendation,
     TemperatureObservation,
     ValveRuntime,
@@ -317,6 +318,10 @@ class HydronicRuntime:
                 entity_id,
                 getattr(new_state, "state", None),
             )
+        if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
+            for listener in self._listeners:
+                listener()
+            return
         if self._hass is not None:
             self._hass.async_create_task(self.async_refresh(self._hass))
 
@@ -325,7 +330,10 @@ class HydronicRuntime:
         """Re-evaluate when the earliest virtual deadline becomes due."""
         self._remove_transition_timer = None
         if self._hass is not None:
-            self._hass.async_create_task(self.async_refresh(self._hass))
+            if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
+                self._hass.async_create_task(self.async_safe_shutdown(self._hass))
+            else:
+                self._hass.async_create_task(self.async_refresh(self._hass))
 
     def _cancel_transition_timer(self) -> None:
         """Cancel the pending one-shot transition timer, if any."""
@@ -466,6 +474,8 @@ class HydronicRuntime:
     def _next_transition_delay(self, now: datetime) -> float | None:
         """Return seconds until the earliest actuator, duration, or stale deadline."""
         delays: list[float] = []
+        if self.runtime_state.safe_shutdown_phase is SafeShutdownPhase.PUMPS_STOPPED:
+            return 0.0
         for valve_node in self.plant.valves.values():
             valve = self.runtime_state.valves.get(valve_node.id)
             if (
@@ -588,7 +598,10 @@ class HydronicRuntime:
         if delay is None:
             return
         if delay == 0:
-            hass.async_create_task(self.async_refresh(hass))
+            if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
+                hass.async_create_task(self.async_safe_shutdown(hass))
+            else:
+                hass.async_create_task(self.async_refresh(hass))
             return
         self._remove_transition_timer = async_call_later(
             hass, delay, self._async_handle_transition_timer
@@ -596,6 +609,9 @@ class HydronicRuntime:
 
     async def async_refresh(self, hass: HomeAssistant) -> None:
         """Read sensor states, evaluate the controller, and notify shadow entities."""
+        if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
+            await self.async_safe_shutdown(hass)
+            return
         observations: dict[str, TemperatureObservation] = {}
         for sensor_id in self._observation_sensor_ids():
             state = hass.states.get(sensor_id)

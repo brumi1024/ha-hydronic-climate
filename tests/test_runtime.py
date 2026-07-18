@@ -63,6 +63,8 @@ CONF_SHADOW_MODE = import_module("custom_components.hydronicus.const").CONF_SHAD
 CONF_PLANT_ID = import_module("custom_components.hydronicus.const").CONF_PLANT_ID
 runtime_module = import_module("custom_components.hydronicus.runtime")
 HydronicRuntime = runtime_module.HydronicRuntime
+RuntimeState = import_module("hydronicus_core.model").RuntimeState
+SafeShutdownPhase = import_module("hydronicus_core.model").SafeShutdownPhase
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 PLANT_UUID = "00000000-0000-4000-8000-000000000001"
@@ -188,6 +190,25 @@ class RuntimeTests(unittest.TestCase):
 
 class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
     """Verify Home Assistant wakes the controller for timed transitions."""
+
+    async def test_shutdown_timer_advances_shutdown_instead_of_evaluating_demand(self) -> None:
+        """A shutdown deadline never routes back through normal demand evaluation."""
+        runtime = HydronicRuntime.from_entry(_configured_entry())
+        hass = _RuntimeHomeAssistant("20.0")
+        runtime._hass = hass
+        runtime.runtime_state = RuntimeState(
+            safe_shutdown_phase=SafeShutdownPhase.PUMP_OVERRUN
+        )
+
+        with mock.patch.object(
+            runtime_module.HydronicRuntime,
+            "async_safe_shutdown",
+            new_callable=mock.AsyncMock,
+        ) as safe_shutdown:
+            runtime._async_handle_transition_timer(NOW)
+            await hass.tasks[-1]
+
+        safe_shutdown.assert_awaited_once_with(hass)
 
     async def test_timers_advance_valve_readiness_and_pump_overrun(self) -> None:
         runtime = HydronicRuntime.from_entry(_configured_entry())
