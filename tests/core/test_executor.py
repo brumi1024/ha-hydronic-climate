@@ -167,6 +167,53 @@ def test_from_plant_builds_bindings_for_both_actuator_families() -> None:
 
 
 @pytest.mark.asyncio
+async def test_per_source_shadow_preserves_guarded_demand_without_dispatch() -> None:
+    """A source may remain synthetic while its guarded demand stays observable."""
+    plant = CompiledPlant(
+        id="plant",
+        zones={},
+        valves={},
+        pumps={},
+        circuits={},
+        routes=(),
+        logic_summary=(),
+        sources={
+            "heat-pump": Source(
+                "heat-pump",
+                "Heat pump",
+                demand_entity_id="switch.synthetic_heat_pump",
+                shadow_mode=True,
+            )
+        },
+    )
+    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    dispatched: list[ActuatorOperation] = []
+
+    async def dispatch(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    report = await executor.async_execute(
+        ControlPlan(
+            commands=(
+                ActuatorCommand(
+                    "source:heat-pump",
+                    ActuatorAction.TURN_ON,
+                    "Synthetic guarded demand",
+                ),
+            ),
+            valve_consumers={},
+            pump_consumers={},
+        ),
+        dispatch,
+    )
+
+    assert dispatched == []
+    assert [operation.entity_id for operation in report.shadowed] == [
+        "switch.synthetic_heat_pump"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_executor_safe_shutdown_dispatches_only_intercepted_source_release() -> None:
     """The executor exposes the pure shutdown plan through the normal dispatch seam."""
     plant = CompiledPlant(

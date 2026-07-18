@@ -432,6 +432,22 @@ class SourceRecommendation:
     eligible_source_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class SourceDiagnostic:
+    """One atomic source qualification and guarded-demand result."""
+
+    source_id: str
+    available: bool | None
+    eligible: bool
+    recommended: bool
+    active: bool
+    demand_requested: bool
+    demand_permitted: bool
+    shadow_mode: bool
+    blocked: bool
+    reason: str
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class Source:
     """A configured heat source used only by the shadow recommender."""
@@ -446,6 +462,7 @@ class Source:
     maximum_age_seconds: float
     hysteresis: float
     demand_entity_id: str | None
+    shadow_mode: bool
 
     def __init__(
         self,
@@ -467,6 +484,7 @@ class Source:
         buffer_hysteresis: float | None = None,
         demand_entity_id: str | None = None,
         source_demand_entity_id: str | None = None,
+        shadow_mode: bool = False,
     ) -> None:
         """Accept descriptive aliases while storing one stable source contract."""
         if source_type is not None:
@@ -497,6 +515,7 @@ class Source:
         object.__setattr__(self, "maximum_age_seconds", float(maximum_age_seconds))
         object.__setattr__(self, "hysteresis", float(hysteresis))
         object.__setattr__(self, "demand_entity_id", demand_entity_id)
+        object.__setattr__(self, "shadow_mode", shadow_mode)
 
     @property
     def source_type(self) -> SourceKind:
@@ -611,6 +630,7 @@ class SourceSelectionDiagnostic:
     recommended_source_id: str | None
     hydraulically_safe: bool
     explanation: str
+    dwell_remaining_seconds: float = 0.0
 
 
 HeatSource = Source
@@ -1052,6 +1072,7 @@ class ControllerDiagnostics:
     cooling_zone_decisions: Mapping[str, ZoneDecision] = field(default_factory=dict)
     interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
     source_recommendation: SourceRecommendation | None = None
+    source_diagnostics: Mapping[str, SourceDiagnostic] = field(default_factory=dict)
     cooling_circuit_reasons: Mapping[str, str] = field(default_factory=dict)
     cooling_zone_reasons: Mapping[str, str] = field(default_factory=dict)
     mode_conflicts: tuple[ModeConflict, ...] = ()

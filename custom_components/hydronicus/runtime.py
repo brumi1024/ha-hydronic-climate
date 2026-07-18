@@ -434,6 +434,18 @@ class HydronicRuntime:
             return None
         return self.evaluation.diagnostics.source_recommendation
 
+    def source_diagnostic(self, source_id: str) -> object | None:
+        """Return one source result from the latest atomic evaluation."""
+        if self.evaluation is None:
+            return None
+        return self.evaluation.diagnostics.source_diagnostics.get(source_id)
+
+    def source_selection_diagnostic(self) -> object | None:
+        """Return the latest atomic source-selection result."""
+        if self.evaluation is None:
+            return None
+        return self.evaluation.diagnostics.source_selection
+
     def operational_status(self) -> str:
         """Return a bounded plant-level status suitable for Recorder telemetry."""
         if self._stopping:
@@ -831,6 +843,7 @@ class HydronicRuntime:
                         for entity_id in (
                             source.availability_entity_id,
                             source.temperature_entity_id,
+                            source.demand_entity_id,
                         )
                         if entity_id is not None
                     ),
@@ -1222,6 +1235,8 @@ class HydronicRuntime:
             tuple(sorted(diagnostics.zone_reasons.items())),
             tuple(sorted(diagnostics.interlocks.items())),
             diagnostics.source_recommendation,
+            tuple(sorted(diagnostics.source_diagnostics.items())),
+            diagnostics.source_selection,
             diagnostics.mode_conflicts,
             tuple(
                 (
