@@ -41,6 +41,21 @@ def _finite_positive(value: object) -> bool:
     return isinstance(value, (int, float)) and isfinite(float(value)) and float(value) > 0
 
 
+def _validate_feedback_binding(
+    owner: str,
+    field_name: str,
+    entity_id: str | None,
+    max_age_seconds: float,
+) -> None:
+    """Validate one optional feedback binding without making it mandatory."""
+    if entity_id is not None and (not isinstance(entity_id, str) or not entity_id.strip()):
+        raise TopologyValidationError(f"{owner} {field_name} entity must be a non-empty entity id.")
+    if not _finite_positive(max_age_seconds):
+        raise TopologyValidationError(
+            f"{owner} {field_name} maximum age must be positive and finite."
+        )
+
+
 def _validate_zone(zone: Zone) -> None:
     """Validate all pure controller inputs owned by one comfort zone."""
     # The object is a Zone at the call site.  Keeping validation here based on
@@ -200,6 +215,7 @@ def _validate_source(source: Source) -> None:
     for field_name, entity_id in (
         ("availability", source.availability_entity_id),
         ("temperature", source.temperature_entity_id),
+        ("demand", source.demand_entity_id),
     ):
         if entity_id is not None and (not isinstance(entity_id, str) or not entity_id.strip()):
             raise TopologyValidationError(
@@ -276,11 +292,23 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             raise TopologyValidationError(
                 f"Valve {valve.id} readiness feedback entity must be non-empty."
             )
+        _validate_feedback_binding(
+            f"Valve {valve.id}",
+            "position feedback",
+            valve.position_entity_id,
+            valve.position_max_age_seconds,
+        )
     for pump in configuration.pumps:
         if not _finite_non_negative(pump.overrun_seconds):
             raise TopologyValidationError(
                 f"Pump {pump.id} overrun must be finite and non-negative."
             )
+        for field_name, entity_id, max_age in (
+            ("power feedback", pump.power_entity_id, pump.power_max_age_seconds),
+            ("flow feedback", pump.flow_entity_id, pump.flow_max_age_seconds),
+            ("fault feedback", pump.fault_entity_id, pump.fault_max_age_seconds),
+        ):
+            _validate_feedback_binding(f"Pump {pump.id}", field_name, entity_id, max_age)
     for source in configuration.sources:
         _validate_source(source)
 

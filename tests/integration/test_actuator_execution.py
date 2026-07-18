@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -22,6 +24,7 @@ VALVE_ID = "00000000-0000-4000-8000-000000000003"
 PUMP_ID = "00000000-0000-4000-8000-000000000004"
 CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
 ROUTE_ID = "00000000-0000-4000-8000-000000000006"
+SOURCE_ID = "00000000-0000-4000-8000-000000000007"
 
 
 def _entry(
@@ -32,6 +35,7 @@ def _entry(
     pump_overrun_seconds: float = 300.0,
     valve_opening_seconds: float = 300.0,
     readiness_entity_id: str | None = None,
+    source_demand: bool = False,
 ) -> MockConfigEntry:
     """Build a completely synthetic plant with one generic valve actuator."""
     data = {
@@ -80,6 +84,14 @@ def _entry(
             ],
         },
     }
+    if source_demand:
+        data["topology"]["sources"] = [
+            {
+                "id": SOURCE_ID,
+                "name": "Synthetic source",
+                "source_demand_entity": "switch.synthetic_source",
+            }
+        ]
     if actuator_shadow:
         data[CONF_ACTUATOR_SHADOW_MODES] = {VALVE_ID: True}
     if readiness_entity_id is not None:
@@ -305,3 +317,44 @@ async def test_reload_reconciles_observed_active_actuators_before_idle_shutdown(
 
     assert ("switch", "turn_off", "switch.synthetic_pump") in calls
     assert ("switch", "turn_off", "switch.synthetic_valve") in calls
+
+
+async def test_safe_shutdown_is_ordered_and_idempotent_with_intercepted_services(hass) -> None:
+    """Synthetic shutdown releases source, waits overrun, then stops pumps and valves."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    hass.states.async_set("switch.synthetic_source", "on")
+    entry = _entry(
+        shadow_mode=False,
+        pump_overrun_seconds=10.0,
+        valve_opening_seconds=0.0,
+        source_demand=True,
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    runtime = entry.runtime_data
+    await runtime.async_refresh(hass)
+    await hass.async_block_till_done()
+    started_at = runtime.runtime_state.pumps[PUMP_ID].changed_at
+    assert started_at is not None
+    calls.clear()
+
+    first = await runtime.async_safe_shutdown(hass, now=started_at)
+    assert first.plan.phase.value == "pump_overrun"
+    assert calls[-1] == ("switch", "turn_off", "switch.synthetic_source")
+    second = await runtime.async_safe_shutdown(hass, now=started_at + timedelta(seconds=5))
+    assert second.plan.phase.value == "pump_overrun"
+    assert calls == [("switch", "turn_off", "switch.synthetic_source")]
+    third = await runtime.async_safe_shutdown(hass, now=started_at + timedelta(seconds=10))
+    assert third.plan.phase.value == "pumps_stopped"
+    assert calls[-1] == ("switch", "turn_off", "switch.synthetic_pump")
+    fourth = await runtime.async_safe_shutdown(hass, now=started_at + timedelta(seconds=11))
+    assert fourth.plan.phase.value == "valves_closed"
+    assert calls[-1] == ("switch", "turn_off", "switch.synthetic_valve")
+    fifth = await runtime.async_safe_shutdown(hass, now=started_at + timedelta(seconds=12))
+    assert fifth.execution.executed == ()

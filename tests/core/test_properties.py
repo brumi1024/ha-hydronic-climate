@@ -4,20 +4,24 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from hydronicus_core.controller import evaluate
+from hydronicus_core.controller import evaluate, safe_shutdown
 from hydronicus_core.model import (
+    ActuatorAction,
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
+    PumpRuntime,
     PumpState,
     RuntimeState,
+    SafeShutdownPhase,
     Source,
     TemperatureAggregation,
     TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
+    ValveRuntime,
     ValveState,
     Zone,
     ZoneDecisionStatus,
@@ -30,7 +34,12 @@ from hypothesis import strategies as st
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 
 
-def _shared_pump_plant(zone_count: int, *, opening_seconds: float = 0) -> PlantConfiguration:
+def _shared_pump_plant(
+    zone_count: int,
+    *,
+    opening_seconds: float = 0,
+    pump_overrun_seconds: float = 10,
+) -> PlantConfiguration:
     """Build a valid generated topology with independent valves and one shared pump."""
     zones = tuple(
         Zone(f"zone-{index}", f"Zone {index}", 21.0, (f"sensor.zone_{index}",))
@@ -57,7 +66,7 @@ def _shared_pump_plant(zone_count: int, *, opening_seconds: float = 0) -> PlantC
         id="generated-plant",
         zones=zones,
         valves=valves,
-        pumps=(Pump("pump", "Shared pump", "switch.shared_pump", 10),),
+        pumps=(Pump("pump", "Shared pump", "switch.shared_pump", pump_overrun_seconds),),
         circuits=circuits,
         routes=routes,
     )
@@ -137,6 +146,33 @@ def test_pump_cannot_run_before_every_requested_valve_is_ready(
     assert all(valve.state is ValveState.OPENING for valve in waiting.next_runtime.valves.values())
     assert waiting.next_runtime.pumps["pump"].state is PumpState.OFF
     assert all(command.actuator_id != "pump" for command in waiting.control_plan.commands)
+
+
+@given(overrun_seconds=st.integers(min_value=1, max_value=300))
+def test_generated_safe_shutdown_never_closes_before_pump_overrun_finishes(
+    overrun_seconds: int,
+) -> None:
+    """Every generated overrun keeps valve closure behind source and pump release."""
+    plant = compile_topology(_shared_pump_plant(1, pump_overrun_seconds=overrun_seconds))
+    running = RuntimeState(
+        valves={"valve-0": ValveRuntime(ValveState.OPEN, NOW)},
+        pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW)},
+    )
+
+    observing, after_observing = safe_shutdown(plant, running, NOW)
+    assert observing.phase is SafeShutdownPhase.PUMP_OVERRUN
+    assert all(command.action is not ActuatorAction.CLOSE for command in observing.commands)
+
+    stopping, after_stopping = safe_shutdown(
+        plant,
+        after_observing,
+        NOW + timedelta(seconds=overrun_seconds),
+    )
+    assert stopping.phase is SafeShutdownPhase.PUMPS_STOPPED
+    assert all(command.action is not ActuatorAction.CLOSE for command in stopping.commands)
+
+    closed, _after_closed = safe_shutdown(plant, after_stopping, NOW)
+    assert closed.phase is SafeShutdownPhase.VALVES_CLOSED
 
 
 @given(

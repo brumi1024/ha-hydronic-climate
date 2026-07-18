@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
-from .model import ActuatorAction, ActuatorCommand, CompiledPlant, ControlPlan
+from .controller import safe_shutdown as build_safe_shutdown
+from .model import (
+    ActuatorAction,
+    ActuatorCommand,
+    CompiledPlant,
+    ControlPlan,
+    RuntimeState,
+    SafeShutdownPlan,
+)
 
 
 class ActuatorObservedState(StrEnum):
@@ -45,6 +54,15 @@ class ExecutionReport:
     executed: tuple[ActuatorOperation, ...] = ()
     suppressed: tuple[ActuatorOperation, ...] = ()
     shadowed: tuple[ActuatorOperation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SafeShutdownReport:
+    """Synthetic or shadow execution result for one shutdown phase."""
+
+    plan: SafeShutdownPlan
+    next_runtime: RuntimeState
+    execution: ExecutionReport
 
 
 type DispatchOperation = Callable[[ActuatorOperation], Awaitable[None]]
@@ -178,6 +196,14 @@ class ActuatorExecutor:
             if actuator_id in bindings:
                 raise ValueError(f"Actuator ID {actuator_id!r} is used by more than one actuator.")
             bindings[actuator_id] = ActuatorBinding(actuator_id, pump.entity_id)
+        for source_id, source in plant.sources.items():
+            if source.demand_entity_id is not None:
+                binding_id = f"source:{source_id}"
+                if binding_id in bindings:
+                    raise ValueError(
+                        f"Actuator ID {binding_id!r} is used by more than one actuator."
+                    )
+                bindings[binding_id] = ActuatorBinding(binding_id, source.demand_entity_id)
         return cls(
             bindings=bindings,
             shadow_mode=shadow_mode,
@@ -278,3 +304,22 @@ class ActuatorExecutor:
             self.requested_states[command.actuator_id] = operation.target_state
             executed.append(operation)
         return ExecutionReport(tuple(executed), tuple(suppressed), tuple(shadowed))
+
+    async def async_safe_shutdown(
+        self,
+        plant: CompiledPlant,
+        runtime: RuntimeState,
+        now: datetime,
+        dispatch: DispatchOperation,
+        *,
+        force_shadow: bool = False,
+    ) -> SafeShutdownReport:
+        """Execute one explicit source-release, overrun, pump, or valve phase."""
+        plan, next_runtime = build_safe_shutdown(plant, runtime, now)
+        control_plan = ControlPlan(
+            commands=plan.commands,
+            valve_consumers={},
+            pump_consumers={},
+        )
+        execution = await self.async_execute(control_plan, dispatch, force_shadow=force_shadow)
+        return SafeShutdownReport(plan, next_runtime, execution)

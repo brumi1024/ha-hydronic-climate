@@ -3,7 +3,7 @@
 from typing import Final
 
 DOMAIN: Final = "hydronicus"
-PLATFORMS: Final = ("binary_sensor", "climate", "sensor")
+PLATFORMS: Final = ("binary_sensor", "button", "climate", "sensor")
 CONFIG_ENTRY_VERSION: Final = 2
 CONFIG_ENTRY_MINOR_VERSION: Final = 1
 CONF_NAME: Final = "name"
@@ -25,6 +25,15 @@ CONF_VALVE_IDS: Final = "valve_ids"
 CONF_PUMP_ID: Final = "pump_id"
 CONF_OPENING_TIME: Final = "opening_time_seconds"
 CONF_OVERRUN: Final = "overrun_seconds"
+CONF_POSITION_FEEDBACK_ENTITY: Final = "position_feedback_entity"
+CONF_POSITION_FEEDBACK_MAX_AGE: Final = "position_feedback_max_age_seconds"
+CONF_POWER_FEEDBACK_ENTITY: Final = "power_feedback_entity"
+CONF_POWER_FEEDBACK_MAX_AGE: Final = "power_feedback_max_age_seconds"
+CONF_FLOW_FEEDBACK_ENTITY: Final = "flow_feedback_entity"
+CONF_FLOW_FEEDBACK_MAX_AGE: Final = "flow_feedback_max_age_seconds"
+CONF_FAULT_FEEDBACK_ENTITY: Final = "fault_feedback_entity"
+CONF_FAULT_FEEDBACK_MAX_AGE: Final = "fault_feedback_max_age_seconds"
+CONF_SOURCE_DEMAND_ENTITY: Final = "source_demand_entity"
 CONF_TEMPERATURE_SENSOR: Final = "temperature_sensor"
 CONF_TEMPERATURE_SENSORS: Final = "temperature_sensors"
 CONF_TEMPERATURE_SENSOR_METADATA: Final = "temperature_sensor_metadata"

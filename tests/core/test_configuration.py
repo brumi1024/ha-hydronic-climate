@@ -91,6 +91,14 @@ def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
                         "pump_id": "switch.floor_pump",
                         "valve_opening_time_seconds": 45,
                         "pump_overrun_seconds": 180,
+                        "position_feedback_entity": "sensor.floor_valve_position",
+                        "position_feedback_max_age_seconds": 90,
+                        "power_feedback_entity": "sensor.floor_pump_power",
+                        "power_feedback_max_age_seconds": 91,
+                        "flow_feedback_entity": "sensor.floor_flow",
+                        "flow_feedback_max_age_seconds": 92,
+                        "fault_feedback_entity": "binary_sensor.floor_pump_fault",
+                        "fault_feedback_max_age_seconds": 93,
                     }
                 ],
                 "routes": [{"id": "route-1", "zone_id": "zone-1", "circuit_id": "circuit-1"}],
@@ -103,6 +111,14 @@ def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
     assert plant.zones[0].temperature_sensors == ("sensor.living_temperature",)
     assert plant.valves[0].opening_time_seconds == 45
     assert plant.pumps[0].overrun_seconds == 180
+    assert plant.valves[0].position_entity_id == "sensor.floor_valve_position"
+    assert plant.valves[0].position_max_age_seconds == 90
+    assert plant.pumps[0].power_entity_id == "sensor.floor_pump_power"
+    assert plant.pumps[0].power_max_age_seconds == 91
+    assert plant.pumps[0].flow_entity_id == "sensor.floor_flow"
+    assert plant.pumps[0].flow_max_age_seconds == 92
+    assert plant.pumps[0].fault_entity_id == "binary_sensor.floor_pump_fault"
+    assert plant.pumps[0].fault_max_age_seconds == 93
     assert plant.circuits[0].valve_ids == ("valve.floor_loop",)
     assert plant.routes[0].zone_id == "zone-1"
 
@@ -367,6 +383,8 @@ def test_decodes_first_class_actuator_nodes_from_entry_data() -> None:
                         "name": "Supply valve",
                         "entity_id": "switch.supply_valve",
                         "opening_time_seconds": 45,
+                        "position_feedback_entity": "sensor.supply_position",
+                        "position_feedback_max_age_seconds": 95,
                     },
                     {
                         "id": "00000000-0000-4000-8000-000000000004",
@@ -381,6 +399,12 @@ def test_decodes_first_class_actuator_nodes_from_entry_data() -> None:
                         "name": "Circulation pump",
                         "entity_id": "switch.circulation_pump",
                         "overrun_seconds": 180,
+                        "power_feedback_entity": "sensor.circulation_power",
+                        "power_feedback_max_age_seconds": 96,
+                        "flow_feedback_entity": "sensor.circulation_flow",
+                        "flow_feedback_max_age_seconds": 97,
+                        "fault_feedback_entity": "binary_sensor.circulation_fault",
+                        "fault_feedback_max_age_seconds": 98,
                     }
                 ],
                 "circuits": [
@@ -407,7 +431,15 @@ def test_decodes_first_class_actuator_nodes_from_entry_data() -> None:
 
     assert plant.valves[0].entity_id == "switch.supply_valve"
     assert plant.valves[1].opening_time_seconds == 60
+    assert plant.valves[0].position_entity_id == "sensor.supply_position"
+    assert plant.valves[0].position_max_age_seconds == 95
     assert plant.pumps[0].entity_id == "switch.circulation_pump"
+    assert plant.pumps[0].power_entity_id == "sensor.circulation_power"
+    assert plant.pumps[0].power_max_age_seconds == 96
+    assert plant.pumps[0].flow_entity_id == "sensor.circulation_flow"
+    assert plant.pumps[0].flow_max_age_seconds == 97
+    assert plant.pumps[0].fault_entity_id == "binary_sensor.circulation_fault"
+    assert plant.pumps[0].fault_max_age_seconds == 98
     assert plant.circuits[0].valve_ids == (
         "00000000-0000-4000-8000-000000000003",
         "00000000-0000-4000-8000-000000000004",

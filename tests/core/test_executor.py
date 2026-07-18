@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from hydronicus_core.executor import (
     ActuatorBinding,
@@ -16,6 +18,8 @@ from hydronicus_core.model import (
     CompiledPlant,
     ControlPlan,
     Pump,
+    RuntimeState,
+    Source,
     Valve,
 )
 
@@ -129,6 +133,43 @@ def test_from_plant_builds_bindings_for_both_actuator_families() -> None:
     executor.observe_entity_state("sensor.unrelated", "18.0")
     with pytest.raises(KeyError, match="Unknown actuator"):
         executor.actuator_state("missing")
+
+
+@pytest.mark.asyncio
+async def test_executor_safe_shutdown_dispatches_only_intercepted_source_release() -> None:
+    """The executor exposes the pure shutdown plan through the normal dispatch seam."""
+    plant = CompiledPlant(
+        id="plant",
+        zones={},
+        valves={},
+        pumps={},
+        circuits={},
+        routes=(),
+        logic_summary=(),
+        sources={
+            "source": Source(
+                "source",
+                "Source",
+                demand_entity_id="switch.source_demand",
+            )
+        },
+    )
+    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    dispatched: list[ActuatorOperation] = []
+
+    async def dispatch(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    report = await executor.async_safe_shutdown(
+        plant,
+        RuntimeState(),
+        datetime(2026, 7, 18, tzinfo=UTC),
+        dispatch,
+    )
+
+    assert report.plan.phase.value == "valves_closed"
+    assert [operation.actuator_id for operation in dispatched] == ["source:source"]
+    assert report.execution.executed == tuple(dispatched)
 
 
 @pytest.mark.asyncio

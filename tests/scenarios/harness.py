@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from hydronicus_core.controller import evaluate
 from hydronicus_core.model import (
+    ActuatorFeedback,
     PlantSnapshot,
     PumpState,
     RuntimeState,
@@ -39,6 +40,7 @@ class ScenarioStep:
     zone_statuses: Mapping[str, ZoneDecisionStatus] = field(default_factory=dict)
     source_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
     source_availability: Mapping[str, bool] = field(default_factory=dict)
+    actuator_feedback: Mapping[str, ActuatorFeedback] = field(default_factory=dict)
     check_source: bool = False
     source_id: str | None = None
     source_explanation: str | None = None
@@ -81,6 +83,7 @@ def run_scenario(
             },
             source_temperatures=step.source_temperatures,
             source_availability=step.source_availability,
+            actuator_feedback=step.actuator_feedback,
         )
         result = evaluate(plant, snapshot, runtime, now)
         assert {

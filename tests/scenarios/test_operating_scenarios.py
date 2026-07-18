@@ -9,8 +9,10 @@ from hydronicus_core.controller import evaluate
 from hydronicus_core.executor import ActuatorExecutor, ActuatorOperation
 from hydronicus_core.model import (
     ActuatorAction,
+    ActuatorFeedback,
     Circuit,
     DeliveryRoute,
+    FeedbackObservation,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
@@ -279,6 +281,7 @@ def _single_zone_scenario_plant(
     minimum_active: float = 0,
     minimum_idle: float = 0,
     valve_opening: float = 0,
+    pump_power: str | None = None,
     sources: tuple[Source, ...] = (),
 ) -> object:
     """Build a small synthetic plant for named fake-clock scenarios."""
@@ -296,7 +299,15 @@ def _single_zone_scenario_plant(
                 ),
             ),
             valves=(Valve("valve", "Scenario valve", "switch.scenario_valve", valve_opening),),
-            pumps=(Pump("pump", "Scenario pump", "switch.scenario_pump", 0),),
+            pumps=(
+                Pump(
+                    "pump",
+                    "Scenario pump",
+                    "switch.scenario_pump",
+                    0,
+                    power_entity_id=pump_power,
+                ),
+            ),
             circuits=(Circuit("circuit", "Scenario circuit", ("valve",), "pump"),),
             routes=(DeliveryRoute("route", "zone", "circuit"),),
             sources=sources,
@@ -427,6 +438,38 @@ def test_optional_sensor_degradation_preserves_demand() -> None:
                 commands=frozenset({("pump", "turn_on")}),
                 zone_demands={"zone": True},
                 zone_statuses={"zone": ZoneDecisionStatus.REQUESTED},
+            ),
+        ),
+    )
+
+
+def test_manual_pump_override_is_detected() -> None:
+    """A pump power override is visible as a mismatch while commands stay explicit."""
+    plant = _single_zone_scenario_plant(
+        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        pump_power="sensor.pump_power",
+    )
+    feedback = {"pump": ActuatorFeedback(power=FeedbackObservation(0.0, NOW))}
+
+    run_scenario(
+        plant,
+        started_at=NOW,
+        steps=(
+            ScenarioStep(
+                timedelta(),
+                {"sensor.zone": 19.0},
+                actuator_feedback=feedback,
+                valves={"valve": ValveState.OPENING},
+                pumps={"pump": PumpState.OFF},
+                commands=frozenset({("valve", "open")}),
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.zone": 19.0},
+                actuator_feedback=feedback,
+                valves={"valve": ValveState.OPEN},
+                pumps={"pump": PumpState.RUNNING},
+                commands=frozenset({("pump", "turn_on")}),
             ),
         ),
     )

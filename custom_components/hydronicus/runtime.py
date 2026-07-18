@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
@@ -23,13 +24,16 @@ from .core.executor import (
     ActuatorObservedState,
     ActuatorOperation,
     ExecutionReport,
+    SafeShutdownReport,
 )
 from .core.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
+    ActuatorFeedback,
     AggregationResult,
     CompiledPlant,
     Evaluation,
+    FeedbackObservation,
     PlantMode,
     PlantSnapshot,
     PumpRuntime,
@@ -224,6 +228,37 @@ class HydronicRuntime:
         if decision is None or decision.status is not ZoneDecisionStatus.SENSOR_BLOCKED:
             return None
         return decision.explanation
+
+    def actuator_diagnostic(self, actuator_id: str) -> object | None:
+        """Return structured feedback and manual-mismatch diagnostics."""
+        if self.evaluation is None:
+            return None
+        return self.evaluation.diagnostics.actuator_diagnostics.get(actuator_id)
+
+    async def async_safe_shutdown(
+        self,
+        hass: HomeAssistant | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> SafeShutdownReport:
+        """Release source demand, observe overrun, then stop pumps and valves."""
+        active_hass = hass or self._hass
+        if active_hass is None:
+            raise RuntimeError("Hydronic runtime is not started.")
+        report = await self.executor.async_safe_shutdown(
+            self.plant,
+            self.runtime_state,
+            now or self._now(),
+            lambda operation: self._async_dispatch_actuator(active_hass, operation),
+            force_shadow=self.shadow_mode,
+        )
+        self.runtime_state = report.next_runtime
+        self.last_execution = report.execution
+        if report.plan.next_deadline is not None:
+            self._schedule_next_transition(active_hass, now or self._now())
+        for listener in self._listeners:
+            listener()
+        return report
 
     def zone_dew_point(self, zone_id: str) -> float | None:
         """Return the last calculated dew point for one zone."""
@@ -422,12 +457,37 @@ class HydronicRuntime:
             )
         )
 
+    def _feedback_sensor_ids(self) -> tuple[str, ...]:
+        """Return every configured actuator feedback entity once."""
+        valve_feedback = tuple(
+            dict.fromkeys(
+                entity_id
+                for valve in self.plant.valves.values()
+                for entity_id in (valve.position_entity_id,)
+                if entity_id is not None
+            )
+        )
+        pump_feedback = tuple(
+            dict.fromkeys(
+                entity_id
+                for pump in self.plant.pumps.values()
+                for entity_id in (
+                    pump.power_entity_id,
+                    pump.flow_entity_id,
+                    pump.fault_entity_id,
+                )
+                if entity_id is not None
+            )
+        )
+        return valve_feedback + pump_feedback
+
     def _observed_entity_ids(self) -> tuple[str, ...]:
         """Return observations, source inputs, and actuators for one listener."""
         return tuple(
             dict.fromkeys(
                 (
                     *self._observation_sensor_ids(),
+                    *self._feedback_sensor_ids(),
                     *(
                         entity_id
                         for source in self.plant.sources.values()
@@ -544,6 +604,32 @@ class HydronicRuntime:
                     if deadline > now:
                         delays.append((deadline - now).total_seconds())
 
+            for valve in self.plant.valves.values():
+                if valve.position_entity_id is None:
+                    continue
+                observation = self.snapshot.actuator_feedback.get(valve.id)
+                reading = observation.position if observation is not None else None
+                if reading is not None and reading.observed_at is not None:
+                    deadline = reading.observed_at + timedelta(
+                        seconds=valve.position_max_age_seconds
+                    )
+                    if deadline > now:
+                        delays.append((deadline - now).total_seconds())
+            for pump in self.plant.pumps.values():
+                feedback = self.snapshot.actuator_feedback.get(pump.id)
+                for kind, entity_id, max_age in (
+                    ("power", pump.power_entity_id, pump.power_max_age_seconds),
+                    ("flow", pump.flow_entity_id, pump.flow_max_age_seconds),
+                    ("fault", pump.fault_entity_id, pump.fault_max_age_seconds),
+                ):
+                    if entity_id is None:
+                        continue
+                    reading = getattr(feedback, kind, None) if feedback is not None else None
+                    if reading is not None and reading.observed_at is not None:
+                        deadline = reading.observed_at + timedelta(seconds=max_age)
+                        if deadline > now:
+                            delays.append((deadline - now).total_seconds())
+
         return min(delays) if delays else None
 
     def _schedule_next_transition(self, hass: HomeAssistant, now: datetime) -> None:
@@ -597,6 +683,39 @@ class HydronicRuntime:
             if source.availability_entity_id is not None:
                 state = hass.states.get(source.availability_entity_id)
                 source_availability[source.id] = _state_is_available(state)
+        actuator_feedback: dict[str, ActuatorFeedback] = {}
+
+        def feedback_reading(entity_id: str | None) -> FeedbackObservation | None:
+            """Read one configured feedback entity without coercing its meaning."""
+            if entity_id is None:
+                return None
+            state = hass.states.get(entity_id)
+            if state is None:
+                return FeedbackObservation(None, None)
+            raw_state = getattr(state, "state", None)
+            value: float | bool | str | None = raw_state
+            with suppress(TypeError, ValueError):
+                value = float(raw_state)
+            observed_at = getattr(state, "last_reported", None)
+            if observed_at is None:
+                observed_at = getattr(state, "last_updated", None)
+            return FeedbackObservation(value, observed_at)
+
+        for valve in self.plant.valves.values():
+            if valve.position_entity_id is not None:
+                actuator_feedback[valve.id] = ActuatorFeedback(
+                    position=feedback_reading(valve.position_entity_id)
+                )
+        for pump in self.plant.pumps.values():
+            if any(
+                entity_id is not None
+                for entity_id in (pump.power_entity_id, pump.flow_entity_id, pump.fault_entity_id)
+            ):
+                actuator_feedback[pump.id] = ActuatorFeedback(
+                    power=feedback_reading(pump.power_entity_id),
+                    flow=feedback_reading(pump.flow_entity_id),
+                    fault=feedback_reading(pump.fault_entity_id),
+                )
         temperature_ids = set(self._temperature_sensor_ids())
         humidity_ids = set(self._humidity_sensor_ids())
         supply_ids = {
@@ -616,6 +735,7 @@ class HydronicRuntime:
             surface_temperatures={sensor_id: observations[sensor_id] for sensor_id in surface_ids},
             source_temperatures=source_temperatures,
             source_availability=source_availability,
+            actuator_feedback=actuator_feedback,
         )
         now = self._now()
         evaluation_plant = replace(

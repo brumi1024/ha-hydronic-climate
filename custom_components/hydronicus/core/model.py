@@ -29,6 +29,26 @@ class PumpState(StrEnum):
     OVERRUN = "overrun"
 
 
+class SafeShutdownPhase(StrEnum):
+    """Ordered phases of an explicit safe-shutdown request."""
+
+    IDLE = "idle"
+    SOURCE_RELEASED = "source_released"
+    PUMP_OVERRUN = "pump_overrun"
+    PUMPS_STOPPED = "pumps_stopped"
+    VALVES_CLOSED = "valves_closed"
+
+
+class ActuatorFeedbackStatus(StrEnum):
+    """Conservative status of configured actuator feedback."""
+
+    NOT_CONFIGURED = "not_configured"
+    HEALTHY = "healthy"
+    MISMATCH = "mismatch"
+    BLOCKED = "blocked"
+    UNKNOWN = "unknown"
+
+
 class PlantMode(StrEnum):
     """Operating mode shared by heating, cooling, and idle evaluations."""
 
@@ -396,6 +416,7 @@ class Source:
     minimum_temperature: float | None
     maximum_age_seconds: float
     hysteresis: float
+    demand_entity_id: str | None
 
     def __init__(
         self,
@@ -415,6 +436,8 @@ class Source:
         buffer_minimum_temperature: float | None = None,
         buffer_maximum_age_seconds: float | None = None,
         buffer_hysteresis: float | None = None,
+        demand_entity_id: str | None = None,
+        source_demand_entity_id: str | None = None,
     ) -> None:
         """Accept descriptive aliases while storing one stable source contract."""
         if source_type is not None:
@@ -429,6 +452,8 @@ class Source:
             maximum_age_seconds = buffer_maximum_age_seconds
         if buffer_hysteresis is not None:
             hysteresis = buffer_hysteresis
+        if source_demand_entity_id is not None:
+            demand_entity_id = source_demand_entity_id
         normalized_kind_value = str(kind)
         if normalized_kind_value in {"buffer", "temperature_buffer"}:
             normalized_kind_value = SourceKind.TEMPERATURE_QUALIFIED_BUFFER.value
@@ -442,6 +467,7 @@ class Source:
         object.__setattr__(self, "minimum_temperature", minimum_temperature)
         object.__setattr__(self, "maximum_age_seconds", float(maximum_age_seconds))
         object.__setattr__(self, "hysteresis", float(hysteresis))
+        object.__setattr__(self, "demand_entity_id", demand_entity_id)
 
     @property
     def source_type(self) -> SourceKind:
@@ -452,6 +478,11 @@ class Source:
     def temperature_threshold(self) -> float | None:
         """Return the buffer qualification threshold."""
         return self.minimum_temperature
+
+    @property
+    def source_demand_entity_id(self) -> str | None:
+        """Return the optional explicit source-demand binding."""
+        return self.demand_entity_id
 
 
 HeatSource = Source
@@ -468,6 +499,8 @@ class Valve:
     entity_id: str
     opening_time_seconds: float = 30.0
     readiness_entity_id: str | None = None
+    position_entity_id: str | None = None
+    position_max_age_seconds: float = 1800.0
 
     def __init__(
         self,
@@ -478,14 +511,22 @@ class Valve:
         readiness_entity_id: str | None = None,
         *,
         feedback_entity_id: str | None = None,
+        position_entity_id: str | None = None,
+        position_feedback_entity_id: str | None = None,
+        position_max_age_seconds: float = 1800.0,
+        feedback_max_age_seconds: float | None = None,
     ) -> None:
-        """Accept readiness and feedback terminology at the model boundary."""
+        """Accept readiness and position feedback terminology at the model boundary."""
         if (
             readiness_entity_id is not None
             and feedback_entity_id is not None
             and readiness_entity_id != feedback_entity_id
         ):
             raise ValueError("Valve readiness feedback was provided more than once.")
+        if position_feedback_entity_id is not None:
+            position_entity_id = position_feedback_entity_id
+        if feedback_max_age_seconds is not None:
+            position_max_age_seconds = feedback_max_age_seconds
         object.__setattr__(self, "id", id)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "entity_id", entity_id)
@@ -495,14 +536,31 @@ class Valve:
             "readiness_entity_id",
             readiness_entity_id if readiness_entity_id is not None else feedback_entity_id,
         )
+        object.__setattr__(self, "position_entity_id", position_entity_id)
+        object.__setattr__(self, "position_max_age_seconds", float(position_max_age_seconds))
 
     @property
     def feedback_entity_id(self) -> str | None:
         """Return the optional configured end-switch or readiness entity."""
         return self.readiness_entity_id
 
+    @property
+    def position_feedback_entity_id(self) -> str | None:
+        """Return the configured position feedback entity."""
+        return self.position_entity_id
 
-@dataclass(frozen=True, slots=True)
+    @property
+    def position_feedback_max_age_seconds(self) -> float:
+        """Return the configured position feedback freshness limit."""
+        return self.position_max_age_seconds
+
+    @property
+    def feedback_max_age_seconds(self) -> float:
+        """Return the configured position feedback freshness limit."""
+        return self.position_max_age_seconds
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class Pump:
     """A topology-owned pump with one Home Assistant entity binding."""
 
@@ -510,6 +568,91 @@ class Pump:
     name: str
     entity_id: str
     overrun_seconds: float = 120.0
+    power_entity_id: str | None = None
+    flow_entity_id: str | None = None
+    fault_entity_id: str | None = None
+    power_max_age_seconds: float = 1800.0
+    flow_max_age_seconds: float = 1800.0
+    fault_max_age_seconds: float = 1800.0
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        entity_id: str,
+        overrun_seconds: float = 120.0,
+        *,
+        power_entity_id: str | None = None,
+        power_feedback_entity_id: str | None = None,
+        flow_entity_id: str | None = None,
+        flow_feedback_entity_id: str | None = None,
+        fault_entity_id: str | None = None,
+        fault_feedback_entity_id: str | None = None,
+        power_max_age_seconds: float = 1800.0,
+        flow_max_age_seconds: float = 1800.0,
+        fault_max_age_seconds: float = 1800.0,
+        feedback_max_age_seconds: float | None = None,
+    ) -> None:
+        """Store independently optional pump feedback without changing legacy arguments."""
+        if power_feedback_entity_id is not None:
+            power_entity_id = power_feedback_entity_id
+        if flow_feedback_entity_id is not None:
+            flow_entity_id = flow_feedback_entity_id
+        if fault_feedback_entity_id is not None:
+            fault_entity_id = fault_feedback_entity_id
+        if feedback_max_age_seconds is not None:
+            power_max_age_seconds = feedback_max_age_seconds
+            flow_max_age_seconds = feedback_max_age_seconds
+            fault_max_age_seconds = feedback_max_age_seconds
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "entity_id", entity_id)
+        object.__setattr__(self, "overrun_seconds", overrun_seconds)
+        object.__setattr__(self, "power_entity_id", power_entity_id)
+        object.__setattr__(self, "flow_entity_id", flow_entity_id)
+        object.__setattr__(self, "fault_entity_id", fault_entity_id)
+        object.__setattr__(self, "power_max_age_seconds", float(power_max_age_seconds))
+        object.__setattr__(self, "flow_max_age_seconds", float(flow_max_age_seconds))
+        object.__setattr__(self, "fault_max_age_seconds", float(fault_max_age_seconds))
+
+    @property
+    def power_feedback_entity_id(self) -> str | None:
+        """Return the optional electrical power feedback entity."""
+        return self.power_entity_id
+
+    @property
+    def power_feedback_max_age_seconds(self) -> float:
+        """Return the configured power feedback freshness limit."""
+        return self.power_max_age_seconds
+
+    @property
+    def flow_feedback_entity_id(self) -> str | None:
+        """Return the optional flow feedback entity."""
+        return self.flow_entity_id
+
+    @property
+    def flow_feedback_max_age_seconds(self) -> float:
+        """Return the configured flow feedback freshness limit."""
+        return self.flow_max_age_seconds
+
+    @property
+    def fault_feedback_entity_id(self) -> str | None:
+        """Return the optional fault feedback entity."""
+        return self.fault_entity_id
+
+    @property
+    def fault_feedback_max_age_seconds(self) -> float:
+        """Return the configured fault feedback freshness limit."""
+        return self.fault_max_age_seconds
+
+    @property
+    def feedback_max_age_seconds(self) -> float:
+        """Return the configured common feedback freshness limit."""
+        return min(
+            self.power_max_age_seconds,
+            self.flow_max_age_seconds,
+            self.fault_max_age_seconds,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,6 +733,52 @@ class TemperatureObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class FeedbackObservation:
+    """One typed actuator observation with an explicit freshness timestamp."""
+
+    value: float | bool | str | None
+    observed_at: datetime | None
+
+
+ActuatorObservation = FeedbackObservation
+
+
+@dataclass(frozen=True, slots=True)
+class ActuatorFeedback:
+    """Optional, independently configured observations for one actuator."""
+
+    position: FeedbackObservation | None = None
+    power: FeedbackObservation | None = None
+    flow: FeedbackObservation | None = None
+    fault: FeedbackObservation | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ActuatorDiagnostic:
+    """Structured observed-state, mismatch, and dependent-block explanation."""
+
+    actuator_id: str
+    status: ActuatorFeedbackStatus
+    mismatch: bool = False
+    blocked: bool = False
+    expected: str | None = None
+    observed: str | float | bool | None = None
+    feedback_kind: str | None = None
+    stale_feedback: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def is_mismatch(self) -> bool:
+        """Return whether observed feedback disagrees with requested state."""
+        return self.mismatch
+
+    @property
+    def dependent_blocked(self) -> bool:
+        """Return whether dependent hydraulic paths must fail closed."""
+        return self.blocked
+
+
+@dataclass(frozen=True, slots=True)
 class PlantSnapshot:
     """All observations required by the pure controller.
 
@@ -604,6 +793,7 @@ class PlantSnapshot:
     surface_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
     source_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
     source_availability: Mapping[str, bool] = field(default_factory=dict)
+    actuator_feedback: Mapping[str, ActuatorFeedback] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -644,6 +834,8 @@ class RuntimeState:
     pumps: Mapping[str, PumpRuntime] = field(default_factory=dict)
     plant_mode: PlantMode = PlantMode.IDLE
     selected_source_id: str | None = None
+    safe_shutdown_phase: SafeShutdownPhase = SafeShutdownPhase.IDLE
+    safe_shutdown_started_at: datetime | None = None
 
     @property
     def zone_states(self) -> Mapping[str, ZoneRuntime]:
@@ -687,6 +879,16 @@ class ControlPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class SafeShutdownPlan:
+    """One idempotent step in the source-release and hydraulic shutdown order."""
+
+    phase: SafeShutdownPhase
+    commands: tuple[ActuatorCommand, ...] = ()
+    next_deadline: datetime | None = None
+    explanation: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ControllerDiagnostics:
     """Human-readable reasons for every significant controller decision."""
 
@@ -700,6 +902,21 @@ class ControllerDiagnostics:
     cooling_circuit_reasons: Mapping[str, str] = field(default_factory=dict)
     cooling_zone_reasons: Mapping[str, str] = field(default_factory=dict)
     mode_conflicts: tuple[ModeConflict, ...] = ()
+    actuator_diagnostics: Mapping[str, ActuatorDiagnostic] = field(default_factory=dict)
+
+    @property
+    def actuator_feedback(self) -> Mapping[str, ActuatorDiagnostic]:
+        """Return structured actuator feedback diagnostics."""
+        return self.actuator_diagnostics
+
+    @property
+    def mismatches(self) -> Mapping[str, ActuatorDiagnostic]:
+        """Return diagnostics for callers interested in manual intervention."""
+        return {
+            actuator_id: diagnostic
+            for actuator_id, diagnostic in self.actuator_diagnostics.items()
+            if diagnostic.mismatch
+        }
 
     @property
     def zone_diagnostics(self) -> Mapping[str, ZoneDecision]:

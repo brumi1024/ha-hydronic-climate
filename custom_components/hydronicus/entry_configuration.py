@@ -14,6 +14,8 @@ from .const import (
     CONF_ENTITY_ID,
     CONF_NAME,
     CONF_OPENING_TIME,
+    CONF_POSITION_FEEDBACK_ENTITY,
+    CONF_POSITION_FEEDBACK_MAX_AGE,
     CONF_PUMP_ID,
     CONF_ROUTES,
     CONF_SOURCES,
@@ -334,6 +336,8 @@ def effective_plant_configuration(
                 entity_id=str(_required(data, CONF_ENTITY_ID)),
                 opening_time_seconds=opening_time_seconds,
                 readiness_entity_id=data.get(CONF_VALVE_READINESS_ENTITY),
+                position_entity_id=data.get(CONF_POSITION_FEEDBACK_ENTITY),
+                position_max_age_seconds=float(data.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0)),
             )
         )
         selected = set(selected_circuit_ids)

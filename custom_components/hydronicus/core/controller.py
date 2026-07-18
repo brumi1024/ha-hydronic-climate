@@ -11,6 +11,8 @@ from statistics import median
 from .model import (
     ActuatorAction,
     ActuatorCommand,
+    ActuatorDiagnostic,
+    ActuatorFeedbackStatus,
     AggregationResult,
     CompiledPlant,
     ControllerDiagnostics,
@@ -18,6 +20,7 @@ from .model import (
     DeliveryRoute,
     EquipmentKind,
     Evaluation,
+    FeedbackObservation,
     InterlockStatus,
     ModeConflict,
     PlantMode,
@@ -25,6 +28,8 @@ from .model import (
     PumpRuntime,
     PumpState,
     RuntimeState,
+    SafeShutdownPhase,
+    SafeShutdownPlan,
     SafetyInterlockResult,
     Source,
     SourceKind,
@@ -800,6 +805,350 @@ def recommend_source(
     return SourceRecommendation(selected.id, explanation, eligible_ids)
 
 
+def _feedback_is_fresh(
+    observation: FeedbackObservation | None,
+    *,
+    max_age_seconds: float,
+    now: datetime,
+) -> tuple[bool, str]:
+    """Validate a configured feedback reading at the safety decision boundary."""
+    if observation is None or observation.value is None:
+        return False, "missing"
+    if observation.observed_at is None:
+        return False, "missing timestamp"
+    try:
+        age = now - observation.observed_at
+    except (TypeError, ValueError):
+        return False, "invalid timestamp"
+    if age > timedelta(seconds=max_age_seconds):
+        return False, "stale"
+    return True, "fresh"
+
+
+def _feedback_boolean(value: float | bool | str | None) -> bool | None:
+    """Decode a boolean feedback signal without guessing unknown values."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"on", "true", "yes", "fault", "error", "1", "active"}:
+            return True
+        if normalized in {"off", "false", "no", "ok", "clear", "0", "inactive"}:
+            return False
+    return None
+
+
+def _feedback_active(value: float | bool | str | None) -> bool | None:
+    """Decode power or flow feedback as active, inactive, or unknown."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(isfinite(float(value)) and float(value) > 0)
+    return _feedback_boolean(value)
+
+
+def _position_state(value: float | bool | str | None) -> str | None:
+    """Normalize a valve position feedback reading to open or closed."""
+    if isinstance(value, bool):
+        return "open" if value else "closed"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not isfinite(float(value)):
+            return None
+        if float(value) >= 99.0:
+            return "open"
+        if float(value) <= 1.0:
+            return "closed"
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"open", "opening", "on", "true", "100", "100%"}:
+            return "open" if normalized not in {"opening"} else None
+        if normalized in {"closed", "closing", "off", "false", "0", "0%"}:
+            return "closed" if normalized not in {"closing"} else None
+    return None
+
+
+def _feedback_diagnostics(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    now: datetime,
+    expected_states: Mapping[str, str],
+) -> dict[str, ActuatorDiagnostic]:
+    """Return stable feedback diagnostics for every configured actuator."""
+    diagnostics: dict[str, ActuatorDiagnostic] = {}
+    for actuator_id, valve in plant.valves.items():
+        if valve.position_entity_id is None:
+            diagnostics[actuator_id] = ActuatorDiagnostic(
+                actuator_id,
+                ActuatorFeedbackStatus.NOT_CONFIGURED,
+                expected=expected_states.get(actuator_id),
+                reason="No valve position feedback is configured.",
+            )
+            continue
+        feedback = snapshot.actuator_feedback.get(actuator_id)
+        observation = feedback.position if feedback is not None else None
+        fresh, reason = _feedback_is_fresh(
+            observation,
+            max_age_seconds=valve.position_max_age_seconds,
+            now=now,
+        )
+        expected = expected_states.get(actuator_id, "closed")
+        if not fresh:
+            diagnostics[actuator_id] = ActuatorDiagnostic(
+                actuator_id,
+                (
+                    ActuatorFeedbackStatus.BLOCKED
+                    if expected == "open"
+                    else ActuatorFeedbackStatus.UNKNOWN
+                ),
+                blocked=expected == "open",
+                expected=expected,
+                feedback_kind="position",
+                stale_feedback=("position",),
+                reason=f"Valve position feedback is {reason}; dependent circuits fail closed.",
+            )
+            continue
+        assert observation is not None
+        valve_observed = _position_state(observation.value)
+        mismatch = valve_observed is None or valve_observed != expected
+        blocked = expected == "open" and valve_observed != "open"
+        diagnostics[actuator_id] = ActuatorDiagnostic(
+            actuator_id,
+            ActuatorFeedbackStatus.BLOCKED if blocked else ActuatorFeedbackStatus.MISMATCH
+            if mismatch
+            else ActuatorFeedbackStatus.HEALTHY,
+            mismatch=mismatch,
+            blocked=blocked,
+            expected=expected,
+            observed=valve_observed,
+            feedback_kind="position",
+            reason=(
+                f"Manual valve mismatch: expected {expected}, "
+                f"observed {valve_observed or 'unknown'}."
+                if mismatch
+                else "Valve position feedback agrees with the requested state."
+            ),
+        )
+
+    for actuator_id, pump in plant.pumps.items():
+        configured = (
+            ("power", pump.power_entity_id, pump.power_max_age_seconds),
+            ("flow", pump.flow_entity_id, pump.flow_max_age_seconds),
+            ("fault", pump.fault_entity_id, pump.fault_max_age_seconds),
+        )
+        configured = tuple(item for item in configured if item[1] is not None)
+        if not configured:
+            diagnostics[actuator_id] = ActuatorDiagnostic(
+                actuator_id,
+                ActuatorFeedbackStatus.NOT_CONFIGURED,
+                expected=expected_states.get(actuator_id),
+                reason="No pump feedback is configured.",
+            )
+            continue
+        feedback = snapshot.actuator_feedback.get(actuator_id)
+        expected = expected_states.get(actuator_id, "off")
+        stale: list[str] = []
+        mismatch = False
+        blocked = False
+        pump_observed: str | float | bool | None = None
+        reasons: list[str] = []
+        for kind, _entity_id, max_age in configured:
+            observation = getattr(feedback, kind, None) if feedback is not None else None
+            fresh, reason = _feedback_is_fresh(
+                observation,
+                max_age_seconds=max_age,
+                now=now,
+            )
+            if not fresh:
+                stale.append(kind)
+                blocked = True
+                reasons.append(f"{kind} feedback is {reason}")
+                continue
+            assert observation is not None
+            pump_observed = observation.value
+            if kind == "fault":
+                fault = _feedback_boolean(observation.value)
+                if fault is None:
+                    blocked = True
+                    reasons.append("fault feedback is unknown")
+                elif fault:
+                    blocked = True
+                    reasons.append("pump fault is asserted")
+            else:
+                active = _feedback_active(observation.value)
+                expected_active = expected == "on"
+                if active is None:
+                    mismatch = True
+                    reasons.append(f"{kind} feedback is unknown")
+                elif active is not expected_active:
+                    mismatch = True
+                    reasons.append(
+                        f"manual pump mismatch: expected {kind} "
+                        f"{'active' if expected_active else 'inactive'}, "
+                        f"observed {'active' if active else 'inactive'}"
+                    )
+        if blocked:
+            status = ActuatorFeedbackStatus.BLOCKED
+        elif mismatch:
+            status = ActuatorFeedbackStatus.MISMATCH
+        else:
+            status = ActuatorFeedbackStatus.HEALTHY
+        diagnostics[actuator_id] = ActuatorDiagnostic(
+            actuator_id,
+            status,
+            mismatch=mismatch,
+            blocked=blocked,
+            expected=expected,
+            observed=pump_observed,
+            feedback_kind=stale[0] if stale else None,
+            stale_feedback=tuple(stale),
+            reason=(
+                "; ".join(reasons)
+                if reasons
+                else "Configured pump feedback agrees with the requested state."
+            ),
+        )
+    return diagnostics
+
+
+def safe_shutdown(
+    plant: CompiledPlant,
+    runtime: RuntimeState,
+    now: datetime,
+) -> tuple[SafeShutdownPlan, RuntimeState]:
+    """Build one idempotent safe-shutdown step in explicit safe order.
+
+    Source demand is released first, pump overrun is observed next, pumps are
+    stopped only after their overrun deadline, and valves close only after all
+    pumps are off.  The function is pure; an adapter may intercept or shadow
+    the returned commands.
+    """
+    phase = runtime.safe_shutdown_phase
+    source_commands: list[ActuatorCommand] = []
+    if phase is SafeShutdownPhase.IDLE:
+        source_commands = [
+            ActuatorCommand(
+                f"source:{source.id}",
+                ActuatorAction.TURN_OFF,
+                "Release source demand before hydraulic shutdown.",
+            )
+            for source in sorted(plant.sources.values(), key=lambda item: item.id)
+            if source.demand_entity_id is not None
+        ]
+
+    pumps = dict(runtime.pumps)
+    valves = dict(runtime.valves)
+    commands = list(source_commands)
+    next_deadline: datetime | None = None
+    pump_stop_commands: list[ActuatorCommand] = []
+    active_pumps = False
+    for pump_id, pump in sorted(plant.pumps.items()):
+        previous = pumps.get(pump_id, PumpRuntime())
+        if previous.state is PumpState.RUNNING:
+            active_pumps = True
+            if pump.overrun_seconds > 0:
+                pumps[pump_id] = PumpRuntime(PumpState.OVERRUN, now)
+                next_deadline = min(
+                    (next_deadline or now + timedelta(seconds=pump.overrun_seconds)),
+                    now + timedelta(seconds=pump.overrun_seconds),
+                )
+            else:
+                pumps[pump_id] = PumpRuntime(PumpState.OFF, now)
+                pump_stop_commands.append(
+                    ActuatorCommand(
+                        pump_id,
+                        ActuatorAction.TURN_OFF,
+                        "Stop pump after source release; no overrun is configured.",
+                    )
+                )
+        elif previous.state is PumpState.OVERRUN:
+            active_pumps = True
+            deadline = (previous.changed_at or now) + timedelta(seconds=pump.overrun_seconds)
+            if deadline > now:
+                next_deadline = min(next_deadline or deadline, deadline)
+            else:
+                pumps[pump_id] = PumpRuntime(PumpState.OFF, now)
+                pump_stop_commands.append(
+                    ActuatorCommand(
+                        pump_id,
+                        ActuatorAction.TURN_OFF,
+                        "Pump overrun completed during safe shutdown.",
+                    )
+                )
+
+    if active_pumps and next_deadline is not None:
+        plan = SafeShutdownPlan(
+            SafeShutdownPhase.PUMP_OVERRUN,
+            tuple(commands),
+            next_deadline,
+            "Source demand released; observing pump overrun before stopping pumps.",
+        )
+        return plan, RuntimeState(
+            zone_demands={},
+            cooling_zone_demands={},
+            zone_runtime=runtime.zone_runtime,
+            valves=valves,
+            pumps=pumps,
+            plant_mode=PlantMode.IDLE,
+            selected_source_id=None,
+            safe_shutdown_phase=SafeShutdownPhase.PUMP_OVERRUN,
+            safe_shutdown_started_at=runtime.safe_shutdown_started_at or now,
+        )
+
+    commands.extend(pump_stop_commands)
+    if pump_stop_commands:
+        plan = SafeShutdownPlan(
+            SafeShutdownPhase.PUMPS_STOPPED,
+            tuple(commands),
+            None,
+            "Source released and pumps stopped; valve closure is the next safe step.",
+        )
+        return plan, RuntimeState(
+            zone_demands={},
+            cooling_zone_demands={},
+            zone_runtime=runtime.zone_runtime,
+            valves=valves,
+            pumps=pumps,
+            plant_mode=PlantMode.IDLE,
+            selected_source_id=None,
+            safe_shutdown_phase=SafeShutdownPhase.PUMPS_STOPPED,
+            safe_shutdown_started_at=runtime.safe_shutdown_started_at or now,
+        )
+
+    valve_close_commands: list[ActuatorCommand] = []
+    for valve_id, valve_runtime in sorted(valves.items()):
+        if valve_runtime.state is not ValveState.CLOSED:
+            valves[valve_id] = ValveRuntime(ValveState.CLOSED, now)
+            valve_close_commands.append(
+                ActuatorCommand(
+                    valve_id,
+                    ActuatorAction.CLOSE,
+                    "Close valve after all pumps have stopped.",
+                )
+            )
+    commands.extend(valve_close_commands)
+    phase = SafeShutdownPhase.VALVES_CLOSED
+    plan = SafeShutdownPlan(
+        phase,
+        tuple(commands),
+        None,
+        "All source demand, pumps, and valves are safely released.",
+    )
+    return plan, RuntimeState(
+        zone_demands={},
+        cooling_zone_demands={},
+        zone_runtime=runtime.zone_runtime,
+        valves=valves,
+        pumps=pumps,
+        plant_mode=PlantMode.IDLE,
+        selected_source_id=None,
+        safe_shutdown_phase=phase,
+        safe_shutdown_started_at=runtime.safe_shutdown_started_at or now,
+    )
+
+
 def evaluate(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -1042,6 +1391,17 @@ def evaluate(
         for valve_id in circuit.valve_ids:
             cooling_valve_consumers[valve_id].add(circuit.id)
 
+    feedback_expected: dict[str, str] = {
+        valve_id: "open" if valve_consumers.get(valve_id) else "closed"
+        for valve_id in plant.valves
+    }
+    feedback_diagnostics = _feedback_diagnostics(plant, snapshot, now, feedback_expected)
+    blocked_valves = {
+        actuator_id
+        for actuator_id, diagnostic in feedback_diagnostics.items()
+        if actuator_id in plant.valves and diagnostic.blocked
+    }
+
     valves: dict[str, ValveRuntime] = {}
     valve_ready: set[str] = set()
     commands: list[ActuatorCommand] = []
@@ -1051,7 +1411,14 @@ def evaluate(
         consumers = valve_consumers.get(valve.id, set())
         previous = runtime.valves.get(valve.id, ValveRuntime())
         if consumers:
-            if previous.state is ValveState.CLOSED:
+            position_feedback = feedback_diagnostics[valve.id]
+            observed_open = position_feedback.observed == "open"
+            if valve.position_entity_id is not None and observed_open:
+                current = ValveRuntime(ValveState.OPEN, now, True)
+                actuator_reasons[valve.id] = (
+                    "Position feedback confirms the valve is open for active circuit consumers."
+                )
+            elif previous.state is ValveState.CLOSED:
                 current = ValveRuntime(ValveState.OPENING, now, False)
                 commands.append(
                     ActuatorCommand(
@@ -1088,7 +1455,7 @@ def evaluate(
             current = previous
             actuator_reasons[valve.id] = "Idle because its consumer set is empty."
         valves[valve.id] = current
-        if current.is_ready:
+        if current.state is ValveState.OPEN and valve.id not in blocked_valves:
             valve_ready.add(valve.id)
 
     ready_circuits = {
@@ -1099,6 +1466,35 @@ def evaluate(
     pump_consumers: dict[str, set[str]] = defaultdict(set)
     for circuit_id in sorted(ready_circuits):
         pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
+
+    feedback_expected.update(
+        {
+            pump_id: "on" if pump_consumers.get(pump_id) else "off"
+            for pump_id in plant.pumps
+        }
+    )
+    feedback_diagnostics = _feedback_diagnostics(plant, snapshot, now, feedback_expected)
+    pump_dependent_requested = {
+        pump_id: {
+            circuit_id
+            for circuit_id in requested_circuits
+            if plant.circuits[circuit_id].pump_id == pump_id
+        }
+        for pump_id in plant.pumps
+    }
+    blocked_pumps = {
+        pump_id
+        for pump_id, diagnostic in feedback_diagnostics.items()
+        if pump_id in plant.pumps and diagnostic.blocked and pump_dependent_requested[pump_id]
+    }
+    blocked_pump_circuits = {
+        circuit_id
+        for pump_id in blocked_pumps
+        for circuit_id in pump_dependent_requested[pump_id]
+    }
+    for pump_id in blocked_pumps:
+        pump_consumers[pump_id].difference_update(blocked_pump_circuits)
+    ready_circuits.difference_update(blocked_pump_circuits)
 
     cooling_pump_consumers: dict[str, set[str]] = defaultdict(set)
     ready_cooling_circuits = {
@@ -1181,7 +1577,13 @@ def evaluate(
 
     circuit_reasons = {
         circuit_id: (
-            "Ready: eligible delivery route "
+            "Blocked: "
+            + feedback_diagnostics[plant.circuits[circuit_id].pump_id].reason
+            if circuit_id in blocked_pump_circuits
+            else "Blocked: required valve feedback is unavailable or unsafe."
+            if circuit_id in requested_circuits
+            and any(valve_id in blocked_valves for valve_id in plant.circuits[circuit_id].valve_ids)
+            else "Ready: eligible delivery route "
             + ", ".join(route_ids_by_circuit[circuit_id])
             + " has valve-ready demand."
             if circuit_id in ready_circuits
@@ -1257,5 +1659,6 @@ def evaluate(
             cooling_circuit_reasons=cooling_circuit_reasons,
             cooling_zone_reasons=cooling_zone_reasons,
             mode_conflicts=mode_conflicts,
+            actuator_diagnostics=feedback_diagnostics,
         ),
     )

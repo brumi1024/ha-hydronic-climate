@@ -28,6 +28,10 @@ from .const import (
     CONF_DESIGNATED_REFERENCE,
     CONF_ECO_TARGET,
     CONF_ENTITY_ID,
+    CONF_FAULT_FEEDBACK_ENTITY,
+    CONF_FAULT_FEEDBACK_MAX_AGE,
+    CONF_FLOW_FEEDBACK_ENTITY,
+    CONF_FLOW_FEEDBACK_MAX_AGE,
     CONF_HEATING_START_DELTA,
     CONF_HEATING_STOP_DELTA,
     CONF_HUMIDITY_SENSOR_METADATA,
@@ -39,6 +43,10 @@ from .const import (
     CONF_OPENING_TIME,
     CONF_OVERRUN,
     CONF_PLANT_ID,
+    CONF_POSITION_FEEDBACK_ENTITY,
+    CONF_POSITION_FEEDBACK_MAX_AGE,
+    CONF_POWER_FEEDBACK_ENTITY,
+    CONF_POWER_FEEDBACK_MAX_AGE,
     CONF_PRESET_TARGETS,
     CONF_PUMP_ENTITY,
     CONF_PUMP_ID,
@@ -49,6 +57,7 @@ from .const import (
     CONF_SENSOR_ENTITY,
     CONF_SHADOW_MODE,
     CONF_SOURCE_AVAILABILITY_ENTITY,
+    CONF_SOURCE_DEMAND_ENTITY,
     CONF_SOURCE_HYSTERESIS,
     CONF_SOURCE_MAXIMUM_AGE,
     CONF_SOURCE_MINIMUM_TEMPERATURE,
@@ -1049,6 +1058,8 @@ def _valve_actuator_data(user_input: Mapping[str, Any], actuator_id: str) -> dic
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
         CONF_ENTITY_ID: user_input[CONF_ENTITY_ID],
         CONF_OPENING_TIME: user_input[CONF_OPENING_TIME],
+        CONF_POSITION_FEEDBACK_ENTITY: user_input.get(CONF_POSITION_FEEDBACK_ENTITY),
+        CONF_POSITION_FEEDBACK_MAX_AGE: user_input.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0),
         CONF_CIRCUIT_IDS: user_input[CONF_CIRCUIT_IDS],
     }
     if user_input.get(CONF_VALVE_READINESS_ENTITY):
@@ -1078,6 +1089,15 @@ def _valve_actuator_schema(
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["binary_sensor", "switch", "valve"])
             ),
+            vol.Optional(
+                CONF_POSITION_FEEDBACK_ENTITY,
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Optional(
+                CONF_POSITION_FEEDBACK_MAX_AGE,
+                default=defaults.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
             vol.Required(
                 CONF_CIRCUIT_IDS,
                 default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
@@ -1236,6 +1256,7 @@ def _source_data(user_input: Mapping[str, Any], source_id: str) -> dict[str, Any
         CONF_SOURCE_TYPE: str(user_input.get(CONF_SOURCE_TYPE, SOURCE_KIND_EXTERNAL)),
         CONF_SOURCE_PRIORITY: int(user_input.get(CONF_SOURCE_PRIORITY, DEFAULT_SOURCE_PRIORITY)),
         CONF_SOURCE_AVAILABILITY_ENTITY: user_input.get(CONF_SOURCE_AVAILABILITY_ENTITY),
+        CONF_SOURCE_DEMAND_ENTITY: user_input.get(CONF_SOURCE_DEMAND_ENTITY),
         CONF_SOURCE_TEMPERATURE_ENTITY: user_input.get(CONF_SOURCE_TEMPERATURE_ENTITY),
         CONF_SOURCE_MINIMUM_TEMPERATURE: user_input.get(CONF_SOURCE_MINIMUM_TEMPERATURE, 0.0),
         CONF_SOURCE_MAXIMUM_AGE: user_input.get(
@@ -1288,6 +1309,14 @@ def _source_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
                 default=defaults.get(CONF_SOURCE_TEMPERATURE_ENTITY),
             ): vol.Maybe(
                 selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+            ),
+            vol.Optional(
+                CONF_SOURCE_DEMAND_ENTITY,
+                default=defaults.get(CONF_SOURCE_DEMAND_ENTITY),
+            ): vol.Maybe(
+                selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=["switch", "valve"])
+                ),
             ),
             vol.Required(
                 CONF_SOURCE_MINIMUM_TEMPERATURE,
@@ -1632,6 +1661,12 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     valve_data[CONF_VALVE_READINESS_ENTITY] = user_input[
                         CONF_VALVE_READINESS_ENTITY
                     ]
+                valve_data[CONF_POSITION_FEEDBACK_ENTITY] = user_input.get(
+                    CONF_POSITION_FEEDBACK_ENTITY
+                )
+                valve_data[CONF_POSITION_FEEDBACK_MAX_AGE] = user_input.get(
+                    CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0
+                )
                 self._draft[CONF_TOPOLOGY][CONF_VALVES] = [valve_data]
                 self._draft[CONF_TOPOLOGY][CONF_PUMPS] = [
                     {
@@ -1639,6 +1674,20 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_NAME: f"{name} pump",
                         CONF_ENTITY_ID: user_input[CONF_PUMP_ENTITY],
                         CONF_OVERRUN: user_input[CONF_PUMP_OVERRUN],
+                        CONF_POWER_FEEDBACK_ENTITY: user_input.get(CONF_POWER_FEEDBACK_ENTITY),
+                        CONF_POWER_FEEDBACK_MAX_AGE: user_input.get(
+                            CONF_POWER_FEEDBACK_MAX_AGE, 1800.0
+                        ),
+                        CONF_FLOW_FEEDBACK_ENTITY: user_input.get(CONF_FLOW_FEEDBACK_ENTITY),
+                        CONF_FLOW_FEEDBACK_MAX_AGE: user_input.get(
+                            CONF_FLOW_FEEDBACK_MAX_AGE, 1800.0
+                        ),
+                        CONF_FAULT_FEEDBACK_ENTITY: user_input.get(
+                            CONF_FAULT_FEEDBACK_ENTITY
+                        ),
+                        CONF_FAULT_FEEDBACK_MAX_AGE: user_input.get(
+                            CONF_FAULT_FEEDBACK_MAX_AGE, 1800.0
+                        ),
                     }
                 ]
                 self._draft[CONF_TOPOLOGY][CONF_CIRCUITS] = [
@@ -1693,6 +1742,30 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_PUMP_OVERRUN, default=DEFAULT_PUMP_OVERRUN): vol.All(
                         vol.Coerce(float), vol.Range(min=0)
                     ),
+                    vol.Optional(CONF_POSITION_FEEDBACK_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(
+                        CONF_POSITION_FEEDBACK_MAX_AGE, default=1800.0
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+                    vol.Optional(CONF_POWER_FEEDBACK_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(
+                        CONF_POWER_FEEDBACK_MAX_AGE, default=1800.0
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+                    vol.Optional(CONF_FLOW_FEEDBACK_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Optional(
+                        CONF_FLOW_FEEDBACK_MAX_AGE, default=1800.0
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+                    vol.Optional(CONF_FAULT_FEEDBACK_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
+                    ),
+                    vol.Optional(
+                        CONF_FAULT_FEEDBACK_MAX_AGE, default=1800.0
+                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
                     vol.Optional(CONF_COOLING_ENABLED, default=False): selector.BooleanSelector(),
                     vol.Optional(CONF_SUPPLY_TEMPERATURE_SENSOR): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor")
