@@ -125,8 +125,9 @@ It is not a boiler safety controller, pressure-relief system, flow proving devic
 Keep physical protection independent of Home Assistant, including the protections required by the heat source, emitters, water circuit, electrical installation, and local regulations.
 Do not use the integration to bypass a hardware interlock or to decide whether equipment is safe to operate.
 
-The software currently calculates heating demand in shadow mode only.
-Cooling interlocks, dew-point checks, source selection, and physical actuator execution are not available in this release.
+The software currently calculates heating, cooling, and source decisions in shadow mode by default.
+Cooling interlocks, dew-point checks, source selection, and explicit actuator execution are available as non-production implementation seams and diagnostics.
+They are not production safety controls or an authorization to operate physical equipment in this release.
 
 Read [safety limits](docs/safety.md) before using any real sensor data.
 
