@@ -13,12 +13,12 @@ It models comfort zones, hydraulic circuits, delivery routes, valves, pumps, and
 
 ## Current status
 
-The repository currently contains an early alpha shadow-mode implementation.
-The current release is `0.1.0-alpha.1`.
+The repository contains a public-beta shadow-mode implementation.
+The current release is `0.5.0`.
 
 The implementation can create and validate a plant through the Home Assistant UI, observe configured sensors, calculate heating and cooling shadow demand, recommend eligible sources, and expose the virtual sequence that would be needed by the configured topology.
 The runtime also contains an explicit actuator executor seam for synthetic and intercepted service-call tests.
-New plants remain in shadow mode, and this alpha release is not a production authorization for physical control.
+New plants remain in shadow mode, and this public beta is not a production authorization for physical control.
 
 The current implementation includes:
 
@@ -59,7 +59,7 @@ The integration is not currently part of the HACS default repository list, so th
 ## First simulated Plant
 
 Use a disposable Home Assistant instance or a staging configuration with synthetic entities.
-Do not bind an alpha shadow-mode test to equipment that must not be observed or controlled by the test.
+Do not bind a public-beta shadow-mode test to equipment that must not be observed or controlled by the test.
 
 Before opening the Hydronicus setup flow, prepare these generic entities in Home Assistant:
 
@@ -146,7 +146,7 @@ See [the development environment](docs/development.md) for local setup and verif
 See [the staging contract](docs/home-server-staging.md) for synthetic and shadow runtime checks.
 See [the implementation plan](docs/implementation-plan.md) for the roadmap and milestone boundaries.
 
-Documentation in this repository describes the current alpha where it can be verified.
-Public-beta feature accuracy and final release packaging will continue to be reviewed as Milestones 4 through 7 add active control, safety interlocks, cooling, and source coordination.
+Documentation in this repository describes the current public beta where it can be verified.
+Active physical control remains outside this public-beta release, even where synthetic execution seams exist for tests.
 
 Contributions are welcome while the project is taking shape.

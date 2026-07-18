@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus import async_migrate_entry
@@ -25,6 +26,22 @@ from custom_components.hydronicus.migration import (
 )
 
 FIXTURE_PATH = Path(__file__).parents[1] / "fixtures" / "migrations" / "v1-current-topology.json"
+MATRIX_PATH = Path(__file__).parents[1] / "fixtures" / "migrations" / "public-beta-matrix.json"
+
+
+def _public_beta_upgrade_cases() -> list[tuple[str, str, int, int]]:
+    with MATRIX_PATH.open(encoding="utf-8") as matrix_file:
+        matrix = json.load(matrix_file)
+    return [
+        (
+            predecessor["fixture"],
+            predecessor["release"],
+            version[0],
+            version[1],
+        )
+        for predecessor in matrix["supported_predecessors"]
+        for version in predecessor["config_entry_versions"]
+    ]
 
 
 def _load_fixture() -> dict[str, Any]:
@@ -143,6 +160,62 @@ async def test_invalid_historical_topology_does_not_update_entry(hass) -> None:
     assert await async_migrate_entry(hass, entry) is False
     assert dict(entry.data) == original_data
     assert (entry.version, entry.minor_version) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "release", "version", "minor_version"),
+    _public_beta_upgrade_cases(),
+    ids=lambda value: str(value),
+)
+async def test_every_supported_public_beta_predecessor_preserves_topology_and_entity_ids(
+    hass, fixture_name: str, release: str, version: int, minor_version: int
+) -> None:
+    """Every distributed predecessor reloads with the same UUID graph and unique IDs."""
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "migrations" / fixture_name
+    with fixture_path.open(encoding="utf-8") as fixture_file:
+        fixture = json.load(fixture_file)
+    assert fixture["release"] == release
+    fixture_entry = fixture["entry"]
+    original_topology = deepcopy(fixture_entry["data"]["topology"])
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=fixture_entry["title"],
+        data=fixture_entry["data"],
+        version=version,
+        minor_version=minor_version,
+    )
+    hass.states.async_set("sensor.synthetic_zone_temperature", "19.0")
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert (entry.version, entry.minor_version) == CURRENT_CONFIG_ENTRY_VERSION
+    assert entry.data["topology"] == original_topology
+
+    runtime = entry.runtime_data
+    assert runtime.plant.id == fixture_entry["data"]["plant_id"]
+    assert runtime.plant.routes[0].zone_id == original_topology["zones"][0]["id"]
+    assert runtime.plant.routes[0].circuit_id == original_topology["circuits"][0]["id"]
+    circuit_id = original_topology["circuits"][0]["id"]
+    circuit = runtime.plant.circuits[circuit_id]
+    assert circuit.valve_ids == (original_topology["valves"][0]["id"],)
+    assert circuit.pump_id == original_topology["pumps"][0]["id"]
+
+    registry = er.async_get(hass)
+    unique_ids_before = {
+        entity.unique_id
+        for entity in registry.entities.values()
+        if entity.config_entry_id == entry.entry_id
+    }
+    assert unique_ids_before
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    assert entry.data["topology"] == original_topology
+    unique_ids_after = {
+        entity.unique_id
+        for entity in registry.entities.values()
+        if entity.config_entry_id == entry.entry_id
+    }
+    assert unique_ids_after == unique_ids_before
 
 
 def test_historical_fixture_uses_only_synthetic_entity_ids() -> None:

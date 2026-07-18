@@ -30,7 +30,7 @@ Keep physical temperature, condensation, pressure, and flow safeguards independe
 ## Known limitations
 
 New plants remain in shadow mode and do not issue physical actuator service calls.
-The generic executor is covered through synthetic and intercepted tests, but active physical rollout is not supported by this alpha release.
+The generic executor is covered through synthetic and intercepted tests, but active physical rollout is not supported by this public-beta release.
 
 Production cooling control, source changeover, command failure recovery, diagnostics, and repairs remain limited or planned while the public beta matures.
 

@@ -1,6 +1,7 @@
 {
   "format": "hydronicus-config-entry",
   "format_version": 1,
+  "release": "0.1.0-alpha.1",
   "entry": {
     "version": 1,
     "minor_version": 0,
