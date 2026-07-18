@@ -120,6 +120,14 @@ def _number(
     return number
 
 
+def _boolean(mapping: Mapping[str, Any], key: str, default: bool) -> bool:
+    """Decode an explicit boolean without turning malformed data truthy."""
+    value = mapping.get(key, default)
+    if not isinstance(value, bool):
+        raise StoredTopologyError(f"Stored topology field {key!r} must be boolean.")
+    return value
+
+
 def _required_number(mapping: Mapping[str, Any], key: str, *, non_negative: bool = False) -> float:
     """Decode a required finite numeric field."""
     _required(mapping, key)
@@ -538,7 +546,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                 name=str(_required(item, "name")),
                 valve_ids=_string_list(item, "valve_ids", require_uuid=True),
                 pump_id=_id(item, "pump_id", require_uuid=True),
-                cooling_enabled=bool(item.get("cooling_enabled", False)),
+                cooling_enabled=_boolean(item, "cooling_enabled", False),
                 supply_temperature_sensor=item.get("supply_temperature_sensor"),
                 surface_temperature_sensor=item.get("surface_temperature_sensor"),
                 condensation_margin=_number(item, "condensation_margin", 2.0, non_negative=True),
@@ -597,7 +605,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                     name=name,
                     valve_ids=(valve_id,),
                     pump_id=pump_id,
-                    cooling_enabled=bool(item.get("cooling_enabled", False)),
+                    cooling_enabled=_boolean(item, "cooling_enabled", False),
                     supply_temperature_sensor=item.get("supply_temperature_sensor"),
                     surface_temperature_sensor=item.get("surface_temperature_sensor"),
                     condensation_margin=_number(

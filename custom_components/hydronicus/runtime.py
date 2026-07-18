@@ -590,6 +590,7 @@ class HydronicRuntime:
             result.control_plan,
             lambda operation: self._async_dispatch_actuator(hass, operation),
             force_shadow=cooling_shadow_only,
+            force_shadow_actuator_ids=result.control_plan.cooling_actuator_ids,
         )
         if self._entry is not None or self._hass is not None:
             self._schedule_next_transition(hass, now)

@@ -176,6 +176,7 @@ class ActuatorExecutor:
         dispatch: DispatchOperation,
         *,
         force_shadow: bool = False,
+        force_shadow_actuator_ids: frozenset[str] = frozenset(),
     ) -> ExecutionReport:
         """Dispatch only unsatisfied, non-shadowed explicit operations."""
         executed: list[ActuatorOperation] = []
@@ -194,6 +195,7 @@ class ActuatorExecutor:
                 continue
             if (
                 force_shadow
+                or command.actuator_id in force_shadow_actuator_ids
                 or self.shadow_mode
                 or self.actuator_shadow_modes.get(command.actuator_id, False)
             ):

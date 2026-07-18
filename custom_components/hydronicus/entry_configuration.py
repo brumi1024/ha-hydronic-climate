@@ -126,6 +126,14 @@ def _route_enabled(data: Mapping[str, Any]) -> bool:
     return enabled
 
 
+def _cooling_enabled(data: Mapping[str, Any]) -> bool:
+    """Read explicit circuit mode compatibility without truthy coercion."""
+    enabled = data.get("cooling_enabled", False)
+    if not isinstance(enabled, bool):
+        raise StoredTopologyError("Circuit cooling_enabled must be a boolean.")
+    return enabled
+
+
 def _circuit_routes(
     data: Mapping[str, Any], circuit_id: str, zone_ids: tuple[str, ...]
 ) -> tuple[DeliveryRoute, ...]:
@@ -249,7 +257,7 @@ def effective_plant_configuration(
                 name=str(_required(data, CONF_NAME)),
                 valve_ids=valve_ids,
                 pump_id=pump_id,
-                cooling_enabled=bool(data.get("cooling_enabled", False)),
+                cooling_enabled=_cooling_enabled(data),
                 supply_temperature_sensor=data.get("supply_temperature_sensor"),
                 surface_temperature_sensor=data.get("surface_temperature_sensor"),
                 condensation_margin=float(data.get("condensation_margin", 2.0)),

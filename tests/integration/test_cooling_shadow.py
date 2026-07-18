@@ -26,6 +26,12 @@ VALVE_ID = "00000000-0000-4000-8000-000000000003"
 PUMP_ID = "00000000-0000-4000-8000-000000000004"
 CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
 ROUTE_ID = "00000000-0000-4000-8000-000000000006"
+HEATING_ZONE_ID = "00000000-0000-4000-8000-000000000010"
+COOLING_ZONE_ID = "00000000-0000-4000-8000-000000000011"
+HEATING_CIRCUIT_ID = "00000000-0000-4000-8000-000000000012"
+COOLING_CIRCUIT_ID = "00000000-0000-4000-8000-000000000013"
+HEATING_ROUTE_ID = "00000000-0000-4000-8000-000000000014"
+COOLING_ROUTE_ID = "00000000-0000-4000-8000-000000000015"
 
 
 def _cooling_entry(*, shadow_mode: bool = True) -> MockConfigEntry:
@@ -79,6 +85,80 @@ def _cooling_entry(*, shadow_mode: bool = True) -> MockConfigEntry:
                     }
                 ],
                 "routes": [{"id": ROUTE_ID, "zone_id": ZONE_ID, "circuit_id": CIRCUIT_ID}],
+            },
+        },
+    )
+
+
+def _shared_mode_entry() -> MockConfigEntry:
+    """Return synthetic heating and cooling routes sharing a valve and pump."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title="Shared mode plant",
+        data={
+            CONF_NAME: "Shared mode plant",
+            CONF_PLANT_ID: PLANT_ID,
+            CONF_SHADOW_MODE: True,
+            "topology": {
+                "zones": [
+                    {
+                        "id": HEATING_ZONE_ID,
+                        "name": "Heating zone",
+                        "target_temperature": 21.0,
+                        CONF_TEMPERATURE_SENSORS: ["sensor.heating_temperature"],
+                    },
+                    {
+                        "id": COOLING_ZONE_ID,
+                        "name": "Cooling zone",
+                        "target_temperature": 24.0,
+                        CONF_TEMPERATURE_SENSORS: ["sensor.cooling_temperature"],
+                        CONF_HUMIDITY_SENSORS: ["sensor.cooling_humidity"],
+                    },
+                ],
+                "valves": [
+                    {
+                        "id": VALVE_ID,
+                        "name": "Shared valve",
+                        "entity_id": "switch.shared_mode_valve",
+                        "opening_time_seconds": 0.0,
+                    }
+                ],
+                "pumps": [
+                    {
+                        "id": PUMP_ID,
+                        "name": "Shared pump",
+                        "entity_id": "switch.shared_mode_pump",
+                        "overrun_seconds": 0.0,
+                    }
+                ],
+                "circuits": [
+                    {
+                        "id": HEATING_CIRCUIT_ID,
+                        "name": "Heating circuit",
+                        "valve_ids": [VALVE_ID],
+                        "pump_id": PUMP_ID,
+                    },
+                    {
+                        "id": COOLING_CIRCUIT_ID,
+                        "name": "Cooling circuit",
+                        "valve_ids": [VALVE_ID],
+                        "pump_id": PUMP_ID,
+                        CONF_COOLING_ENABLED: True,
+                        CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.shared_mode_supply",
+                    },
+                ],
+                "routes": [
+                    {
+                        "id": HEATING_ROUTE_ID,
+                        "zone_id": HEATING_ZONE_ID,
+                        "circuit_id": HEATING_CIRCUIT_ID,
+                    },
+                    {
+                        "id": COOLING_ROUTE_ID,
+                        "zone_id": COOLING_ZONE_ID,
+                        "circuit_id": COOLING_CIRCUIT_ID,
+                    },
+                ],
             },
         },
     )
@@ -148,6 +228,45 @@ async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
     assert hass.states.get("binary_sensor.hydronic_plant_living_cooling_blocked").state == "on"
 
 
+async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
+    """Shared mode conflicts are explained without issuing any physical call."""
+    calls: list[tuple[str, str, str]] = []
+
+    async def record(call) -> None:
+        calls.append((call.domain, call.service, call.data["entity_id"]))
+
+    hass.services.async_register("switch", "turn_on", record)
+    hass.services.async_register("switch", "turn_off", record)
+    for entity_id, state in (
+        ("sensor.heating_temperature", "19.0"),
+        ("sensor.cooling_temperature", "25.0"),
+        ("sensor.cooling_humidity", "50.0"),
+        ("sensor.shared_mode_supply", "18.0"),
+        ("switch.shared_mode_valve", "off"),
+        ("switch.shared_mode_pump", "off"),
+    ):
+        hass.states.async_set(entity_id, state)
+    entry = _shared_mode_entry()
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert calls == []
+    assert entry.runtime_data.evaluation.diagnostics.mode_conflicts
+    assert entry.runtime_data.runtime_state.cooling_zone_demands[COOLING_ZONE_ID] is False
+    reason = hass.states.get("sensor.shared_mode_plant_cooling_zone_cooling_blocked_reason")
+    assert reason is not None
+    assert "shared" in reason.state
+    preview = hass.states.get("sensor.shared_mode_plant_topology_preview")
+    assert preview is not None
+    warning_codes = {warning["code"] for warning in preview.attributes["warnings"]}
+    assert {
+        "shared_valve_limits_independent_control",
+        "shared_pump_limits_independent_control",
+    } <= warning_codes
+
+
 async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
     """The public setup flow persists cooling topology and sensor relationships."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
@@ -196,4 +315,9 @@ async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
     assert next(iter(entry.runtime_data.plant.zones.values())).humidity_sensors == (
         "sensor.living_humidity",
     )
+    circuit_id = circuit.id
+    route_ids = tuple(route.id for route in entry.runtime_data.plant.routes)
     assert await hass.config_entries.async_reload(entry.entry_id)
+    reloaded_circuit = entry.runtime_data.plant.circuits[circuit_id]
+    assert reloaded_circuit.cooling_enabled is True
+    assert tuple(route.id for route in entry.runtime_data.plant.routes) == route_ids

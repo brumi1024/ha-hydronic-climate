@@ -54,6 +54,14 @@ class InterlockStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class EquipmentKind(StrEnum):
+    """Kind of shared equipment that can couple heating and cooling."""
+
+    VALVE = "valve"
+    PUMP = "pump"
+    SOURCE = "source"
+
+
 class TemperatureAggregation(StrEnum):
     """Policy used to combine a zone's configured temperature readings."""
 
@@ -319,11 +327,37 @@ class TopologyWarning:
     valve_id: str
     circuit_ids: tuple[str, ...] = ()
     zone_ids: tuple[str, ...] = ()
+    equipment_kind: str = EquipmentKind.VALVE
+    equipment_id: str | None = None
 
     @property
     def affected_valve_id(self) -> str:
         """Return the valve involved in this warning."""
         return self.valve_id
+
+    @property
+    def affected_equipment_id(self) -> str:
+        """Return the stable id of the equipment involved in this warning."""
+        return self.equipment_id or self.valve_id
+
+
+@dataclass(frozen=True, slots=True)
+class ModeConflict:
+    """Deterministic explanation for a heating/cooling shared-equipment conflict."""
+
+    code: str
+    equipment_kind: str
+    equipment_id: str
+    heating_circuit_ids: tuple[str, ...]
+    cooling_circuit_ids: tuple[str, ...]
+    heating_zone_ids: tuple[str, ...]
+    cooling_zone_ids: tuple[str, ...]
+    message: str
+
+    @property
+    def interlock_id(self) -> str:
+        """Return a stable interlock id suitable for adapter publication."""
+        return f"cooling:mode-conflict:{self.equipment_kind}:{self.equipment_id}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,6 +633,13 @@ class ControlPlan:
     interlocks: Mapping[str, SafetyInterlockResult] = field(default_factory=dict)
     cooling_valve_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
     cooling_pump_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    cooling_actuator_ids: frozenset[str] = frozenset()
+    mode_conflicts: tuple[ModeConflict, ...] = ()
+
+    @property
+    def conflicts(self) -> tuple[ModeConflict, ...]:
+        """Return structured heating/cooling conflicts."""
+        return self.mode_conflicts
 
 
 @dataclass(frozen=True, slots=True)
@@ -614,11 +655,17 @@ class ControllerDiagnostics:
     source_recommendation: SourceRecommendation | None = None
     cooling_circuit_reasons: Mapping[str, str] = field(default_factory=dict)
     cooling_zone_reasons: Mapping[str, str] = field(default_factory=dict)
+    mode_conflicts: tuple[ModeConflict, ...] = ()
 
     @property
     def zone_diagnostics(self) -> Mapping[str, ZoneDecision]:
         """Return structured decisions without requiring prose parsing."""
         return self.zone_decisions
+
+    @property
+    def conflicts(self) -> tuple[ModeConflict, ...]:
+        """Return structured heating/cooling conflicts."""
+        return self.mode_conflicts
 
 
 @dataclass(frozen=True, slots=True)

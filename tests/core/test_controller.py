@@ -15,17 +15,20 @@ from hydronicus_core.controller import (
     dew_point_celsius,
     evaluate,
     mean_zone_temperature,
+    resolve_cooling_delivery_routes,
 )
 from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     InterlockStatus,
+    ModeConflict,
     PlantConfiguration,
     PlantSnapshot,
     Pump,
     PumpRuntime,
     PumpState,
     RuntimeState,
+    Source,
     TemperatureAggregation,
     TemperatureObservation,
     TemperatureSensorMetadata,
@@ -571,6 +574,136 @@ def _cooling_snapshot(
         humidities={"humidity.living": TemperatureObservation(humidity, observed_at)},
         supply_temperatures={"temperature.supply": TemperatureObservation(supply, observed_at)},
     )
+
+
+def _mixed_mode_plant(*, shared_valve: bool, shared_pump: bool, source: bool = False):
+    """Build heating and cooling routes with selected shared equipment."""
+    return compile_topology(
+        PlantConfiguration(
+            id="mixed-mode-plant",
+            zones=(
+                Zone("heating-zone", "Heating zone", 21.0, ("temperature.heating",)),
+                Zone(
+                    "cooling-zone",
+                    "Cooling zone",
+                    24.0,
+                    temperature_sensor_metadata=(
+                        TemperatureSensorMetadata("temperature.cooling"),
+                    ),
+                    humidity_sensor_metadata=(TemperatureSensorMetadata("humidity.cooling"),),
+                ),
+            ),
+            valves=(
+                Valve("heating-valve", "Heating valve", "switch.heating_valve", 0),
+                Valve("cooling-valve", "Cooling valve", "switch.cooling_valve", 0),
+            )
+            if not shared_valve
+            else (Valve("shared-valve", "Shared valve", "switch.shared_valve", 0),),
+            pumps=(
+                Pump("heating-pump", "Heating pump", "switch.heating_pump", 0),
+                Pump("cooling-pump", "Cooling pump", "switch.cooling_pump", 0),
+            )
+            if not shared_pump
+            else (Pump("shared-pump", "Shared pump", "switch.shared_pump", 0),),
+            circuits=(
+                Circuit(
+                    "heating-circuit",
+                    "Heating circuit",
+                    ("shared-valve" if shared_valve else "heating-valve",),
+                    "shared-pump" if shared_pump else "heating-pump",
+                ),
+                Circuit(
+                    "cooling-circuit",
+                    "Cooling circuit",
+                    ("shared-valve" if shared_valve else "cooling-valve",),
+                    "shared-pump" if shared_pump else "cooling-pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor="temperature.cooling_supply",
+                ),
+            ),
+            routes=(
+                DeliveryRoute("heating-route", "heating-zone", "heating-circuit"),
+                DeliveryRoute("cooling-route", "cooling-zone", "cooling-circuit"),
+            ),
+            sources=(Source("source", "Shared source"),) if source else (),
+        )
+    )
+
+
+def _mixed_mode_snapshot() -> PlantSnapshot:
+    """Return safe observations that request both heating and cooling."""
+    return PlantSnapshot(
+        temperatures={
+            "temperature.heating": TemperatureObservation(19.0, NOW),
+            "temperature.cooling": TemperatureObservation(25.0, NOW),
+        },
+        humidities={"humidity.cooling": TemperatureObservation(50.0, NOW)},
+        supply_temperatures={
+            "temperature.cooling_supply": TemperatureObservation(18.0, NOW)
+        },
+    )
+
+
+def test_cooling_route_arbitration_rejects_heating_only_circuits() -> None:
+    """Cooling demand cannot turn an existing heating-only route into a cooling path."""
+    plant = compile_topology(_plant())
+
+    assert resolve_cooling_delivery_routes(plant, {"living": True}) == ()
+
+
+@pytest.mark.parametrize(
+    ("shared_valve", "shared_pump"),
+    [(True, False), (False, True), (True, True)],
+)
+def test_shared_equipment_conflict_blocks_cooling_with_structured_explanations(
+    shared_valve: bool, shared_pump: bool
+) -> None:
+    """Heating priority removes only cooling routes coupled to shared equipment."""
+    plant = _mixed_mode_plant(shared_valve=shared_valve, shared_pump=shared_pump)
+
+    result = evaluate(plant, _mixed_mode_snapshot(), RuntimeState(), NOW)
+
+    conflicts = result.diagnostics.mode_conflicts
+    assert conflicts
+    assert all(isinstance(conflict, ModeConflict) for conflict in conflicts)
+    assert result.next_runtime.cooling_zone_demands["cooling-zone"] is False
+    assert result.control_plan.cooling_valve_consumers == {}
+    assert result.control_plan.cooling_pump_consumers == {}
+    assert result.control_plan.cooling_actuator_ids == frozenset()
+    assert result.control_plan.mode_conflicts == conflicts
+    assert result.diagnostics.cooling_zone_decisions["cooling-zone"].status is (
+        ZoneDecisionStatus.SENSOR_BLOCKED
+    )
+    assert "Cooling blocked by shared" in result.diagnostics.cooling_zone_reasons[
+        "cooling-zone"
+    ]
+    assert result == evaluate(plant, _mixed_mode_snapshot(), RuntimeState(), NOW)
+
+
+def test_shared_source_conflict_blocks_cooling_even_on_independent_hydraulics() -> None:
+    """Plant-owned sources are shared until source paths become explicitly scoped."""
+    plant = _mixed_mode_plant(shared_valve=False, shared_pump=False, source=True)
+
+    result = evaluate(plant, _mixed_mode_snapshot(), RuntimeState(), NOW)
+
+    assert [conflict.equipment_kind for conflict in result.diagnostics.mode_conflicts] == ["source"]
+    assert result.diagnostics.mode_conflicts[0].equipment_id == "source"
+    assert "shared source" in result.diagnostics.cooling_zone_reasons["cooling-zone"]
+
+
+def test_independent_hydraulic_paths_keep_cooling_route_eligible() -> None:
+    """Without shared equipment or sources, route arbitration keeps both modes visible."""
+    plant = _mixed_mode_plant(shared_valve=False, shared_pump=False)
+
+    result = evaluate(plant, _mixed_mode_snapshot(), RuntimeState(), NOW)
+
+    assert result.diagnostics.mode_conflicts == ()
+    assert result.next_runtime.cooling_zone_demands["cooling-zone"] is True
+    assert result.control_plan.cooling_valve_consumers == {
+        "cooling-valve": frozenset({"cooling-circuit"})
+    }
+    assert result.control_plan.cooling_pump_consumers == {}
+    assert result.control_plan.cooling_actuator_ids == frozenset({"cooling-valve"})
 
 
 def test_dew_point_and_condensation_margin_are_deterministic() -> None:

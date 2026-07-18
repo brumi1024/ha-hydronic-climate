@@ -10,6 +10,7 @@ from hydronicus_core.model import (
     DeliveryRoute,
     PlantConfiguration,
     Pump,
+    Source,
     TemperatureAggregation,
     TemperatureSensorMetadata,
     Valve,
@@ -737,6 +738,55 @@ def test_compile_topology_accepts_cooling_references_and_metadata() -> None:
     compiled = compile_topology(plant)
 
     assert compiled.circuits["circuit"].cooling_enabled is True
+
+
+def test_compile_topology_warns_for_shared_pumps_and_sources() -> None:
+    """Mode-coupled pump and source paths remain valid but explain their limits."""
+    plant = PlantConfiguration(
+        id="coupled-modes",
+        zones=(
+            Zone("heating-zone", "Heating", 21.0, ("sensor.heating",)),
+            Zone(
+                "cooling-zone",
+                "Cooling",
+                24.0,
+                temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.cooling"),),
+                humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+            ),
+        ),
+        valves=(
+            Valve("heating-valve", "Heating valve", "switch.heating_valve"),
+            Valve("cooling-valve", "Cooling valve", "switch.cooling_valve"),
+        ),
+        pumps=(Pump("shared-pump", "Shared pump", "switch.shared_pump"),),
+        circuits=(
+            Circuit("heating", "Heating circuit", ("heating-valve",), "shared-pump"),
+            Circuit(
+                "cooling",
+                "Cooling circuit",
+                ("cooling-valve",),
+                "shared-pump",
+                cooling_enabled=True,
+                supply_temperature_sensor="sensor.supply",
+            ),
+        ),
+        routes=(
+            DeliveryRoute("heating-route", "heating-zone", "heating"),
+            DeliveryRoute("cooling-route", "cooling-zone", "cooling"),
+        ),
+        sources=(Source("source", "Plant source"),),
+    )
+
+    compiled = compile_topology(plant)
+
+    assert [
+        (warning.code, warning.equipment_kind, warning.equipment_id)
+        for warning in compiled.warnings
+    ] == [
+        ("shared_pump_limits_independent_control", "pump", "shared-pump"),
+        ("shared_source_limits_independent_control", "source", "source"),
+    ]
+    assert all("independently" in warning.message for warning in compiled.warnings)
 
 
 @pytest.mark.parametrize(
