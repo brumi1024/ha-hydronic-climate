@@ -144,6 +144,18 @@ def _optional_entity_id(mapping: Mapping[str, Any], key: str) -> str | None:
     return value
 
 
+def _valve_readiness_entity(mapping: Mapping[str, Any]) -> str | None:
+    """Decode the optional configured valve end-switch or readiness entity."""
+    values = tuple(
+        value
+        for key in ("readiness_entity_id", "readiness_entity", "feedback_entity_id")
+        if (value := _optional_entity_id(mapping, key)) is not None
+    )
+    if len(set(values)) > 1:
+        raise StoredTopologyError("Stored valve readiness feedback must use one entity binding.")
+    return values[0] if values else None
+
+
 def _source_kind(mapping: Mapping[str, Any]) -> SourceKind:
     """Decode source kinds while accepting the short buffer spelling."""
     value = str(mapping.get("source_type", SourceKind.EXTERNAL.value))
@@ -528,6 +540,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                 name=str(_required(item, "name")),
                 entity_id=str(_required(item, "entity_id")),
                 opening_time_seconds=_number(item, "opening_time_seconds", 30.0, non_negative=True),
+                readiness_entity_id=_valve_readiness_entity(item),
             )
             for item in raw_valves
         )

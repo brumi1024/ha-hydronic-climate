@@ -68,6 +68,7 @@ from .const import (
     CONF_VALVE_ENTITY,
     CONF_VALVE_IDS,
     CONF_VALVE_OPENING_TIME,
+    CONF_VALVE_READINESS_ENTITY,
     CONF_VALVES,
     CONF_WEIGHT,
     CONF_ZONE_IDS,
@@ -1042,7 +1043,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
 
 def _valve_actuator_data(user_input: Mapping[str, Any], actuator_id: str) -> dict[str, Any]:
     """Normalize one valve actuator payload for persistent subentry storage."""
-    return {
+    data = {
         "id": actuator_id,
         CONF_ACTUATOR_KIND: ACTUATOR_KIND_VALVE,
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
@@ -1050,6 +1051,9 @@ def _valve_actuator_data(user_input: Mapping[str, Any], actuator_id: str) -> dic
         CONF_OPENING_TIME: user_input[CONF_OPENING_TIME],
         CONF_CIRCUIT_IDS: user_input[CONF_CIRCUIT_IDS],
     }
+    if user_input.get(CONF_VALVE_READINESS_ENTITY):
+        data[CONF_VALVE_READINESS_ENTITY] = user_input[CONF_VALVE_READINESS_ENTITY]
+    return data
 
 
 def _valve_actuator_schema(
@@ -1068,6 +1072,12 @@ def _valve_actuator_schema(
                 CONF_OPENING_TIME,
                 default=defaults.get(CONF_OPENING_TIME, DEFAULT_VALVE_OPENING_TIME),
             ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+            vol.Optional(
+                CONF_VALVE_READINESS_ENTITY,
+                default=defaults.get(CONF_VALVE_READINESS_ENTITY, vol.UNDEFINED),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["binary_sensor", "switch", "valve"])
+            ),
             vol.Required(
                 CONF_CIRCUIT_IDS,
                 default=defaults.get(CONF_CIRCUIT_IDS, vol.UNDEFINED),
@@ -1612,14 +1622,17 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 valve_id = str(uuid4())
                 pump_id = str(uuid4())
                 zone_id = self._draft[CONF_TOPOLOGY][CONF_ZONES][0]["id"]
-                self._draft[CONF_TOPOLOGY][CONF_VALVES] = [
-                    {
-                        "id": valve_id,
-                        CONF_NAME: f"{name} valve",
-                        CONF_ENTITY_ID: user_input[CONF_VALVE_ENTITY],
-                        CONF_OPENING_TIME: user_input[CONF_VALVE_OPENING_TIME],
-                    }
-                ]
+                valve_data = {
+                    "id": valve_id,
+                    CONF_NAME: f"{name} valve",
+                    CONF_ENTITY_ID: user_input[CONF_VALVE_ENTITY],
+                    CONF_OPENING_TIME: user_input[CONF_VALVE_OPENING_TIME],
+                }
+                if user_input.get(CONF_VALVE_READINESS_ENTITY):
+                    valve_data[CONF_VALVE_READINESS_ENTITY] = user_input[
+                        CONF_VALVE_READINESS_ENTITY
+                    ]
+                self._draft[CONF_TOPOLOGY][CONF_VALVES] = [valve_data]
                 self._draft[CONF_TOPOLOGY][CONF_PUMPS] = [
                     {
                         "id": pump_id,
@@ -1674,6 +1687,9 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_VALVE_OPENING_TIME, default=DEFAULT_VALVE_OPENING_TIME
                     ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+                    vol.Optional(CONF_VALVE_READINESS_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain=["binary_sensor", "switch", "valve"])
+                    ),
                     vol.Required(CONF_PUMP_OVERRUN, default=DEFAULT_PUMP_OVERRUN): vol.All(
                         vol.Coerce(float), vol.Range(min=0)
                     ),

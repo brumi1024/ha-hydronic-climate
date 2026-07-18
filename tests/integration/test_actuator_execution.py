@@ -30,6 +30,8 @@ def _entry(
     valve_entity_id: str = "switch.synthetic_valve",
     actuator_shadow: bool = False,
     pump_overrun_seconds: float = 300.0,
+    valve_opening_seconds: float = 300.0,
+    readiness_entity_id: str | None = None,
 ) -> MockConfigEntry:
     """Build a completely synthetic plant with one generic valve actuator."""
     data = {
@@ -50,7 +52,7 @@ def _entry(
                     "id": VALVE_ID,
                     "name": "Synthetic valve",
                     "entity_id": valve_entity_id,
-                    "opening_time_seconds": 300.0,
+                    "opening_time_seconds": valve_opening_seconds,
                 }
             ],
             "pumps": [
@@ -80,6 +82,8 @@ def _entry(
     }
     if actuator_shadow:
         data[CONF_ACTUATOR_SHADOW_MODES] = {VALVE_ID: True}
+    if readiness_entity_id is not None:
+        data["topology"]["valves"][0]["readiness_entity_id"] = readiness_entity_id
     return MockConfigEntry(domain=DOMAIN, title="Synthetic plant", data=data)
 
 
@@ -127,11 +131,44 @@ async def test_demand_reaches_the_expected_generic_service_call(
     assert runtime.evaluation is not None
     assert runtime.evaluation.control_plan.commands[0].action is ActuatorAction.OPEN
     assert calls == [(expected_domain, expected_service, entity_id)]
+    assert all(entity != "switch.synthetic_pump" for _domain, _service, entity in calls)
     assert all(service != "toggle" for _domain, service, _entity in calls)
 
     await runtime.async_refresh(hass)
     await hass.async_block_till_done()
     assert calls == [(expected_domain, expected_service, entity_id)]
+
+
+async def test_readiness_feedback_allows_pump_only_after_the_valve_is_ready(hass) -> None:
+    """A readiness feedback event advances the synthetic valve-to-pump sequence."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("valve.synthetic_valve", "closed")
+    hass.states.async_set("binary_sensor.synthetic_valve_ready", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(
+        shadow_mode=False,
+        valve_entity_id="valve.synthetic_valve",
+        valve_opening_seconds=300.0,
+        readiness_entity_id="binary_sensor.synthetic_valve_ready",
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert calls == [("valve", "open_valve", "valve.synthetic_valve")]
+    assert all(entity != "switch.synthetic_pump" for _domain, _service, entity in calls)
+
+    hass.states.async_set("binary_sensor.synthetic_valve_ready", "on")
+    await hass.async_block_till_done()
+
+    assert calls == [
+        ("valve", "open_valve", "valve.synthetic_valve"),
+        ("switch", "turn_on", "switch.synthetic_pump"),
+    ]
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].is_ready is True
 
 
 async def test_global_shadow_keeps_the_desired_plan_without_service_calls(hass) -> None:
@@ -183,7 +220,8 @@ async def test_reload_reconstructs_unknown_state_when_feedback_is_not_trustworth
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert entry.runtime_data.executor.actuator_state(VALVE_ID) is ActuatorObservedState.ON
+    assert entry.runtime_data.executor.actuator_state(VALVE_ID) is ActuatorObservedState.OFF
+    assert entry.runtime_data.executor.requested_state(VALVE_ID) is ActuatorObservedState.ON
 
     hass.states.async_set("sensor.synthetic_temperature", "22.0")
     hass.states.async_set("switch.synthetic_valve", "unknown")
@@ -192,6 +230,64 @@ async def test_reload_reconstructs_unknown_state_when_feedback_is_not_trustworth
 
     assert isinstance(entry.runtime_data, HydronicRuntime)
     assert entry.runtime_data.executor.actuator_state(VALVE_ID) is ActuatorObservedState.UNKNOWN
+
+
+async def test_reload_during_valve_opening_does_not_start_pump_early(hass) -> None:
+    """A switch that is on after restart remains timer-gated because it has no position feedback."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(shadow_mode=False, valve_opening_seconds=300.0)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert calls == [("switch", "turn_on", "switch.synthetic_valve")]
+
+    hass.states.async_set("switch.synthetic_valve", "on")
+    await hass.async_block_till_done()
+    calls.clear()
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    runtime = entry.runtime_data
+    assert runtime.runtime_state.valves[VALVE_ID].state.value == "opening"
+    assert runtime.runtime_state.valves[VALVE_ID].is_ready is False
+    assert runtime.runtime_state.pumps[PUMP_ID].state.value == "off"
+    assert all(entity != "switch.synthetic_pump" for _domain, _service, entity in calls)
+
+
+async def test_reload_during_pump_overrun_keeps_valve_protected(hass) -> None:
+    """Observed open and running equipment reconstructs overrun before valve closure."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "22.0")
+    hass.states.async_set("valve.synthetic_valve", "open")
+    hass.states.async_set("switch.synthetic_pump", "on")
+    entry = _entry(
+        shadow_mode=False,
+        valve_entity_id="valve.synthetic_valve",
+        valve_opening_seconds=300.0,
+        pump_overrun_seconds=60.0,
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert calls == []
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].is_ready is True
+    assert entry.runtime_data.runtime_state.pumps[PUMP_ID].state.value == "overrun"
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    runtime = entry.runtime_data
+    assert runtime.runtime_state.pumps[PUMP_ID].state.value == "overrun"
+    assert runtime.runtime_state.valves[VALVE_ID].is_ready is True
+    assert all(service != "close_valve" for _domain, service, _entity in calls)
 
 
 async def test_reload_reconciles_observed_active_actuators_before_idle_shutdown(hass) -> None:

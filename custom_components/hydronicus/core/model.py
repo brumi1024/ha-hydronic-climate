@@ -459,7 +459,7 @@ SourceConfig = Source
 HeatSourceKind = SourceKind
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Valve:
     """A topology-owned valve with one Home Assistant entity binding."""
 
@@ -467,6 +467,39 @@ class Valve:
     name: str
     entity_id: str
     opening_time_seconds: float = 30.0
+    readiness_entity_id: str | None = None
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        entity_id: str,
+        opening_time_seconds: float = 30.0,
+        readiness_entity_id: str | None = None,
+        *,
+        feedback_entity_id: str | None = None,
+    ) -> None:
+        """Accept readiness and feedback terminology at the model boundary."""
+        if (
+            readiness_entity_id is not None
+            and feedback_entity_id is not None
+            and readiness_entity_id != feedback_entity_id
+        ):
+            raise ValueError("Valve readiness feedback was provided more than once.")
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "entity_id", entity_id)
+        object.__setattr__(self, "opening_time_seconds", opening_time_seconds)
+        object.__setattr__(
+            self,
+            "readiness_entity_id",
+            readiness_entity_id if readiness_entity_id is not None else feedback_entity_id,
+        )
+
+    @property
+    def feedback_entity_id(self) -> str | None:
+        """Return the optional configured end-switch or readiness entity."""
+        return self.readiness_entity_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -579,6 +612,17 @@ class ValveRuntime:
 
     state: ValveState = ValveState.CLOSED
     changed_at: datetime | None = None
+    ready: bool | None = None
+
+    def __post_init__(self) -> None:
+        """Preserve the legacy open-state constructor as a ready state."""
+        if self.ready is None:
+            object.__setattr__(self, "ready", self.state is ValveState.OPEN)
+
+    @property
+    def is_ready(self) -> bool:
+        """Return whether this virtual valve satisfies circuit readiness."""
+        return self.state is ValveState.OPEN and bool(self.ready)
 
 
 @dataclass(frozen=True, slots=True)

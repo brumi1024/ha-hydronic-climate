@@ -269,6 +269,13 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             raise TopologyValidationError(
                 f"Valve {valve.id} opening time must be finite and non-negative."
             )
+        if valve.readiness_entity_id is not None and (
+            not isinstance(valve.readiness_entity_id, str)
+            or not valve.readiness_entity_id.strip()
+        ):
+            raise TopologyValidationError(
+                f"Valve {valve.id} readiness feedback entity must be non-empty."
+            )
     for pump in configuration.pumps:
         if not _finite_non_negative(pump.overrun_seconds):
             raise TopologyValidationError(

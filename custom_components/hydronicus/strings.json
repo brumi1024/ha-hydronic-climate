@@ -57,6 +57,7 @@
           "valve_entity": "Valve entity",
           "pump_entity": "Pump entity",
           "valve_opening_time_seconds": "Valve opening time (seconds)",
+          "readiness_entity_id": "Valve readiness feedback (optional)",
           "pump_overrun_seconds": "Pump overrun (seconds)",
           "cooling_enabled": "Cooling enabled",
           "supply_temperature_sensor": "Supply temperature reference",
@@ -92,6 +93,7 @@
             "name": "Actuator name",
             "entity_id": "Valve entity",
             "opening_time_seconds": "Opening time (seconds)",
+            "readiness_entity_id": "Valve readiness feedback (optional)",
             "circuit_ids": "Circuits"
           }
         },
@@ -102,6 +104,7 @@
             "name": "Actuator name",
             "entity_id": "Valve entity",
             "opening_time_seconds": "Opening time (seconds)",
+            "readiness_entity_id": "Valve readiness feedback (optional)",
             "circuit_ids": "Circuits"
           }
         },

@@ -8,6 +8,7 @@ import pytest
 from hydronicus_core.controller import evaluate
 from hydronicus_core.executor import ActuatorExecutor, ActuatorOperation
 from hydronicus_core.model import (
+    ActuatorAction,
     Circuit,
     DeliveryRoute,
     PlantConfiguration,
@@ -84,6 +85,100 @@ def test_two_zones_release_shared_pump_independently() -> None:
             ),
         ),
     )
+
+
+def test_series_valves_command_timeline_and_overrun_protection() -> None:
+    """The complete synthetic sequence has ordered commands and hydraulic protection."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="sequence-plant",
+            zones=(Zone("living", "Living", 21.0, ("sensor.living",)),),
+            valves=(
+                Valve("supply", "Supply valve", "switch.supply", 5),
+                Valve("return", "Return valve", "switch.return", 10),
+            ),
+            pumps=(Pump("pump", "Shared pump", "switch.pump", 20),),
+            circuits=(Circuit("living-circuit", "Living circuit", ("supply", "return"), "pump"),),
+            routes=(DeliveryRoute("living-route", "living", "living-circuit"),),
+        )
+    )
+
+    def snapshot(living: float, now: datetime) -> PlantSnapshot:
+        return PlantSnapshot({"sensor.living": TemperatureObservation(living, now)})
+
+    runtime = RuntimeState()
+    timeline: list[tuple[tuple[str, str], ...]] = []
+
+    def commands(evaluation) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (command.actuator_id, command.action) for command in evaluation.control_plan.commands
+        )
+
+    opening = evaluate(plant, snapshot(20.0, NOW), runtime, NOW)
+    timeline.append(commands(opening))
+    assert opening.control_plan.pump_consumers == {}
+    assert opening.control_plan.valve_consumers == {
+        "return": frozenset({"living-circuit"}),
+        "supply": frozenset({"living-circuit"}),
+    }
+
+    one_ready = evaluate(
+        plant,
+        snapshot(20.0, NOW + timedelta(seconds=5)),
+        opening.next_runtime,
+        NOW + timedelta(seconds=5),
+    )
+    timeline.append(commands(one_ready))
+    assert one_ready.next_runtime.pumps["pump"].state is PumpState.OFF
+
+    all_ready = evaluate(
+        plant,
+        snapshot(20.0, NOW + timedelta(seconds=10)),
+        one_ready.next_runtime,
+        NOW + timedelta(seconds=10),
+    )
+    timeline.append(commands(all_ready))
+    assert all_ready.control_plan.pump_consumers == {"pump": frozenset({"living-circuit"})}
+
+    one_released = evaluate(
+        plant,
+        snapshot(22.0, NOW + timedelta(seconds=11)),
+        all_ready.next_runtime,
+        NOW + timedelta(seconds=11),
+    )
+    timeline.append(commands(one_released))
+    assert one_released.next_runtime.pumps["pump"].state is PumpState.OVERRUN
+    assert one_released.control_plan.pump_consumers == {}
+
+    final_released = evaluate(
+        plant,
+        snapshot(22.0, NOW + timedelta(seconds=12)),
+        one_released.next_runtime,
+        NOW + timedelta(seconds=12),
+    )
+    timeline.append(commands(final_released))
+    assert final_released.next_runtime.pumps["pump"].state is PumpState.OVERRUN
+    assert all(
+        command.action is not ActuatorAction.CLOSE
+        for command in final_released.control_plan.commands
+    )
+
+    stopped = evaluate(
+        plant,
+        snapshot(22.0, NOW + timedelta(seconds=32)),
+        final_released.next_runtime,
+        NOW + timedelta(seconds=32),
+    )
+    timeline.append(commands(stopped))
+
+    assert timeline == [
+        (("return", "open"), ("supply", "open")),
+        (),
+        (("pump", "turn_on"),),
+        (),
+        (),
+        (("pump", "turn_off"), ("return", "close"), ("supply", "close")),
+    ]
 
 
 @pytest.mark.asyncio

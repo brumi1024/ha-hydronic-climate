@@ -213,6 +213,13 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(scheduled[0][0], 30.0)
             self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "opening")
+            self.assertEqual(
+                [
+                    (command.actuator_id, command.action)
+                    for command in runtime.evaluation.control_plan.commands
+                ],
+                [(VALVE_UUID, "open")],
+            )
 
             clock.now.return_value = NOW + timedelta(seconds=30)
             scheduled[0][1](clock.now.return_value)
@@ -220,6 +227,13 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "open")
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "running")
+            self.assertEqual(
+                [
+                    (command.actuator_id, command.action)
+                    for command in runtime.evaluation.control_plan.commands
+                ],
+                [(PUMP_UUID, "turn_on")],
+            )
 
             hass.states.current = _State("22.0")
             clock.now.return_value = NOW + timedelta(seconds=31)
@@ -227,6 +241,7 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(scheduled[-1][0], 120.0)
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "overrun")
+            self.assertEqual(runtime.evaluation.control_plan.commands, ())
 
             clock.now.return_value = NOW + timedelta(seconds=151)
             scheduled[-1][1](clock.now.return_value)
@@ -234,6 +249,13 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "off")
             self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "closed")
+            self.assertEqual(
+                [
+                    (command.actuator_id, command.action)
+                    for command in runtime.evaluation.control_plan.commands
+                ],
+                [(PUMP_UUID, "turn_off"), (VALVE_UUID, "close")],
+            )
 
     async def test_due_now_transition_runs_as_a_tracked_home_assistant_task(self) -> None:
         """Zero overrun advances without relying on an untracked timer callback."""

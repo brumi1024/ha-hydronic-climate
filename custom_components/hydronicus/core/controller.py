@@ -1052,7 +1052,7 @@ def evaluate(
         previous = runtime.valves.get(valve.id, ValveRuntime())
         if consumers:
             if previous.state is ValveState.CLOSED:
-                current = ValveRuntime(ValveState.OPENING, now)
+                current = ValveRuntime(ValveState.OPENING, now, False)
                 commands.append(
                     ActuatorCommand(
                         valve.id,
@@ -1061,11 +1061,26 @@ def evaluate(
                     )
                 )
                 actuator_reasons[valve.id] = "Opening for active circuit consumers."
-            elif previous.state is ValveState.OPENING and _elapsed(
-                now, previous.changed_at
-            ) >= timedelta(seconds=valve.opening_time_seconds):
-                current = ValveRuntime(ValveState.OPEN, previous.changed_at)
+            elif previous.state is ValveState.OPENING and (
+                previous.is_ready
+                or _elapsed(now, previous.changed_at)
+                >= timedelta(seconds=valve.opening_time_seconds)
+            ):
+                current = ValveRuntime(ValveState.OPEN, previous.changed_at, True)
                 actuator_reasons[valve.id] = "Open-delay elapsed; valve is virtually ready."
+            elif previous.state is ValveState.OPEN and not previous.is_ready:
+                if _elapsed(now, previous.changed_at) >= timedelta(
+                    seconds=valve.opening_time_seconds
+                ):
+                    current = ValveRuntime(ValveState.OPEN, previous.changed_at, True)
+                    actuator_reasons[valve.id] = "Configured valve readiness time elapsed."
+                else:
+                    current = ValveRuntime(
+                        ValveState.OPENING,
+                        previous.changed_at or now,
+                        False,
+                    )
+                    actuator_reasons[valve.id] = "Waiting for valve readiness feedback or timer."
             else:
                 current = previous
                 actuator_reasons[valve.id] = "Held open for active circuit consumers."
@@ -1073,7 +1088,7 @@ def evaluate(
             current = previous
             actuator_reasons[valve.id] = "Idle because its consumer set is empty."
         valves[valve.id] = current
-        if current.state is ValveState.OPEN:
+        if current.is_ready:
             valve_ready.add(valve.id)
 
     ready_circuits = {
@@ -1154,7 +1169,7 @@ def evaluate(
         if valve_consumers.get(valve_id) or protected_by_overrun:
             continue
         if valve.state is not ValveState.CLOSED:
-            valves[valve_id] = ValveRuntime(ValveState.CLOSED, now)
+            valves[valve_id] = ValveRuntime(ValveState.CLOSED, now, False)
             commands.append(
                 ActuatorCommand(
                     valve_id,

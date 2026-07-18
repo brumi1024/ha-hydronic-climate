@@ -230,7 +230,84 @@ async def test_per_actuator_shadow_only_suppresses_that_actuator() -> None:
     assert [operation.actuator_id for operation in report.shadowed] == ["shadowed"]
     assert [operation.actuator_id for operation in dispatched] == ["active"]
     assert executor.actuator_state("shadowed") is ActuatorObservedState.UNKNOWN
-    assert executor.actuator_state("active") is ActuatorObservedState.ON
+    assert executor.actuator_state("active") is ActuatorObservedState.UNKNOWN
+    assert executor.requested_state("active") is ActuatorObservedState.ON
+
+
+def test_configured_readiness_feedback_can_satisfy_a_valve_without_waiting_for_timer() -> None:
+    """A synthetic end-switch is observed separately from the actuator command state."""
+    plant = CompiledPlant(
+        id="plant",
+        zones={},
+        valves={
+            "valve": Valve(
+                "valve",
+                "Valve",
+                "switch.floor_valve",
+                opening_time_seconds=300,
+                readiness_entity_id="binary_sensor.floor_valve_ready",
+            )
+        },
+        pumps={},
+        circuits={},
+        routes=(),
+        logic_summary=(),
+    )
+    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+
+    executor.observe_entities(
+        {
+            "switch.floor_valve": "on",
+            "binary_sensor.floor_valve_ready": "on",
+        }
+    )
+
+    assert executor.actuator_state("valve") is ActuatorObservedState.ON
+    assert executor.readiness_state("valve") is True
+
+    executor.observe_entity_state("binary_sensor.floor_valve_ready", "off")
+    assert executor.readiness_state("valve") is False
+
+
+def test_native_valve_feedback_and_invalid_executor_references_fail_closed() -> None:
+    """Native valve feedback is usable while unknown executor references remain errors."""
+    executor = ActuatorExecutor(
+        {"valve": ActuatorBinding("valve", "valve.floor_valve")},
+        shadow_mode=False,
+    )
+    executor.observe_entity_state("valve.floor_valve", "open")
+    assert executor.readiness_state("valve") is True
+    executor.observe_entity_state("valve.floor_valve", "closed")
+    assert executor.readiness_state("valve") is False
+
+    switch_executor = ActuatorExecutor(
+        {"switch": ActuatorBinding("switch", "switch.floor_valve")},
+        shadow_mode=False,
+    )
+    assert switch_executor.readiness_state("switch") is None
+
+    with pytest.raises(ValueError, match="feedback entity"):
+        observed_state_for("sensor.invalid", "on")
+    with pytest.raises(KeyError, match="Unknown actuator"):
+        executor.requested_state("missing")
+    with pytest.raises(KeyError, match="Unknown actuator"):
+        executor.readiness_state("missing")
+
+
+def test_from_plant_rejects_a_valve_and_pump_id_collision() -> None:
+    """One actuator UUID cannot ambiguously bind both a valve and a pump."""
+    plant = CompiledPlant(
+        id="plant",
+        zones={},
+        valves={"shared": Valve("shared", "Valve", "switch.valve")},
+        pumps={"shared": Pump("shared", "Pump", "switch.pump")},
+        circuits={},
+        routes=(),
+        logic_summary=(),
+    )
+
+    with pytest.raises(ValueError, match="more than one actuator"):
+        ActuatorExecutor.from_plant(plant)
 
 
 def test_reload_starts_unknown_and_reconcile_uses_only_observed_state() -> None:

@@ -107,6 +107,57 @@ def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
     assert plant.routes[0].zone_id == "zone-1"
 
 
+def test_decodes_configured_valve_readiness_feedback() -> None:
+    """Persisted readiness feedback is retained on the first-class valve model."""
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "00000000-0000-4000-8000-000000000001",
+            "topology": {
+                "zones": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000002",
+                        "name": "Zone",
+                        "target_temperature": 21.0,
+                        "temperature_sensor": "sensor.zone",
+                    }
+                ],
+                "valves": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000003",
+                        "name": "Valve",
+                        "entity_id": "switch.valve",
+                        "readiness_entity_id": "binary_sensor.valve_ready",
+                    }
+                ],
+                "pumps": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000004",
+                        "name": "Pump",
+                        "entity_id": "switch.pump",
+                    }
+                ],
+                "circuits": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000005",
+                        "name": "Circuit",
+                        "valve_ids": ["00000000-0000-4000-8000-000000000003"],
+                        "pump_id": "00000000-0000-4000-8000-000000000004",
+                    }
+                ],
+                "routes": [
+                    {
+                        "id": "00000000-0000-4000-8000-000000000006",
+                        "zone_id": "00000000-0000-4000-8000-000000000002",
+                        "circuit_id": "00000000-0000-4000-8000-000000000005",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert plant.valves[0].readiness_entity_id == "binary_sensor.valve_ready"
+
+
 def test_rejects_nonboolean_route_enablement() -> None:
     """A malformed flag must not silently enable a delivery route."""
     with pytest.raises(StoredTopologyError, match="route enabled must be a boolean"):

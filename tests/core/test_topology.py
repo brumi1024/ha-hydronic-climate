@@ -861,3 +861,19 @@ def test_compile_topology_rejects_cooling_without_humidity_observation() -> None
 
     with pytest.raises(TopologyValidationError, match="humidity observations"):
         compile_topology(plant)
+
+
+def test_compile_topology_rejects_empty_valve_readiness_entity() -> None:
+    """A configured feedback binding must remain an explicit non-empty entity ID."""
+    plant = _metadata_plant(Zone("zone", "Zone", 21.0, ("sensor.temperature",)))
+    plant = PlantConfiguration(
+        id=plant.id,
+        zones=plant.zones,
+        valves=(Valve("valve", "Valve", "switch.valve", readiness_entity_id=" "),),
+        pumps=plant.pumps,
+        circuits=plant.circuits,
+        routes=plant.routes,
+    )
+
+    with pytest.raises(TopologyValidationError, match="readiness feedback entity"):
+        compile_topology(plant)

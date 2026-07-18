@@ -905,6 +905,31 @@ def test_restored_actuator_without_timestamp_is_conservative() -> None:
     assert result.next_runtime.pumps["pump.floor"].state is PumpState.OVERRUN
 
 
+def test_open_valve_without_readiness_feedback_cannot_start_the_pump() -> None:
+    """An open-looking transition remains unsafe until feedback or its timer is satisfied."""
+    plant = compile_topology(_plant())
+    runtime = RuntimeState(
+        valves={"valve.floor": ValveRuntime(ValveState.OPEN, NOW, False)},
+    )
+
+    waiting = evaluate(plant, _snapshot(20.0), runtime, NOW + timedelta(seconds=1))
+    ready = evaluate(
+        plant,
+        _snapshot(20.0),
+        waiting.next_runtime,
+        NOW + timedelta(seconds=30),
+    )
+
+    assert waiting.next_runtime.valves["valve.floor"].is_ready is False
+    assert waiting.next_runtime.pumps["pump.floor"].state is PumpState.OFF
+    assert all(command.actuator_id != "pump.floor" for command in waiting.control_plan.commands)
+    assert ready.next_runtime.valves["valve.floor"].is_ready is True
+    assert ready.next_runtime.pumps["pump.floor"].state is PumpState.RUNNING
+    assert [(command.actuator_id, command.action) for command in ready.control_plan.commands] == [
+        ("pump.floor", "turn_on")
+    ]
+
+
 def test_shared_pump_remains_running_when_one_consumer_releases_demand() -> None:
     plant = compile_topology(
         PlantConfiguration(

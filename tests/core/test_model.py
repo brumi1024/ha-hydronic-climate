@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from hydronicus_core.model import (
     ActuatorAction,
@@ -12,6 +14,9 @@ from hydronicus_core.model import (
     RuntimeState,
     SafetyInterlockResult,
     SourceRecommendation,
+    Valve,
+    ValveRuntime,
+    ValveState,
 )
 
 
@@ -36,3 +41,26 @@ def test_wave_one_extensions_are_optional_for_heating_callers() -> None:
     assert runtime.plant_mode is PlantMode.IDLE
     assert interlock.permits is True
     assert recommendation.source_id == "buffer"
+
+
+def test_valve_readiness_aliases_and_legacy_open_state_are_safe() -> None:
+    """Feedback naming remains compatible while explicit readiness stays immutable."""
+    valve = Valve(
+        "valve",
+        "Valve",
+        "switch.valve",
+        feedback_entity_id="binary_sensor.valve_ready",
+    )
+    assert valve.readiness_entity_id == "binary_sensor.valve_ready"
+    assert valve.feedback_entity_id == valve.readiness_entity_id
+    assert ValveRuntime(ValveState.OPEN, datetime(2026, 7, 17, tzinfo=UTC)).is_ready is True
+    assert ValveRuntime(ValveState.OPEN, None, False).is_ready is False
+
+    with pytest.raises(ValueError, match="provided more than once"):
+        Valve(
+            "valve",
+            "Valve",
+            "switch.valve",
+            readiness_entity_id="binary_sensor.one",
+            feedback_entity_id="binary_sensor.two",
+        )

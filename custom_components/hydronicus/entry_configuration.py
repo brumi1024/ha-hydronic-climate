@@ -20,6 +20,7 @@ from .const import (
     CONF_TARGET_TEMPERATURE,
     CONF_TOPOLOGY,
     CONF_VALVE_IDS,
+    CONF_VALVE_READINESS_ENTITY,
     CONF_ZONE_IDS,
     CONF_ZONES,
     SUBENTRY_TYPE_ACTUATOR,
@@ -332,6 +333,7 @@ def effective_plant_configuration(
                 name=str(_required(data, CONF_NAME)),
                 entity_id=str(_required(data, CONF_ENTITY_ID)),
                 opening_time_seconds=opening_time_seconds,
+                readiness_entity_id=data.get(CONF_VALVE_READINESS_ENTITY),
             )
         )
         selected = set(selected_circuit_ids)

@@ -282,6 +282,9 @@ class HydronicRuntime:
                 entity_id,
                 getattr(new_state, "state", None),
             )
+            actuator_ids = self._actuator_ids_for_entity(entity_id)
+            if actuator_ids:
+                self._reconcile_actuator_runtime(actuator_ids)
         if self._hass is not None:
             self._hass.async_create_task(self.async_refresh(self._hass))
 
@@ -310,29 +313,76 @@ class HydronicRuntime:
 
     def _actuator_states(self, hass: HomeAssistant) -> dict[str, str | None]:
         """Read configured actuator states without deriving desired state."""
-        return {
+        states = {
             binding.entity_id: getattr(hass.states.get(binding.entity_id), "state", None)
             for binding in self.executor.bindings.values()
         }
+        states.update(
+            {
+                entity_id: getattr(hass.states.get(entity_id), "state", None)
+                for entity_id in self.executor.readiness_bindings.values()
+            }
+        )
+        return states
 
-    def _reconcile_actuator_runtime(self) -> None:
-        """Seed virtual actuator state from trustworthy feedback before evaluating."""
+    def _actuator_ids_for_entity(self, entity_id: str) -> set[str]:
+        """Return actuators whose command or readiness feedback uses one entity."""
+        return {
+            *{
+                actuator_id
+                for actuator_id, binding in self.executor.bindings.items()
+                if binding.entity_id == entity_id
+            },
+            *{
+                actuator_id
+                for actuator_id, feedback_entity_id in self.executor.readiness_bindings.items()
+                if feedback_entity_id == entity_id
+            },
+        }
+
+    def _reconcile_actuator_runtime(self, actuator_ids: set[str] | None = None) -> None:
+        """Seed virtual actuator state from feedback without trusting commands as feedback."""
         now = self._now()
         valves = dict(self.runtime_state.valves)
-        for actuator_id in self.plant.valves:
+        selected = actuator_ids if actuator_ids is not None else set(self.plant.valves) | set(
+            self.plant.pumps
+        )
+        for actuator_id in sorted(set(self.plant.valves) & selected):
+            current = valves.get(actuator_id)
             observed = self.executor.actuator_state(actuator_id)
-            if observed in {ActuatorObservedState.OPEN, ActuatorObservedState.ON}:
-                valves[actuator_id] = ValveRuntime(ValveState.OPEN, now)
-            elif observed in {ActuatorObservedState.CLOSED, ActuatorObservedState.OFF}:
-                valves[actuator_id] = ValveRuntime(ValveState.CLOSED, now)
+            readiness = self.executor.readiness_state(actuator_id)
+            if readiness is True:
+                valves[actuator_id] = ValveRuntime(ValveState.OPEN, now, True)
+            elif readiness is False or observed is ActuatorObservedState.OFF:
+                valves[actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
+            elif observed is ActuatorObservedState.ON:
+                if current is None or current.state is ValveState.CLOSED:
+                    valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
+                elif current.state is ValveState.OPENING:
+                    valves[actuator_id] = ValveRuntime(
+                        ValveState.OPENING,
+                        current.changed_at or now,
+                        False,
+                    )
+            elif current is not None:
+                # An unknown transition invalidates a previous ready assumption.
+                valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
 
         pumps = dict(self.runtime_state.pumps)
-        for actuator_id in self.plant.pumps:
+        for actuator_id in sorted(set(self.plant.pumps) & selected):
+            current = pumps.get(actuator_id)
             observed = self.executor.actuator_state(actuator_id)
             if observed is ActuatorObservedState.ON:
                 pumps[actuator_id] = PumpRuntime(PumpState.RUNNING, now)
             elif observed is ActuatorObservedState.OFF:
                 pumps[actuator_id] = PumpRuntime(PumpState.OFF, now)
+            elif current is not None and current.state is PumpState.RUNNING:
+                pumps[actuator_id] = PumpRuntime(
+                    PumpState.OFF
+                    if any(self.runtime_state.zone_demands.values())
+                    else PumpState.OVERRUN,
+                    now,
+                )
 
         self.runtime_state = replace(self.runtime_state, valves=valves, pumps=pumps)
 
@@ -387,6 +437,7 @@ class HydronicRuntime:
                         )
                         if entity_id is not None
                     ),
+                    *self.executor.readiness_bindings.values(),
                     *(binding.entity_id for binding in self.executor.bindings.values()),
                 )
             )

@@ -60,6 +60,17 @@ def _entity_domain(entity_id: str) -> str:
     return domain
 
 
+def _observation_domain(entity_id: str) -> str:
+    """Return the domain accepted for actuator or readiness observations."""
+    domain, separator, _object_id = entity_id.partition(".")
+    if not separator or domain not in {"switch", "valve", "binary_sensor"}:
+        raise ValueError(
+            f"Actuator feedback entity {entity_id!r} must belong to a switch, valve, "
+            "or binary_sensor domain."
+        )
+    return domain
+
+
 def operation_for(command: ActuatorCommand, binding: ActuatorBinding) -> ActuatorOperation:
     """Translate one explicit domain command into a non-toggle service operation."""
     domain = _entity_domain(binding.entity_id)
@@ -96,8 +107,8 @@ def observed_state_for(entity_id: str, state: str | None) -> ActuatorObservedSta
     if state is None:
         return ActuatorObservedState.UNKNOWN
     normalized = str(state).lower()
-    domain = _entity_domain(entity_id)
-    if domain == "switch":
+    domain = _observation_domain(entity_id)
+    if domain in {"switch", "binary_sensor"}:
         return {
             "on": ActuatorObservedState.ON,
             "off": ActuatorObservedState.OFF,
@@ -115,7 +126,10 @@ class ActuatorExecutor:
     bindings: Mapping[str, ActuatorBinding]
     shadow_mode: bool = True
     actuator_shadow_modes: Mapping[str, bool] = field(default_factory=dict)
+    readiness_bindings: Mapping[str, str] = field(default_factory=dict)
     observed_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
+    feedback_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
+    requested_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Copy configuration and initialize every actuator conservatively."""
@@ -124,9 +138,23 @@ class ActuatorExecutor:
             str(actuator_id): bool(shadow)
             for actuator_id, shadow in self.actuator_shadow_modes.items()
         }
+        self.readiness_bindings = {
+            str(actuator_id): str(entity_id)
+            for actuator_id, entity_id in self.readiness_bindings.items()
+            if str(actuator_id) in self.bindings
+        }
         self.observed_states = {
             actuator_id: self.observed_states.get(actuator_id, ActuatorObservedState.UNKNOWN)
             for actuator_id in self.bindings
+        }
+        self.feedback_states = {
+            actuator_id: self.feedback_states.get(actuator_id, ActuatorObservedState.UNKNOWN)
+            for actuator_id in self.readiness_bindings
+        }
+        self.requested_states = {
+            actuator_id: self.requested_states[actuator_id]
+            for actuator_id in self.bindings
+            if actuator_id in self.requested_states
         }
 
     @classmethod
@@ -141,6 +169,11 @@ class ActuatorExecutor:
         bindings: dict[str, ActuatorBinding] = {}
         for actuator_id, valve in plant.valves.items():
             bindings[actuator_id] = ActuatorBinding(actuator_id, valve.entity_id)
+        readiness_bindings = {
+            actuator_id: valve.readiness_entity_id
+            for actuator_id, valve in plant.valves.items()
+            if valve.readiness_entity_id is not None
+        }
         for actuator_id, pump in plant.pumps.items():
             if actuator_id in bindings:
                 raise ValueError(f"Actuator ID {actuator_id!r} is used by more than one actuator.")
@@ -149,6 +182,7 @@ class ActuatorExecutor:
             bindings=bindings,
             shadow_mode=shadow_mode,
             actuator_shadow_modes=actuator_shadow_modes or {},
+            readiness_bindings=readiness_bindings,
         )
 
     def actuator_state(self, actuator_id: str) -> ActuatorObservedState:
@@ -157,11 +191,45 @@ class ActuatorExecutor:
             raise KeyError(f"Unknown actuator {actuator_id!r}.")
         return self.observed_states.get(actuator_id, ActuatorObservedState.UNKNOWN)
 
+    def requested_state(self, actuator_id: str) -> ActuatorObservedState | None:
+        """Return a dispatched desired state without treating it as feedback."""
+        if actuator_id not in self.bindings:
+            raise KeyError(f"Unknown actuator {actuator_id!r}.")
+        return self.requested_states.get(actuator_id)
+
+    def readiness_state(self, actuator_id: str) -> bool | None:
+        """Return explicit readiness feedback, or None when only a timer is available."""
+        if actuator_id not in self.bindings:
+            raise KeyError(f"Unknown actuator {actuator_id!r}.")
+        feedback = self.feedback_states.get(actuator_id, ActuatorObservedState.UNKNOWN)
+        if feedback in {ActuatorObservedState.OPEN, ActuatorObservedState.ON}:
+            return True
+        if feedback in {ActuatorObservedState.CLOSED, ActuatorObservedState.OFF}:
+            return False
+        domain = _entity_domain(self.bindings[actuator_id].entity_id)
+        if domain == "valve":
+            observed = self.actuator_state(actuator_id)
+            if observed is ActuatorObservedState.OPEN:
+                return True
+            if observed is ActuatorObservedState.CLOSED:
+                return False
+        return None
+
     def observe_entity_state(self, entity_id: str, state: str | None) -> None:
         """Record a state event for every binding using the entity."""
+        is_actuator = any(binding.entity_id == entity_id for binding in self.bindings.values())
+        is_feedback = entity_id in self.readiness_bindings.values()
+        if not is_actuator and not is_feedback:
+            return
+        observed = observed_state_for(entity_id, state)
         for actuator_id, binding in self.bindings.items():
             if binding.entity_id == entity_id:
-                self.observed_states[actuator_id] = observed_state_for(entity_id, state)
+                self.observed_states[actuator_id] = observed
+                if self.requested_states.get(actuator_id) is observed:
+                    self.requested_states.pop(actuator_id, None)
+        for actuator_id, feedback_entity_id in self.readiness_bindings.items():
+            if feedback_entity_id == entity_id:
+                self.feedback_states[actuator_id] = observed
 
     def observe_entities(self, states: Mapping[str, str | None]) -> None:
         """Reconcile configured entity states without assuming desired state."""
@@ -169,6 +237,8 @@ class ActuatorExecutor:
             self.observed_states[binding.actuator_id] = observed_state_for(
                 binding.entity_id, states.get(binding.entity_id)
             )
+        for actuator_id, entity_id in self.readiness_bindings.items():
+            self.feedback_states[actuator_id] = observed_state_for(entity_id, states.get(entity_id))
 
     async def async_execute(
         self,
@@ -190,7 +260,10 @@ class ActuatorExecutor:
                     f"Control plan references unknown actuator {command.actuator_id!r}."
                 ) from error
             operation = operation_for(command, binding)
-            if self.actuator_state(command.actuator_id) is operation.target_state:
+            if (
+                self.actuator_state(command.actuator_id) is operation.target_state
+                or self.requested_state(command.actuator_id) is operation.target_state
+            ):
                 suppressed.append(operation)
                 continue
             if (
@@ -202,6 +275,6 @@ class ActuatorExecutor:
                 shadowed.append(operation)
                 continue
             await dispatch(operation)
-            self.observed_states[command.actuator_id] = operation.target_state
+            self.requested_states[command.actuator_id] = operation.target_state
             executed.append(operation)
         return ExecutionReport(tuple(executed), tuple(suppressed), tuple(shadowed))
