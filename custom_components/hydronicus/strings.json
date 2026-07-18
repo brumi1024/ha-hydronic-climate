@@ -237,6 +237,47 @@
       "abort": {
         "no_circuits": "Add a hydraulic circuit before adding a zone."
       }
+    },
+    "source": {
+      "entry_type": "Source",
+      "initiate_flow": {
+        "user": "Add source"
+      },
+      "title": "Source",
+      "step": {
+        "user": {
+          "title": "Add a heat source",
+          "description": "Configure source availability and stable priority for shadow recommendation. A buffer source is eligible only while its temperature is fresh and above the configured threshold.",
+          "data": {
+            "name": "Source name",
+            "source_type": "Source type",
+            "priority": "Priority (lower wins)",
+            "availability_entity": "Availability entity",
+            "temperature_entity": "Buffer temperature entity",
+            "minimum_temperature": "Minimum buffer temperature (degrees Celsius)",
+            "maximum_age_seconds": "Maximum buffer temperature age (seconds)",
+            "hysteresis": "Buffer threshold hysteresis (degrees Celsius)"
+          }
+        },
+        "reconfigure": {
+          "title": "Update heat source",
+          "description": "Change source availability, priority, or temperature qualification without executing source equipment.",
+          "data": {
+            "name": "Source name",
+            "source_type": "Source type",
+            "priority": "Priority (lower wins)",
+            "availability_entity": "Availability entity",
+            "temperature_entity": "Buffer temperature entity",
+            "minimum_temperature": "Minimum buffer temperature (degrees Celsius)",
+            "maximum_age_seconds": "Maximum buffer temperature age (seconds)",
+            "hysteresis": "Buffer threshold hysteresis (degrees Celsius)"
+          }
+        }
+      },
+      "error": {
+        "name_required": "A source name is required.",
+        "invalid_source": "The source configuration is not valid."
+      }
     }
   }
 }

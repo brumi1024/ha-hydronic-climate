@@ -10,6 +10,8 @@ from .model import (
     MIN_ZONE_TARGET_TEMPERATURE,
     CompiledPlant,
     PlantConfiguration,
+    Source,
+    SourceKind,
     TemperatureAggregation,
     TopologyWarning,
     Zone,
@@ -134,6 +136,47 @@ def _validate_zone(zone: Zone) -> None:
             )
 
 
+def _validate_source(source: Source) -> None:
+    """Validate source configuration without observing runtime state."""
+    if not isinstance(source.name, str) or not source.name.strip():
+        raise TopologyValidationError(f"Source {source.id} requires a non-empty name.")
+    if (
+        not isinstance(source.priority, int)
+        or isinstance(source.priority, bool)
+        or source.priority < 0
+    ):
+        raise TopologyValidationError(
+            f"Source {source.id} priority must be a non-negative integer."
+        )
+    if not isinstance(source.kind, SourceKind):
+        raise TopologyValidationError(f"Source {source.id} type must be supported.")
+    for field_name, entity_id in (
+        ("availability", source.availability_entity_id),
+        ("temperature", source.temperature_entity_id),
+    ):
+        if entity_id is not None and (not isinstance(entity_id, str) or not entity_id.strip()):
+            raise TopologyValidationError(
+                f"Source {source.id} {field_name} entity must be a non-empty entity id."
+            )
+    if not _finite_positive(source.maximum_age_seconds):
+        raise TopologyValidationError(
+            f"Source {source.id} maximum temperature age must be positive and finite."
+        )
+    if not _finite_non_negative(source.hysteresis):
+        raise TopologyValidationError(
+            f"Source {source.id} hysteresis must be finite and non-negative."
+        )
+    if source.kind is SourceKind.TEMPERATURE_QUALIFIED_BUFFER:
+        if source.temperature_entity_id is None:
+            raise TopologyValidationError(
+                f"Source {source.id} buffer requires a temperature entity."
+            )
+        if source.minimum_temperature is None or not isfinite(float(source.minimum_temperature)):
+            raise TopologyValidationError(
+                f"Source {source.id} buffer minimum temperature must be finite."
+            )
+
+
 def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     """Validate and compile a plant configuration without reading runtime state."""
     if not configuration.id:
@@ -144,11 +187,13 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     pump_ids = [pump.id for pump in configuration.pumps]
     circuit_ids = [circuit.id for circuit in configuration.circuits]
     route_ids = [route.id for route in configuration.routes]
+    source_ids = [source.id for source in configuration.sources]
     for object_name, ids in (
         ("zone", zone_ids),
         ("valve", valve_ids),
         ("pump", pump_ids),
         ("circuit", circuit_ids),
+        ("source", source_ids),
     ):
         if not ids:
             continue
@@ -182,6 +227,8 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             raise TopologyValidationError(
                 f"Pump {pump.id} overrun must be finite and non-negative."
             )
+    for source in configuration.sources:
+        _validate_source(source)
 
     actuator_entity_ids = [
         *(valve.entity_id for valve in configuration.valves),
@@ -202,6 +249,9 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     circuits = {
         circuit.id: circuit
         for circuit in sorted(configuration.circuits, key=lambda circuit: circuit.id)
+    }
+    sources = {
+        source.id: source for source in sorted(configuration.sources, key=lambda source: source.id)
     }
     referenced_valves: set[str] = set()
     referenced_pumps: set[str] = set()
@@ -274,6 +324,15 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         noun = "circuit" if len(route_circuits) == 1 else "circuits"
         summary.append(f"Zone {zone.name} can request {noun} {', '.join(route_circuits)}.")
 
+    for source in configuration.sources:
+        if source.kind is SourceKind.TEMPERATURE_QUALIFIED_BUFFER:
+            summary.append(
+                f"Source {source.name} is eligible when its buffer reaches "
+                f"{source.minimum_temperature:g} °C."
+            )
+        else:
+            summary.append(f"Source {source.name} is eligible when available.")
+
     warnings: list[TopologyWarning] = []
     for valve_id, valve in valves.items():
         shared_circuits = tuple(
@@ -332,5 +391,6 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         circuits=circuits,
         routes=enabled_routes,
         logic_summary=tuple(summary),
+        sources=sources,
         warnings=tuple(warnings),
     )

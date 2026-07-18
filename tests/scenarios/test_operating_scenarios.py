@@ -15,6 +15,8 @@ from hydronicus_core.model import (
     Pump,
     PumpState,
     RuntimeState,
+    Source,
+    SourceKind,
     TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
@@ -182,6 +184,7 @@ def _single_zone_scenario_plant(
     minimum_active: float = 0,
     minimum_idle: float = 0,
     valve_opening: float = 0,
+    sources: tuple[Source, ...] = (),
 ) -> object:
     """Build a small synthetic plant for named fake-clock scenarios."""
     return compile_topology(
@@ -201,7 +204,68 @@ def _single_zone_scenario_plant(
             pumps=(Pump("pump", "Scenario pump", "switch.scenario_pump", 0),),
             circuits=(Circuit("circuit", "Scenario circuit", ("valve",), "pump"),),
             routes=(DeliveryRoute("route", "zone", "circuit"),),
+            sources=sources,
         )
+    )
+
+
+def test_buffer_becomes_ineligible_during_active_heating() -> None:
+    """A stale buffer falls back while hydraulic demand remains active."""
+    plant = _single_zone_scenario_plant(
+        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        sources=(
+            Source(
+                "buffer",
+                "Buffer",
+                priority=1,
+                kind=SourceKind.TEMPERATURE_QUALIFIED_BUFFER,
+                temperature_entity_id="sensor.buffer_temperature",
+                minimum_temperature=40,
+                maximum_age_seconds=30,
+                hysteresis=0.5,
+            ),
+            Source("boiler", "Boiler", priority=2),
+        ),
+    )
+
+    run_scenario(
+        plant,
+        started_at=NOW,
+        steps=(
+            ScenarioStep(
+                timedelta(),
+                {"sensor.zone": 19.0},
+                source_temperatures={"buffer": TemperatureObservation(45.0, NOW)},
+                source_availability={"buffer": True},
+                valves={"valve": ValveState.OPENING},
+                pumps={"pump": PumpState.OFF},
+                commands=frozenset({("valve", "open")}),
+                check_source=True,
+                source_id="buffer",
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.zone": 19.0},
+                source_temperatures={"buffer": TemperatureObservation(45.0, NOW)},
+                source_availability={"buffer": True},
+                valves={"valve": ValveState.OPEN},
+                pumps={"pump": PumpState.RUNNING},
+                commands=frozenset({("pump", "turn_on")}),
+                check_source=True,
+                source_id="buffer",
+            ),
+            ScenarioStep(
+                timedelta(seconds=30),
+                {"sensor.zone": 19.0},
+                source_temperatures={"buffer": TemperatureObservation(45.0, NOW)},
+                source_availability={"buffer": True},
+                valves={"valve": ValveState.OPEN},
+                pumps={"pump": PumpState.RUNNING},
+                check_source=True,
+                source_id="boiler",
+                source_explanation="stale",
+            ),
+        ),
     )
 
 

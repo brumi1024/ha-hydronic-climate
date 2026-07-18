@@ -34,6 +34,11 @@ class ScenarioStep:
     observations: Mapping[str, TemperatureObservation] | None = None
     zone_demands: Mapping[str, bool] = field(default_factory=dict)
     zone_statuses: Mapping[str, ZoneDecisionStatus] = field(default_factory=dict)
+    source_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
+    source_availability: Mapping[str, bool] = field(default_factory=dict)
+    check_source: bool = False
+    source_id: str | None = None
+    source_explanation: str | None = None
 
 
 def run_scenario(
@@ -48,12 +53,16 @@ def run_scenario(
     for step in steps:
         now += step.after
         snapshot = PlantSnapshot(
-            step.observations
-            if step.observations is not None
-            else {
-                entity_id: TemperatureObservation(value, now)
-                for entity_id, value in step.temperatures.items()
-            }
+            temperatures=(
+                step.observations
+                if step.observations is not None
+                else {
+                    entity_id: TemperatureObservation(value, now)
+                    for entity_id, value in step.temperatures.items()
+                }
+            ),
+            source_temperatures=step.source_temperatures,
+            source_availability=step.source_availability,
         )
         result = evaluate(plant, snapshot, runtime, now)
         assert {
@@ -78,4 +87,10 @@ def run_scenario(
                 zone_id: result.diagnostics.zone_decisions[zone_id].status
                 for zone_id in step.zone_statuses
             } == step.zone_statuses
+        if step.check_source:
+            recommendation = result.diagnostics.source_recommendation
+            assert recommendation is not None
+            assert recommendation.source_id == step.source_id
+            if step.source_explanation is not None:
+                assert step.source_explanation in recommendation.explanation
         runtime = result.next_runtime

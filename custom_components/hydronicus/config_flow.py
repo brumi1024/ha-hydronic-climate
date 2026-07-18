@@ -42,6 +42,13 @@ from .const import (
     CONF_ROUTES,
     CONF_SENSOR_ENTITY,
     CONF_SHADOW_MODE,
+    CONF_SOURCE_AVAILABILITY_ENTITY,
+    CONF_SOURCE_HYSTERESIS,
+    CONF_SOURCE_MAXIMUM_AGE,
+    CONF_SOURCE_MINIMUM_TEMPERATURE,
+    CONF_SOURCE_PRIORITY,
+    CONF_SOURCE_TEMPERATURE_ENTITY,
+    CONF_SOURCE_TYPE,
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_AGGREGATION,
     CONF_TEMPERATURE_SENSOR,
@@ -65,12 +72,18 @@ from .const import (
     DEFAULT_PUMP_OVERRUN,
     DEFAULT_SENSOR_MAX_AGE,
     DEFAULT_SENSOR_WEIGHT,
+    DEFAULT_SOURCE_HYSTERESIS,
+    DEFAULT_SOURCE_MAXIMUM_AGE,
+    DEFAULT_SOURCE_PRIORITY,
     DEFAULT_TARGET_TEMPERATURE,
     DEFAULT_TEMPERATURE_AGGREGATION,
     DEFAULT_VALVE_OPENING_TIME,
     DOMAIN,
+    SOURCE_KIND_BUFFER,
+    SOURCE_KIND_EXTERNAL,
     SUBENTRY_TYPE_ACTUATOR,
     SUBENTRY_TYPE_CIRCUIT,
+    SUBENTRY_TYPE_SOURCE,
     SUBENTRY_TYPE_ZONE,
 )
 from .core.configuration import (
@@ -182,6 +195,7 @@ def _effective_topology_is_valid(
     proposed_actuators: Sequence[Mapping[str, Any]] = (),
     proposed_circuits: Sequence[Mapping[str, Any]] = (),
     proposed_zones: Sequence[Mapping[str, Any]] = (),
+    proposed_sources: Sequence[Mapping[str, Any]] = (),
     excluded_subentry_id: str | None = None,
 ) -> bool:
     """Compile a complete proposed topology without mutating the config entry."""
@@ -190,7 +204,8 @@ def _effective_topology_is_valid(
             entry,
             proposed_actuators=proposed_actuators,
             proposed_circuits=proposed_circuits,
-            proposed_zones=proposed_zones,
+        proposed_zones=proposed_zones,
+        proposed_sources=proposed_sources,
             excluded_subentry_id=excluded_subentry_id,
         )
         is not None
@@ -203,6 +218,7 @@ def _effective_topology_compile(
     proposed_actuators: Sequence[Mapping[str, Any]] = (),
     proposed_circuits: Sequence[Mapping[str, Any]] = (),
     proposed_zones: Sequence[Mapping[str, Any]] = (),
+    proposed_sources: Sequence[Mapping[str, Any]] = (),
     excluded_subentry_id: str | None = None,
 ) -> CompiledPlant | None:
     """Compile a complete proposed topology without mutating the config entry."""
@@ -212,6 +228,7 @@ def _effective_topology_compile(
             proposed_actuators=proposed_actuators,
             proposed_circuits=proposed_circuits,
             proposed_zones=proposed_zones,
+            proposed_sources=proposed_sources,
             excluded_subentry_id=excluded_subentry_id,
         )
         return compile_topology(effective.configuration)
@@ -1078,6 +1095,156 @@ class ActuatorSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         )
 
 
+def _source_data(user_input: Mapping[str, Any], source_id: str) -> dict[str, Any]:
+    """Normalize one source subentry into stable persisted configuration."""
+    return {
+        "id": source_id,
+        CONF_NAME: str(user_input[CONF_NAME]).strip(),
+        CONF_SOURCE_TYPE: str(user_input.get(CONF_SOURCE_TYPE, SOURCE_KIND_EXTERNAL)),
+        CONF_SOURCE_PRIORITY: int(user_input.get(CONF_SOURCE_PRIORITY, DEFAULT_SOURCE_PRIORITY)),
+        CONF_SOURCE_AVAILABILITY_ENTITY: user_input.get(CONF_SOURCE_AVAILABILITY_ENTITY),
+        CONF_SOURCE_TEMPERATURE_ENTITY: user_input.get(CONF_SOURCE_TEMPERATURE_ENTITY),
+        CONF_SOURCE_MINIMUM_TEMPERATURE: user_input.get(CONF_SOURCE_MINIMUM_TEMPERATURE, 0.0),
+        CONF_SOURCE_MAXIMUM_AGE: user_input.get(
+            CONF_SOURCE_MAXIMUM_AGE, DEFAULT_SOURCE_MAXIMUM_AGE
+        ),
+        CONF_SOURCE_HYSTERESIS: user_input.get(
+            CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS
+        ),
+    }
+
+
+def _source_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
+    """Build the generic and temperature-qualified source editor."""
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)): str,
+            vol.Required(
+                CONF_SOURCE_TYPE,
+                default=defaults.get(CONF_SOURCE_TYPE, SOURCE_KIND_EXTERNAL),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(
+                            value=SOURCE_KIND_EXTERNAL, label="External source"
+                        ),
+                        selector.SelectOptionDict(
+                            value=SOURCE_KIND_BUFFER,
+                            label="Temperature-qualified buffer",
+                        ),
+                    ]
+                )
+            ),
+            vol.Required(
+                CONF_SOURCE_PRIORITY,
+                default=defaults.get(CONF_SOURCE_PRIORITY, DEFAULT_SOURCE_PRIORITY),
+            ): vol.All(vol.Coerce(int), vol.Range(min=0)),
+            vol.Optional(
+                CONF_SOURCE_AVAILABILITY_ENTITY,
+                default=defaults.get(CONF_SOURCE_AVAILABILITY_ENTITY),
+            ): vol.Any(
+                selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain=["binary_sensor", "input_boolean", "sensor"]
+                    )
+                ),
+                None,
+            ),
+            vol.Optional(
+                CONF_SOURCE_TEMPERATURE_ENTITY,
+                default=defaults.get(CONF_SOURCE_TEMPERATURE_ENTITY),
+            ): vol.Any(
+                selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+                None,
+            ),
+            vol.Required(
+                CONF_SOURCE_MINIMUM_TEMPERATURE,
+                default=defaults.get(CONF_SOURCE_MINIMUM_TEMPERATURE, 0.0),
+            ): vol.Coerce(float),
+            vol.Required(
+                CONF_SOURCE_MAXIMUM_AGE,
+                default=defaults.get(CONF_SOURCE_MAXIMUM_AGE, DEFAULT_SOURCE_MAXIMUM_AGE),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+            vol.Required(
+                CONF_SOURCE_HYSTERESIS,
+                default=defaults.get(CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        }
+    )
+
+
+def _source_validation_error(
+    entry: config_entries.ConfigEntry,
+    data: Mapping[str, Any],
+    *,
+    excluded_subentry_id: str | None = None,
+) -> str | None:
+    """Return a flow error after compiling the complete source topology."""
+    if not data[CONF_NAME]:
+        return "name_required"
+    if not _effective_topology_is_valid(
+        entry,
+        proposed_sources=(data,),
+        excluded_subentry_id=excluded_subentry_id,
+    ):
+        return "invalid_source"
+    return None
+
+
+class SourceSubentryFlowHandler(config_entries.ConfigSubentryFlow):
+    """Add a source used by the read-only source recommendation."""
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Create one source configuration without any actuator binding."""
+        entry = self._get_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            source_id = str(uuid4())
+            data = _source_data(user_input, source_id)
+            if error := _source_validation_error(entry, data):
+                errors["base"] = error
+            else:
+                return self.async_create_entry(
+                    title=data[CONF_NAME], data=data, unique_id=source_id
+                )
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_source_schema(),
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        """Update a source while preserving its stable UUID."""
+        entry = self._get_entry()
+        subentry = self._get_reconfigure_subentry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = _source_data(user_input, subentry.data["id"])
+            if error := _source_validation_error(
+                entry,
+                data,
+                excluded_subentry_id=subentry.subentry_id,
+            ):
+                errors["base"] = error
+            else:
+                return self.async_update_and_abort(
+                    entry,
+                    subentry,
+                    title=data[CONF_NAME],
+                    data=data,
+                )
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=_source_schema(subentry.data),
+            errors=errors,
+        )
+
+
 class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle creation of a hydronic plant config entry."""
 
@@ -1099,6 +1266,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             SUBENTRY_TYPE_ACTUATOR: ActuatorSubentryFlowHandler,
             SUBENTRY_TYPE_CIRCUIT: CircuitSubentryFlowHandler,
             SUBENTRY_TYPE_ZONE: ZoneSubentryFlowHandler,
+            SUBENTRY_TYPE_SOURCE: SourceSubentryFlowHandler,
         }
 
     async def async_step_user(

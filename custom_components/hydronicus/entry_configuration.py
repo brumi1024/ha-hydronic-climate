@@ -16,6 +16,7 @@ from .const import (
     CONF_OPENING_TIME,
     CONF_PUMP_ID,
     CONF_ROUTES,
+    CONF_SOURCES,
     CONF_TARGET_TEMPERATURE,
     CONF_TOPOLOGY,
     CONF_VALVE_IDS,
@@ -23,6 +24,7 @@ from .const import (
     CONF_ZONES,
     SUBENTRY_TYPE_ACTUATOR,
     SUBENTRY_TYPE_CIRCUIT,
+    SUBENTRY_TYPE_SOURCE,
     SUBENTRY_TYPE_ZONE,
 )
 from .core.configuration import (
@@ -39,6 +41,7 @@ class EffectivePlantConfiguration:
     configuration: PlantConfiguration
     actuator_subentry_ids: Mapping[str, str]
     zone_subentry_ids: Mapping[str, str]
+    source_subentry_ids: Mapping[str, str]
 
 
 def zone_target_temperature_update(
@@ -177,6 +180,7 @@ def effective_plant_configuration(
     proposed_actuators: Sequence[Mapping[str, Any]] = (),
     proposed_circuits: Sequence[Mapping[str, Any]] = (),
     proposed_zones: Sequence[Mapping[str, Any]] = (),
+    proposed_sources: Sequence[Mapping[str, Any]] = (),
     excluded_subentry_id: str | None = None,
 ) -> EffectivePlantConfiguration:
     """Build one atomic topology from embedded data and dynamic subentries."""
@@ -184,6 +188,7 @@ def effective_plant_configuration(
     actuator_records: list[tuple[str | None, Mapping[str, Any]]] = []
     circuit_records: list[tuple[str | None, Mapping[str, Any]]] = []
     zone_records: list[tuple[str | None, Mapping[str, Any]]] = []
+    source_records: list[tuple[str | None, Mapping[str, Any]]] = []
     for subentry in getattr(entry, "subentries", {}).values():
         if (
             subentry.subentry_type == SUBENTRY_TYPE_ACTUATOR
@@ -200,14 +205,21 @@ def effective_plant_configuration(
             and subentry.subentry_id != excluded_subentry_id
         ):
             zone_records.append((subentry.subentry_id, subentry.data))
+        elif (
+            subentry.subentry_type == SUBENTRY_TYPE_SOURCE
+            and subentry.subentry_id != excluded_subentry_id
+        ):
+            source_records.append((subentry.subentry_id, subentry.data))
     actuator_records.extend((None, data) for data in proposed_actuators)
     circuit_records.extend((None, data) for data in proposed_circuits)
     zone_records.extend((None, data) for data in proposed_zones)
+    source_records.extend((None, data) for data in proposed_sources)
 
     zones = list(base.zones)
     valves = list(base.valves)
     circuits = list(base.circuits)
     routes = list(base.routes)
+    sources = list(base.sources)
     parent_circuit_ids = {circuit.id for circuit in circuits}
     parent_zone_ids = {zone.id for zone in base.zones}
     parent_valve_ids = {valve.id for valve in base.valves}
@@ -314,6 +326,18 @@ def effective_plant_configuration(
         if subentry_id is not None:
             actuator_subentry_ids[actuator_id] = subentry_id
 
+    source_subentry_ids: dict[str, str] = {}
+    for subentry_id, data in source_records:
+        source = plant_configuration_from_entry_data(
+            {
+                "plant_id": "00000000-0000-4000-8000-000000000000",
+                "topology": {CONF_SOURCES: [dict(data)]},
+            }
+        ).sources[0]
+        sources.append(source)
+        if subentry_id is not None:
+            source_subentry_ids[source.id] = subentry_id
+
     return EffectivePlantConfiguration(
         configuration=replace(
             base,
@@ -321,7 +345,9 @@ def effective_plant_configuration(
             valves=tuple(valves),
             circuits=tuple(circuits),
             routes=tuple(routes),
+            sources=tuple(sources),
         ),
         actuator_subentry_ids=actuator_subentry_ids,
         zone_subentry_ids=zone_subentry_ids,
+        source_subentry_ids=source_subentry_ids,
     )

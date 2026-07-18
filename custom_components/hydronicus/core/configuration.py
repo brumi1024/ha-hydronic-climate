@@ -12,6 +12,8 @@ from .model import (
     DeliveryRoute,
     PlantConfiguration,
     Pump,
+    Source,
+    SourceKind,
     TemperatureAggregation,
     TemperatureSensorMetadata,
     Valve,
@@ -36,6 +38,7 @@ _SENSOR_KEYS = frozenset(
 )
 _PRESET_NAMES = frozenset({"comfort", "eco", "away"})
 _LEGACY_MAX_AGE_SECONDS = 1800.0
+_SOURCE_MAX_AGE_SECONDS = 1800.0
 
 
 def _required(mapping: Mapping[str, Any], key: str) -> Any:
@@ -121,6 +124,71 @@ def _required_number(mapping: Mapping[str, Any], key: str, *, non_negative: bool
     """Decode a required finite numeric field."""
     _required(mapping, key)
     return _number(mapping, key, 0.0, non_negative=non_negative)
+
+
+def _optional_entity_id(mapping: Mapping[str, Any], key: str) -> str | None:
+    """Read an optional Home Assistant entity binding without coercion surprises."""
+    value = mapping.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise StoredTopologyError(f"Stored topology field {key!r} must be a non-empty entity id.")
+    return value
+
+
+def _source_kind(mapping: Mapping[str, Any]) -> SourceKind:
+    """Decode source kinds while accepting the short buffer spelling."""
+    value = str(mapping.get("source_type", SourceKind.EXTERNAL.value))
+    if value in {"buffer", "temperature_buffer"}:
+        value = SourceKind.TEMPERATURE_QUALIFIED_BUFFER.value
+    try:
+        return SourceKind(value)
+    except ValueError as error:
+        raise StoredTopologyError("Stored source type must be supported.") from error
+
+
+def _source_priority(mapping: Mapping[str, Any]) -> int:
+    """Decode a stable non-negative integer source priority."""
+    value = _number(mapping, "priority", 100.0, non_negative=True)
+    if value != int(value):
+        raise StoredTopologyError("Stored source priority must be a non-negative integer.")
+    return int(value)
+
+
+def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> Source:
+    """Decode one generic or temperature-qualified source."""
+    kind = _source_kind(mapping)
+    temperature_entity = _optional_entity_id(mapping, "temperature_entity")
+    if temperature_entity is None:
+        temperature_entity = _optional_entity_id(mapping, "temperature_sensor")
+    availability_entity = _optional_entity_id(mapping, "availability_entity")
+    if availability_entity is None:
+        availability_entity = _optional_entity_id(mapping, "availability_sensor")
+    maximum_age = _number(
+        mapping,
+        "maximum_age_seconds",
+        _SOURCE_MAX_AGE_SECONDS,
+        positive=True,
+    )
+    hysteresis = _number(mapping, "hysteresis", 0.5, non_negative=True)
+    minimum_temperature: float | None = None
+    if kind is SourceKind.TEMPERATURE_QUALIFIED_BUFFER:
+        if temperature_entity is None:
+            raise StoredTopologyError(
+                "A temperature-qualified buffer requires a temperature entity."
+            )
+        minimum_temperature = _number(mapping, "minimum_temperature", 0.0)
+    return Source(
+        id=_id(mapping, "id", require_uuid=require_uuid),
+        name=str(_required(mapping, "name")),
+        priority=_source_priority(mapping),
+        kind=kind,
+        availability_entity_id=availability_entity,
+        temperature_entity_id=temperature_entity,
+        minimum_temperature=minimum_temperature,
+        maximum_age_seconds=maximum_age,
+        hysteresis=hysteresis,
+    )
 
 
 def _temperature_sensor_weights(
@@ -375,6 +443,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
     raw_circuits = _objects(raw_topology, "circuits")
     raw_valves = _objects(raw_topology, "valves")
     raw_pumps = _objects(raw_topology, "pumps")
+    raw_sources = _objects(raw_topology, "sources")
     require_uuid = bool(raw_valves or raw_pumps)
     plant_id = _id(data, "plant_id", require_uuid=require_uuid)
     zones = []
@@ -469,6 +538,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
             )
         valves = tuple(valve_data.values())
         pumps = tuple(pump_data.values())
+    sources = tuple(_source_from_mapping(item, require_uuid=require_uuid) for item in raw_sources)
     routes = tuple(
         DeliveryRoute(
             id=_id(item, "id", require_uuid=require_uuid),
@@ -485,4 +555,5 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
         pumps=pumps,
         circuits=tuple(circuits),
         routes=routes,
+        sources=sources,
     )
