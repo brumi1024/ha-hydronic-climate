@@ -170,6 +170,105 @@ class ZoneCoolingBlockedBinarySensor(HydronicShadowEntity):
         }
 
 
+class SourceDemandBinarySensor(HydronicShadowEntity):
+    """Expose one guarded source-demand recommendation as a synthetic output."""
+
+    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._source_id = source_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_demand"
+        self._attr_name = f"{name} demand"
+
+    @property
+    def is_on(self) -> bool:
+        """Return the demand requested by the latest evaluation, including shadow mode."""
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        return bool(getattr(diagnostic, "demand_requested", False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the guarded permit and execution boundary atomically."""
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        source = self._runtime.plant.sources[self._source_id]
+        return {
+            "available": getattr(diagnostic, "available", None),
+            "eligible": getattr(diagnostic, "eligible", False),
+            "recommended": getattr(diagnostic, "recommended", False),
+            "active": getattr(diagnostic, "active", False),
+            "demand_permitted": getattr(diagnostic, "demand_permitted", False),
+            "source_shadow_mode": source.shadow_mode,
+            "global_shadow_mode": self._runtime.shadow_mode,
+            "blocked": getattr(diagnostic, "blocked", False),
+            "reason": getattr(diagnostic, "reason", None),
+        }
+
+
+class SourceAvailableBinarySensor(HydronicShadowEntity):
+    """Expose the source availability input used by qualification."""
+
+    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._source_id = source_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_available"
+        self._attr_name = f"{name} available"
+
+    @property
+    def is_on(self) -> bool:
+        """Return only a positively known available state."""
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        return getattr(diagnostic, "available", None) is True
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose eligibility and the qualification reason."""
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        return {
+            "available": getattr(diagnostic, "available", None),
+            "eligible": getattr(diagnostic, "eligible", False),
+            "reason": getattr(diagnostic, "reason", None),
+        }
+
+
+class SourceActiveBinarySensor(HydronicShadowEntity):
+    """Expose which source owns the current guarded heating request."""
+
+    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._source_id = source_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_active"
+        self._attr_name = f"{name} active"
+
+    @property
+    def is_on(self) -> bool:
+        """Return the active-source result from the same evaluation as demand."""
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        return bool(getattr(diagnostic, "active", False))
+
+
+class SourceBlockedBinarySensor(HydronicShadowEntity):
+    """Expose source-specific blocking without blocking unrelated source demand."""
+
+    _attr_icon = "mdi:source-branch-off"
+
+    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._source_id = source_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{source_id}_blocked"
+        self._attr_name = f"{name} blocked"
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether this source's dependent demand is blocked."""
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        return bool(getattr(diagnostic, "blocked", False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the bounded source block explanation."""
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        return {"reason": getattr(diagnostic, "reason", None)}
+
+
 class ActuatorRequestedBinarySensor(HydronicShadowEntity):
     """Whether a valve or pump is virtually requested by the controller."""
 
@@ -275,6 +374,17 @@ async def async_setup_entry(
             ZoneCoolingBlockedBinarySensor(entry, zone.id, zone.name),
         ]
         if subentry_id := runtime.zone_subentry_ids.get(zone.id):
+            subentry_entities.setdefault(subentry_id, []).extend(entities)
+        else:
+            parent_entities.extend(entities)
+    for source in runtime.plant.sources.values():
+        entities = [
+            SourceDemandBinarySensor(entry, source.id, source.name),
+            SourceAvailableBinarySensor(entry, source.id, source.name),
+            SourceActiveBinarySensor(entry, source.id, source.name),
+            SourceBlockedBinarySensor(entry, source.id, source.name),
+        ]
+        if subentry_id := runtime.source_subentry_ids.get(source.id):
             subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
             parent_entities.extend(entities)

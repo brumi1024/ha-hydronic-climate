@@ -298,6 +298,7 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
                 "availability_configured": source.availability_entity_id is not None,
                 "temperature_reference_configured": source.temperature_entity_id is not None,
                 "demand_actuator_configured": source.demand_entity_id is not None,
+                "source_shadow_mode": source.shadow_mode,
             }
             for source_id, source in sorted(runtime.plant.sources.items())
         ],
@@ -457,6 +458,44 @@ def _controller(runtime: HydronicRuntime, references: _References) -> dict[str, 
             "eligible_source_count": len(source.eligible_source_ids) if source else 0,
             "reason": _safe_reason(references, source.explanation if source else None),
         },
+        "source_diagnostics": [
+            {
+                "reference": references.ref("source", source_id),
+                "available": diagnostic.available,
+                "eligible": diagnostic.eligible,
+                "recommended": diagnostic.recommended,
+                "active": diagnostic.active,
+                "demand_requested": diagnostic.demand_requested,
+                "demand_permitted": diagnostic.demand_permitted,
+                "source_shadow_mode": diagnostic.shadow_mode,
+                "blocked": diagnostic.blocked,
+                "reason": _safe_reason(references, diagnostic.reason),
+            }
+            for source_id, diagnostic in sorted(evaluation.diagnostics.source_diagnostics.items())
+        ],
+        "source_selection": (
+            {
+                "phase": evaluation.diagnostics.source_selection.phase.value,
+                "active_source_reference": references.ref(
+                    "source", evaluation.diagnostics.source_selection.active_source_id
+                ),
+                "target_source_reference": references.ref(
+                    "source", evaluation.diagnostics.source_selection.target_source_id
+                ),
+                "recommended_source_reference": references.ref(
+                    "source", evaluation.diagnostics.source_selection.recommended_source_id
+                ),
+                "hydraulically_safe": evaluation.diagnostics.source_selection.hydraulically_safe,
+                "dwell_remaining_seconds": (
+                    evaluation.diagnostics.source_selection.dwell_remaining_seconds
+                ),
+                "reason": _safe_reason(
+                    references, evaluation.diagnostics.source_selection.explanation
+                ),
+            }
+            if evaluation.diagnostics.source_selection is not None
+            else None
+        ),
     }
 
 

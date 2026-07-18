@@ -216,6 +216,9 @@ def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> S
         "demand_entity",
         "demand_entity_id",
     )
+    shadow_mode = mapping.get("shadow_mode", False)
+    if not isinstance(shadow_mode, bool):
+        raise StoredTopologyError("Stored source shadow_mode must be boolean.")
     minimum_temperature: float | None = None
     if kind is SourceKind.TEMPERATURE_QUALIFIED_BUFFER:
         if temperature_entity is None:
@@ -234,6 +237,7 @@ def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> S
         maximum_age_seconds=maximum_age,
         hysteresis=hysteresis,
         demand_entity_id=demand_entity,
+        shadow_mode=shadow_mode,
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta
 from math import fsum, isfinite, log
 from statistics import median
@@ -34,6 +35,7 @@ from .model import (
     SafeShutdownPlan,
     SafetyInterlockResult,
     Source,
+    SourceDiagnostic,
     SourceKind,
     SourceRecommendation,
     SourceSelectionActuator,
@@ -810,6 +812,11 @@ def _source_eligibility(
     now: datetime,
 ) -> tuple[bool, str]:
     """Return deterministic eligibility and a diagnostic reason for one source."""
+    if (
+        source.demand_entity_id is not None
+        and source.demand_entity_id in snapshot.unavailable_entity_ids
+    ):
+        return False, "demand output is unavailable"
     availability = snapshot.source_availability.get(source.id)
     if availability is None and source.availability_entity_id is not None:
         availability = snapshot.source_availability.get(source.availability_entity_id)
@@ -928,6 +935,40 @@ def _source_hydraulic_safety(
     return True, "Hydraulic valves, pumps, and plant mode are stable."
 
 
+def _source_demand_permit(
+    plant: CompiledPlant,
+    ready_circuits: set[str],
+    pump_consumers: Mapping[str, frozenset[str] | set[str]],
+    pumps: Mapping[str, PumpRuntime],
+    plant_mode: PlantMode,
+) -> tuple[bool, str]:
+    """Require one ready, demand-carrying circuit with a running pump."""
+    if plant_mode is not PlantMode.HEATING:
+        return False, "Heat-pump demand is blocked because the plant is not heating."
+    if not ready_circuits:
+        return False, "Heat-pump demand is blocked until a delivery circuit is ready."
+    running_paths: list[str] = []
+    waiting_paths: list[str] = []
+    for circuit_id in sorted(ready_circuits):
+        circuit = plant.circuits[circuit_id]
+        pump = pumps.get(circuit.pump_id)
+        if (
+            pump is not None
+            and pump.state is PumpState.RUNNING
+            and circuit_id in pump_consumers.get(circuit.pump_id, frozenset())
+        ):
+            running_paths.append(circuit_id)
+        else:
+            waiting_paths.append(circuit_id)
+    if running_paths:
+        return True, f"Heat-pump demand permitted by running ready circuit {running_paths[0]}."
+    return (
+        False,
+        "Heat-pump demand is blocked until a ready circuit has a running pump path"
+        + (f" (waiting for {', '.join(waiting_paths)})." if waiting_paths else "."),
+    )
+
+
 def _source_selection_command(
     selector: SourceSelectionActuator | None,
     source: Source,
@@ -967,6 +1008,8 @@ def _advance_source_selection(
     *,
     hydraulic_safe: bool,
     hydraulic_reason: str,
+    demand_permitted: bool,
+    demand_reason: str,
 ) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic | None]:
     """Advance source selection through a one-hot, break-before-make sequence."""
     selector = plant.source_selector
@@ -1181,6 +1224,16 @@ def _advance_source_selection(
                 (),
                 diagnostic,
             )
+        if target_source_id is not None and not demand_permitted:
+            diagnostic = SourceSelectionDiagnostic(
+                SourceSelectionPhase.BREAKING,
+                None,
+                target_source_id,
+                recommended_source_id,
+                False,
+                demand_reason,
+            )
+            return selection, (), diagnostic
         if elapsed < timedelta(seconds=(selector.break_interval_seconds if selector else 0.0)):
             diagnostic = SourceSelectionDiagnostic(
                 SourceSelectionPhase.BREAKING,
@@ -1252,6 +1305,37 @@ def _advance_source_selection(
 
     if selection.phase is SourceSelectionPhase.SELECTING:
         target_source_id = selection.target_source_id
+        if target_source_id is not None and recommended_source_id is None:
+            target_source = plant.sources.get(target_source_id)
+            release_command = (
+                _source_release_command(
+                    selector,
+                    target_source,
+                    reason="Release source demand before heating demand becomes unsafe.",
+                )
+                if target_source is not None
+                else None
+            )
+            next_selection = SourceSelectionRuntime(
+                SourceSelectionPhase.BREAKING,
+                target_source_id,
+                None,
+                now,
+                selection.last_selected_at,
+                target_source_id,
+            )
+            return (
+                next_selection,
+                (release_command,) if release_command is not None else (),
+                SourceSelectionDiagnostic(
+                    SourceSelectionPhase.BREAKING,
+                    target_source_id,
+                    None,
+                    None,
+                    True,
+                    "Source demand released because no eligible heating source remains.",
+                ),
+            )
         if selector is not None and selector.entity_id is not None:
             if observed_source == target_source_id:
                 selected_at = selection.transition_started_at or now
@@ -1322,6 +1406,16 @@ def _advance_source_selection(
                 selection.last_selected_at,
             )
             explanation = hydraulic_reason
+            phase = SourceSelectionPhase.WAITING_FOR_HYDRAULICS
+        elif not demand_permitted:
+            next_selection = SourceSelectionRuntime(
+                SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
+                None,
+                recommended_source_id,
+                selection.transition_started_at,
+                selection.last_selected_at,
+            )
+            explanation = demand_reason
             phase = SourceSelectionPhase.WAITING_FOR_HYDRAULICS
         else:
             target_source = plant.sources[recommended_source_id]
@@ -1425,6 +1519,41 @@ def _advance_source_selection(
             ),
         )
 
+    fallback = active_source_id not in (
+        recommendation.eligible_source_ids if recommendation else ()
+    )
+    if fallback:
+        selected_source = plant.sources[active_source_id]
+        release_command = _source_release_command(
+            selector,
+            selected_source,
+            reason=(
+                "Release the unavailable source before deterministic fallback."
+                if recommended_source_id is not None
+                else "Release source demand because no eligible heating source remains."
+            ),
+        )
+        next_selection = SourceSelectionRuntime(
+            SourceSelectionPhase.BREAKING,
+            None,
+            recommended_source_id,
+            now,
+            selection.last_selected_at,
+            active_source_id,
+        )
+        return (
+            next_selection,
+            (release_command,) if release_command is not None else (),
+            SourceSelectionDiagnostic(
+                SourceSelectionPhase.BREAKING,
+                active_source_id,
+                recommended_source_id,
+                recommended_source_id,
+                True,
+                "Old source demand released before deterministic fallback.",
+            ),
+        )
+
     if not hydraulic_safe:
         next_selection = SourceSelectionRuntime(
             SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
@@ -1446,9 +1575,6 @@ def _advance_source_selection(
             ),
         )
 
-    fallback = active_source_id not in (
-        recommendation.eligible_source_ids if recommendation else ()
-    )
     selected_at = selection.last_selected_at
     dwell_seconds = selector.minimum_dwell_seconds if selector else 0.0
     if (
@@ -2622,6 +2748,16 @@ def evaluate(
         tuple(commands),
         next_plant_mode,
     )
+    heating_ready_circuits = {
+        route.circuit_id for route in eligible_routes if route.circuit_id in ready_circuits
+    }
+    demand_permitted, demand_reason = _source_demand_permit(
+        plant,
+        heating_ready_circuits,
+        pump_consumers,
+        pumps,
+        next_plant_mode,
+    )
     source_selection_runtime, source_selection_commands, source_selection = (
         _advance_source_selection(
             plant,
@@ -2631,6 +2767,8 @@ def evaluate(
             source_recommendation,
             hydraulic_safe=hydraulic_safe,
             hydraulic_reason=hydraulic_reason,
+            demand_permitted=demand_permitted,
+            demand_reason=demand_reason,
         )
     )
     commands.extend(source_selection_commands)
@@ -2644,6 +2782,84 @@ def evaluate(
         if source_recommendation is not None
         else None
     )
+    direct_source_demand_ids = frozenset(
+        command.actuator_id.removeprefix("source:")
+        for command in source_selection_commands
+        if command.actuator_id.startswith("source:")
+        and command.action is ActuatorAction.TURN_ON
+    )
+    reported_active_source_id = (
+        source_selection_runtime.active_source_id
+        or next(iter(sorted(direct_source_demand_ids)), None)
+    )
+    if selector_execution_configured and direct_source_demand_ids:
+        selected_source_id = reported_active_source_id
+    if source_selection is not None:
+        dwell_remaining = 0.0
+        if (
+            plant.source_selector is not None
+            and source_selection.phase is SourceSelectionPhase.MINIMUM_DWELL
+            and source_selection_runtime.last_selected_at is not None
+        ):
+            dwell_remaining = max(
+                0.0,
+                plant.source_selector.minimum_dwell_seconds
+                - _elapsed(now, source_selection_runtime.last_selected_at).total_seconds(),
+            )
+        source_selection = replace(
+            source_selection,
+            dwell_remaining_seconds=dwell_remaining,
+        )
+    source_diagnostics: dict[str, SourceDiagnostic] = {}
+    for source_id, source in sorted(plant.sources.items()):
+        source_available: bool | None = True
+        if source.availability_entity_id is not None:
+            source_available = snapshot.source_availability.get(source.id)
+            if source_available is None:
+                source_available = snapshot.source_availability.get(source.availability_entity_id)
+        eligible, eligibility_reason = _source_eligibility(source, snapshot, runtime, now)
+        recommended = source_recommendation is not None and (
+            source_recommendation.source_id == source_id
+        )
+        active = reported_active_source_id == source_id
+        demand_requested = bool(
+            source.demand_entity_id is not None
+            and (
+                source_id in direct_source_demand_ids
+                or (active and recommended and demand_permitted)
+            )
+        )
+        source_permitted = bool(
+            source.demand_entity_id is not None
+            and recommended
+            and eligible
+            and demand_permitted
+            and (active or source_id in direct_source_demand_ids)
+        )
+        if source.demand_entity_id is None:
+            reason = "No heat-pump demand output is configured for this source."
+        elif not eligible:
+            reason = f"Blocked: {eligibility_reason}."
+        elif not recommended:
+            reason = "Blocked: this source is not the deterministic active recommendation."
+        elif demand_requested:
+            reason = demand_reason
+            if source.shadow_mode:
+                reason += " Source execution is shadowed."
+        else:
+            reason = demand_reason
+        source_diagnostics[source_id] = SourceDiagnostic(
+            source_id=source_id,
+            available=source_available,
+            eligible=eligible,
+            recommended=recommended,
+            active=active,
+            demand_requested=demand_requested,
+            demand_permitted=source_permitted,
+            shadow_mode=source.shadow_mode,
+            blocked=source.demand_entity_id is not None and not demand_requested,
+            reason=reason,
+        )
     source_selection_actuator_ids = frozenset(
         command.actuator_id for command in source_selection_commands
     )
@@ -2706,6 +2922,7 @@ def evaluate(
             actuator_reasons=actuator_reasons,
             zone_decisions=zone_decisions,
             source_recommendation=source_recommendation,
+            source_diagnostics=source_diagnostics,
             cooling_zone_decisions=cooling_zone_decisions,
             interlocks=cooling_interlocks,
             cooling_circuit_reasons=cooling_circuit_reasons,

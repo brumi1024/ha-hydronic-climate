@@ -363,6 +363,163 @@ class SourceRecommendationExplanationSensor(SensorEntity):
         }
 
 
+class ActiveSourceSensor(SensorEntity):
+    """Expose the source owning the latest guarded heating demand."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:heat-pump"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_active_source"
+        self._attr_name = "Active source"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        return self._runtime.runtime_state.selected_source_id or "none"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        selection = self._runtime.source_selection_diagnostic()
+        recommendation = self._runtime.source_recommendation()
+        return {
+            "recommended_source_id": recommendation.source_id if recommendation else None,
+            "target_source_id": getattr(selection, "target_source_id", None),
+            "phase": getattr(getattr(selection, "phase", None), "value", None),
+            "dwell_remaining_seconds": getattr(selection, "dwell_remaining_seconds", 0.0),
+            "hydraulically_safe": getattr(selection, "hydraulically_safe", False),
+            "explanation": getattr(selection, "explanation", None),
+        }
+
+
+class SourceChangeoverSensor(SensorEntity):
+    """Expose the deterministic source selection phase and guard."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:swap-horizontal-circle"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_source_changeover"
+        self._attr_name = "Source changeover"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        selection = self._runtime.source_selection_diagnostic()
+        return getattr(getattr(selection, "phase", None), "value", "idle")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        selection = self._runtime.source_selection_diagnostic()
+        recommendation = self._runtime.source_recommendation()
+        return {
+            "active_source_id": getattr(selection, "active_source_id", None),
+            "target_source_id": getattr(selection, "target_source_id", None),
+            "recommended_source_id": recommendation.source_id if recommendation else None,
+            "dwell_remaining_seconds": getattr(selection, "dwell_remaining_seconds", 0.0),
+            "hydraulically_safe": getattr(selection, "hydraulically_safe", False),
+            "global_shadow_mode": self._runtime.shadow_mode,
+            "explanation": getattr(selection, "explanation", None),
+        }
+
+
+class SourceDwellSensor(SensorEntity):
+    """Expose remaining source minimum dwell time from the atomic evaluation."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:timer-lock-outline"
+    _attr_native_unit_of_measurement = "s"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_source_dwell"
+        self._attr_name = "Source dwell"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        selection = self._runtime.source_selection_diagnostic()
+        return float(getattr(selection, "dwell_remaining_seconds", 0.0))
+
+
+class SourceBlockedReasonSensor(SensorEntity):
+    """Expose a bounded source-specific block explanation."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:source-branch-alert"
+
+    def __init__(self, entry: HydronicConfigEntry, source_id: str, name: str) -> None:
+        self._entry = entry
+        self._source_id = source_id
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_{source_id}_blocked_reason"
+        self._attr_name = f"{name} blocked reason"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        return str(getattr(diagnostic, "reason", "No source diagnostic."))[:_MAX_STATE_LENGTH]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        diagnostic = self._runtime.source_diagnostic(self._source_id)
+        return {
+            "available": getattr(diagnostic, "available", None),
+            "eligible": getattr(diagnostic, "eligible", False),
+            "recommended": getattr(diagnostic, "recommended", False),
+            "active": getattr(diagnostic, "active", False),
+            "demand_requested": getattr(diagnostic, "demand_requested", False),
+            "demand_permitted": getattr(diagnostic, "demand_permitted", False),
+            "blocked": getattr(diagnostic, "blocked", False),
+        }
+
+
 class ZoneCoolingBlockedReasonSensor(SensorEntity):
     """Expose the cooling interlock explanation for one comfort zone."""
 
@@ -681,10 +838,20 @@ async def async_setup_entry(
         TopologyPreviewSensor(entry),
         PlantModeSensor(entry),
         ModeChangeoverExplanationSensor(entry),
+        ActiveSourceSensor(entry),
+        SourceChangeoverSensor(entry),
+        SourceDwellSensor(entry),
     ]
     parent_entities.extend(
         [RecommendedSourceSensor(entry), SourceRecommendationExplanationSensor(entry)]
     )
+    source_subentry_entities: dict[str, list[SensorEntity]] = {}
+    for source in runtime.plant.sources.values():
+        entity = SourceBlockedReasonSensor(entry, source.id, source.name)
+        if subentry_id := runtime.source_subentry_ids.get(source.id):
+            source_subentry_entities.setdefault(subentry_id, []).append(entity)
+        else:
+            parent_entities.append(entity)
     subentry_entities: dict[str, list[SensorEntity]] = {}
     for zone in runtime.plant.zones.values():
         entities = [
@@ -708,6 +875,8 @@ async def async_setup_entry(
         else:
             parent_entities.append(entity)
     async_add_entities(parent_entities)
+    for subentry_id, entities in source_subentry_entities.items():
+        subentry_entities.setdefault(subentry_id, []).extend(entities)
     for subentry_id, entities in subentry_entities.items():
         async_add_entities(entities, config_subentry_id=subentry_id)
 

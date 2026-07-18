@@ -319,6 +319,7 @@ class ActuatorExecutor:
                         f"Actuator ID {binding_id!r} is used by more than one actuator."
                     )
                 bindings[binding_id] = ActuatorBinding(binding_id, source.demand_entity_id)
+                configured_shadow_modes.setdefault(binding_id, source.shadow_mode)
         if plant.source_selector is not None and plant.source_selector.entity_id is not None:
             selector_id = plant.source_selector.id
             if selector_id in bindings:

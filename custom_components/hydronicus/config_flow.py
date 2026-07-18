@@ -62,6 +62,7 @@ from .const import (
     CONF_SOURCE_MAXIMUM_AGE,
     CONF_SOURCE_MINIMUM_TEMPERATURE,
     CONF_SOURCE_PRIORITY,
+    CONF_SOURCE_SHADOW_MODE,
     CONF_SOURCE_TEMPERATURE_ENTITY,
     CONF_SOURCE_TYPE,
     CONF_SUPPLY_TEMPERATURE_MAX_AGE,
@@ -1265,6 +1266,7 @@ def _source_data(user_input: Mapping[str, Any], source_id: str) -> dict[str, Any
         CONF_SOURCE_HYSTERESIS: user_input.get(
             CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS
         ),
+        CONF_SOURCE_SHADOW_MODE: bool(user_input.get(CONF_SOURCE_SHADOW_MODE, False)),
     }
 
 
@@ -1330,6 +1332,10 @@ def _source_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
                 CONF_SOURCE_HYSTERESIS,
                 default=defaults.get(CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS),
             ): vol.All(vol.Coerce(float), vol.Range(min=0)),
+            vol.Required(
+                CONF_SOURCE_SHADOW_MODE,
+                default=defaults.get(CONF_SOURCE_SHADOW_MODE, False),
+            ): selector.BooleanSelector(),
         }
     )
 
