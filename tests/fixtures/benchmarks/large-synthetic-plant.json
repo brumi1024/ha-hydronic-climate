@@ -1,0 +1,30 @@
+{
+  "format": "hydronicus-synthetic-plant-benchmark",
+  "format_version": 1,
+  "profile": {
+    "name": "synthetic-large-plant",
+    "plant_id": "00000000-0000-4000-8000-000000000100",
+    "zone_count": 48,
+    "circuit_count": 24,
+    "valve_count": 12,
+    "pump_count": 6,
+    "source_count": 3,
+    "temperature_sensors_per_zone": 2,
+    "humidity_sensors_per_zone": 1,
+    "cooling_circuit_count": 24,
+    "interlock_references_per_cooling_circuit": 2,
+    "routes_per_zone": 2,
+    "valves_per_circuit": 2,
+    "shared_circuits_per_pump": 4,
+    "source_selector": true,
+    "shadow_mode": true,
+    "thresholds": {
+      "compile_ms_max": 1000.0,
+      "evaluation_ms_max": 1000.0,
+      "peak_memory_mib_max": 128.0,
+      "minimum_reconciliation_count": 2,
+      "minimum_entity_update_count": 1,
+      "maximum_service_call_count": 0
+    }
+  }
+}

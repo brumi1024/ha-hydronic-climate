@@ -58,7 +58,7 @@ Do not copy private server paths, credentials, or deployment commands into a pub
 
 ## Configuration migrations
 
-The migration test matrix covers the supported predecessor release and both persisted entry versions registered by the public beta.
+The migration test matrix covers every supported stored schema (`1.0` and `1.1`) and both persisted entry versions registered by the public beta.
 Each migration step validates the reconstructed topology before Home Assistant writes the migrated entry.
 The migration is atomic, so an invalid candidate leaves the original config-entry data and version untouched.
 
