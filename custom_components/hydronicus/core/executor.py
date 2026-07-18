@@ -174,6 +174,8 @@ class ActuatorExecutor:
         self,
         plan: ControlPlan,
         dispatch: DispatchOperation,
+        *,
+        force_shadow: bool = False,
     ) -> ExecutionReport:
         """Dispatch only unsatisfied, non-shadowed explicit operations."""
         executed: list[ActuatorOperation] = []
@@ -190,7 +192,11 @@ class ActuatorExecutor:
             if self.actuator_state(command.actuator_id) is operation.target_state:
                 suppressed.append(operation)
                 continue
-            if self.shadow_mode or self.actuator_shadow_modes.get(command.actuator_id, False):
+            if (
+                force_shadow
+                or self.shadow_mode
+                or self.actuator_shadow_modes.get(command.actuator_id, False)
+            ):
                 shadowed.append(operation)
                 continue
             await dispatch(operation)

@@ -10,7 +10,7 @@ Physical protection and software coordination have different responsibilities.
 | Layer | What it can do | What it cannot guarantee |
 | --- | --- | --- |
 | Physical protection | Enforce limits when Home Assistant, the network, or the integration is unavailable | Understand Hydronicus topology or explain a software decision |
-| Hydronicus software | Describe topology, calculate shadow demand, sequence virtual requests, and explain the calculation | Prove flow, pressure, temperature, condensation safety, electrical safety, or equipment capacity |
+| Hydronicus software | Describe topology, calculate shadow demand, sequence virtual requests, explain the calculation, and translate explicit commands behind shadow controls | Prove flow, pressure, temperature, condensation safety, electrical safety, or equipment capacity |
 
 Keep appropriate independent hardware protection in service.
 Depending on the plant, this can include high-limit controls, pressure relief, flow protection, freeze protection, condensation protection, pump protection, source interlocks, and emergency isolation.
@@ -20,16 +20,18 @@ Never remove or bypass a physical interlock because Hydronicus reports that a ro
 
 ## Current release boundary
 
-The current release evaluates heating demand in shadow mode.
-It observes selected temperature sensors and calculates virtual valve and pump states.
-It does not execute physical valve or pump service calls.
+The current release evaluates heating, cooling, and source decisions in shadow mode by default.
+It observes selected sensors and calculates virtual valve, pump, cooling, and source states.
+Its generic executor can translate explicit commands for synthetic or intercepted tests, but new Plants remain in shadow mode.
+Active physical rollout is not supported by this alpha release.
 
 The following are not available as production safety controls in this release:
 
-- Cooling demand control.
-- Humidity aggregation and dew-point protection.
-- Supply or surface-temperature interlocks.
-- Source selection and source changeover.
+- Physical actuator execution and safe shutdown.
+- Production cooling demand control.
+- Production humidity aggregation and dew-point protection.
+- Production supply or surface-temperature interlocks.
+- Production source selection and source changeover.
 - Flow confirmation or pump-fault handling.
 - Minimum runtime and minimum rest enforcement for physical equipment.
 - Safe shutdown commands to physical actuators.
@@ -38,7 +40,7 @@ These items are roadmap work and must not be represented as present safety featu
 
 ## Shadow mode is not a safety proof
 
-Shadow mode is safe for observing the software decision path because the current runtime does not issue equipment service calls.
+Shadow mode is safe for observing the software decision path because the default runtime does not issue equipment service calls.
 It still cannot prove that the configured topology matches the water circuit.
 
 A passing topology validation means that the configured graph is internally consistent.
@@ -60,7 +62,7 @@ Cooling requires different evidence from heating.
 Room temperature alone cannot establish a safe cooling request.
 
 Condensation risk depends on humidity, dew point, supply or surface temperature, sensor freshness, circuit compatibility, and physical protection.
-Hydronicus does not provide those production cooling controls in the current release.
+Hydronicus provides shadow cooling diagnostics but does not provide those production cooling controls in the current release.
 
 Do not operate a real cooling plant from the current integration.
 Keep any cooling experiment outside the physical actuator path until the relevant milestone is implemented, tested, staged, and explicitly rolled out.

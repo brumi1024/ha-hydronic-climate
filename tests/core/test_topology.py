@@ -348,6 +348,34 @@ def test_compile_topology_rejects_non_finite_zone_target(
         compile_topology(plant)
 
 
+@pytest.mark.parametrize("target_temperature", [4.9, 35.1])
+def test_compile_topology_rejects_out_of_range_zone_target(
+    target_temperature: float,
+) -> None:
+    """Stored targets must stay within the climate entity's public range."""
+    plant = PlantConfiguration(
+        id="plant-1",
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                target_temperature,
+                ("sensor.living_temperature",),
+            ),
+        ),
+        valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
+        pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
+        circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
+        routes=(DeliveryRoute("route-1", "zone-1", "circuit-1"),),
+    )
+
+    with pytest.raises(
+        TopologyValidationError,
+        match="Zone zone-1 target temperature must be between 5 and 35",
+    ):
+        compile_topology(plant)
+
+
 def test_compile_topology_rejects_duplicate_zone_temperature_sensors() -> None:
     """One physical reading must not receive accidental double aggregation weight."""
     plant = PlantConfiguration(

@@ -7,6 +7,8 @@
 - Mean, median, minimum, maximum, designated-reference, and weighted-mean aggregation.
 - Configurable hysteresis, minimum active duration, and minimum idle duration.
 - Aggregate-temperature, blocked-state, blocked-reason, and structured shared-valve warning visibility.
+- Cooling condensation diagnostics and deterministic shadow source recommendations.
+- Explicit idempotent actuator execution with global and per-actuator shadow controls.
 
 ## Upgrade
 
@@ -27,9 +29,10 @@ Keep physical temperature, condensation, pressure, and flow safeguards independe
 
 ## Known limitations
 
-This release is shadow-mode software and does not issue physical actuator service calls.
+New plants remain in shadow mode and do not issue physical actuator service calls.
+The generic executor is covered through synthetic and intercepted tests, but active physical rollout is not supported by this alpha release.
 
-Active equipment control, safety interlocks, heating and cooling changeover, source coordination, diagnostics, and repairs remain limited or planned while the public beta matures.
+Production cooling control, source changeover, command failure recovery, diagnostics, and repairs remain limited or planned while the public beta matures.
 
 ## Hydronicus rename boundary
 

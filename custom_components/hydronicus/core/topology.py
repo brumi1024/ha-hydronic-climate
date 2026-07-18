@@ -53,6 +53,15 @@ def _validate_zone(zone: Zone) -> None:
         float(zone.target_temperature)
     ):
         raise TopologyValidationError(f"Zone {zone_id} target temperature must be finite.")
+    if (
+        not MIN_ZONE_TARGET_TEMPERATURE
+        <= float(zone.target_temperature)
+        <= (MAX_ZONE_TARGET_TEMPERATURE)
+    ):
+        raise TopologyValidationError(
+            f"Zone {zone_id} target temperature must be between "
+            f"{MIN_ZONE_TARGET_TEMPERATURE:g} and {MAX_ZONE_TARGET_TEMPERATURE:g} °C."
+        )
     if not zone.temperature_sensors:
         raise TopologyValidationError(f"Zone {zone_id} requires at least one temperature sensor.")
     if not _finite_non_negative(zone.heating_start_delta) or not _finite_non_negative(

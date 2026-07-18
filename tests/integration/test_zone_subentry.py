@@ -7,8 +7,9 @@ from copy import deepcopy
 from types import MappingProxyType
 from uuid import UUID
 
+import pytest
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -580,19 +581,18 @@ async def test_add_and_reconfigure_reject_non_finite_target_atomically(hass) -> 
         (entry.entry_id, SUBENTRY_TYPE_ZONE),
         context={"source": config_entries.SOURCE_USER},
     )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Invalid office",
-            CONF_TARGET_TEMPERATURE: math.inf,
-            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
-            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
-        },
-    )
+    with pytest.raises(InvalidData):
+        await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_NAME: "Invalid office",
+                CONF_TARGET_TEMPERATURE: math.inf,
+                CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
+                CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+            },
+        )
     await hass.async_block_till_done()
 
-    assert result["type"] == FlowResultType.FORM
-    assert result["errors"] == {"base": "invalid_zone"}
     assert not entry.subentries
     assert entry.runtime_data is initial_runtime
 
@@ -605,19 +605,18 @@ async def test_add_and_reconfigure_reject_non_finite_target_atomically(hass) -> 
     original_data = dict(subentry.data)
     valid_runtime = entry.runtime_data
     result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Invalid update",
-            CONF_TARGET_TEMPERATURE: math.nan,
-            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
-            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
-        },
-    )
+    with pytest.raises(InvalidData):
+        await hass.config_entries.subentries.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_NAME: "Invalid update",
+                CONF_TARGET_TEMPERATURE: math.nan,
+                CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
+                CONF_CIRCUIT_IDS: [CIRCUIT_ID],
+            },
+        )
     await hass.async_block_till_done()
 
-    assert result["type"] == FlowResultType.FORM
-    assert result["errors"] == {"base": "invalid_zone"}
     assert dict(subentry.data) == original_data
     assert entry.runtime_data is valid_runtime
 

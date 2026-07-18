@@ -767,7 +767,10 @@ def _zone_schema(
         vol.Required(
             CONF_TARGET_TEMPERATURE,
             default=defaults.get(CONF_TARGET_TEMPERATURE, DEFAULT_TARGET_TEMPERATURE),
-        ): vol.Coerce(float),
+        ): vol.All(
+            vol.Coerce(float),
+            vol.Range(min=MIN_ZONE_TARGET_TEMPERATURE, max=MAX_ZONE_TARGET_TEMPERATURE),
+        ),
         vol.Required(
             CONF_TEMPERATURE_SENSORS,
             default=_zone_temperature_sensor_defaults(defaults),
@@ -1521,7 +1524,13 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_NAME): str,
                     vol.Required(
                         CONF_TARGET_TEMPERATURE, default=DEFAULT_TARGET_TEMPERATURE
-                    ): vol.Coerce(float),
+                    ): vol.All(
+                        vol.Coerce(float),
+                        vol.Range(
+                            min=MIN_ZONE_TARGET_TEMPERATURE,
+                            max=MAX_ZONE_TARGET_TEMPERATURE,
+                        ),
+                    ),
                     vol.Required(CONF_TEMPERATURE_SENSORS): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor", multiple=True)
                     ),

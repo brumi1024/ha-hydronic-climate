@@ -28,7 +28,7 @@ CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
 ROUTE_ID = "00000000-0000-4000-8000-000000000006"
 
 
-def _cooling_entry() -> MockConfigEntry:
+def _cooling_entry(*, shadow_mode: bool = True) -> MockConfigEntry:
     """Return one persisted, cooling-enabled synthetic plant."""
     return MockConfigEntry(
         domain=DOMAIN,
@@ -36,7 +36,7 @@ def _cooling_entry() -> MockConfigEntry:
         data={
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: PLANT_ID,
-            CONF_SHADOW_MODE: True,
+            CONF_SHADOW_MODE: shadow_mode,
             "topology": {
                 "zones": [
                     {
@@ -82,6 +82,35 @@ def _cooling_entry() -> MockConfigEntry:
             },
         },
     )
+
+
+async def test_cooling_remains_shadowed_when_heating_execution_is_enabled(hass) -> None:
+    """Cooling commands never reach Home Assistant while active heating control is enabled."""
+    calls: list[tuple[str, str, str]] = []
+
+    async def record(call) -> None:
+        calls.append((call.domain, call.service, call.data["entity_id"]))
+
+    hass.services.async_register("switch", "turn_on", record)
+    hass.services.async_register("switch", "turn_off", record)
+    hass.states.async_set("sensor.living_temperature", "25.0")
+    hass.states.async_set("sensor.living_humidity", "50.0")
+    hass.states.async_set("sensor.cooling_supply", "18.0")
+    hass.states.async_set("switch.cooling_valve", "off")
+    hass.states.async_set("switch.cooling_pump", "off")
+    entry = _cooling_entry(shadow_mode=False)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert calls == []
+    assert entry.runtime_data.last_execution is not None
+    shadowed_ids = {
+        operation.actuator_id for operation in entry.runtime_data.last_execution.shadowed
+    }
+    assert shadowed_ids
+    assert shadowed_ids <= {VALVE_ID, PUMP_ID}
 
 
 async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:

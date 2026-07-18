@@ -181,6 +181,29 @@ async def test_global_shadow_preserves_commands_without_dispatching() -> None:
 
 
 @pytest.mark.asyncio
+async def test_forced_shadow_preserves_commands_without_dispatching() -> None:
+    """A cooling-only shadow boundary suppresses calls even when heating is active."""
+    executor = ActuatorExecutor(
+        {"valve": ActuatorBinding("valve", "switch.floor_valve")},
+        shadow_mode=False,
+    )
+    dispatched: list[ActuatorOperation] = []
+
+    async def dispatch(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    report = await executor.async_execute(
+        _plan(ActuatorCommand("valve", "open", "cooling demand")),
+        dispatch,
+        force_shadow=True,
+    )
+
+    assert dispatched == []
+    assert [operation.actuator_id for operation in report.shadowed] == ["valve"]
+    assert executor.actuator_state("valve") is ActuatorObservedState.UNKNOWN
+
+
+@pytest.mark.asyncio
 async def test_per_actuator_shadow_only_suppresses_that_actuator() -> None:
     """One shadowed actuator does not block another physical operation."""
     executor = ActuatorExecutor(

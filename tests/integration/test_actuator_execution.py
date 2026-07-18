@@ -29,6 +29,7 @@ def _entry(
     shadow_mode: bool,
     valve_entity_id: str = "switch.synthetic_valve",
     actuator_shadow: bool = False,
+    pump_overrun_seconds: float = 300.0,
 ) -> MockConfigEntry:
     """Build a completely synthetic plant with one generic valve actuator."""
     data = {
@@ -57,7 +58,7 @@ def _entry(
                     "id": PUMP_ID,
                     "name": "Synthetic pump",
                     "entity_id": "switch.synthetic_pump",
-                    "overrun_seconds": 300.0,
+                    "overrun_seconds": pump_overrun_seconds,
                 }
             ],
             "circuits": [
@@ -191,3 +192,20 @@ async def test_reload_reconstructs_unknown_state_when_feedback_is_not_trustworth
 
     assert isinstance(entry.runtime_data, HydronicRuntime)
     assert entry.runtime_data.executor.actuator_state(VALVE_ID) is ActuatorObservedState.UNKNOWN
+
+
+async def test_reload_reconciles_observed_active_actuators_before_idle_shutdown(hass) -> None:
+    """Observed active equipment is reconciled into the virtual state before shutdown."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "22.0")
+    hass.states.async_set("switch.synthetic_valve", "on")
+    hass.states.async_set("switch.synthetic_pump", "on")
+    entry = _entry(shadow_mode=False, pump_overrun_seconds=0.0)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert ("switch", "turn_off", "switch.synthetic_pump") in calls
+    assert ("switch", "turn_off", "switch.synthetic_valve") in calls

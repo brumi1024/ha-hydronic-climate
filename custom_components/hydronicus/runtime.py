@@ -18,18 +18,26 @@ from .const import (
     CONF_SHADOW_MODE,
 )
 from .core.controller import evaluate
-from .core.executor import ActuatorExecutor, ActuatorOperation, ExecutionReport
+from .core.executor import (
+    ActuatorExecutor,
+    ActuatorObservedState,
+    ActuatorOperation,
+    ExecutionReport,
+)
 from .core.model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
     AggregationResult,
     CompiledPlant,
     Evaluation,
+    PlantMode,
     PlantSnapshot,
+    PumpRuntime,
     PumpState,
     RuntimeState,
     SourceRecommendation,
     TemperatureObservation,
+    ValveRuntime,
     ValveState,
     ZoneDecision,
     ZoneDecisionStatus,
@@ -105,6 +113,7 @@ class HydronicRuntime:
             self._remove_state_listener = None
         self._hass = hass
         self.executor.observe_entities(self._actuator_states(hass))
+        self._reconcile_actuator_runtime()
         await self.async_refresh(hass)
         self._remove_state_listener = async_track_state_change_event(
             hass, self._observed_entity_ids(), self._async_handle_state_change
@@ -306,6 +315,27 @@ class HydronicRuntime:
             for binding in self.executor.bindings.values()
         }
 
+    def _reconcile_actuator_runtime(self) -> None:
+        """Seed virtual actuator state from trustworthy feedback before evaluating."""
+        now = self._now()
+        valves = dict(self.runtime_state.valves)
+        for actuator_id in self.plant.valves:
+            observed = self.executor.actuator_state(actuator_id)
+            if observed in {ActuatorObservedState.OPEN, ActuatorObservedState.ON}:
+                valves[actuator_id] = ValveRuntime(ValveState.OPEN, now)
+            elif observed in {ActuatorObservedState.CLOSED, ActuatorObservedState.OFF}:
+                valves[actuator_id] = ValveRuntime(ValveState.CLOSED, now)
+
+        pumps = dict(self.runtime_state.pumps)
+        for actuator_id in self.plant.pumps:
+            observed = self.executor.actuator_state(actuator_id)
+            if observed is ActuatorObservedState.ON:
+                pumps[actuator_id] = PumpRuntime(PumpState.RUNNING, now)
+            elif observed is ActuatorObservedState.OFF:
+                pumps[actuator_id] = PumpRuntime(PumpState.OFF, now)
+
+        self.runtime_state = replace(self.runtime_state, valves=valves, pumps=pumps)
+
     def _humidity_sensor_ids(self) -> tuple[str, ...]:
         """Return every configured humidity sensor once."""
         return tuple(
@@ -501,7 +531,7 @@ class HydronicRuntime:
                 state = hass.states.get(source.temperature_entity_id)
                 try:
                     value = float(state.state) if state is not None else None
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     value = None
                 observed_at = None
                 if state is not None:
@@ -546,11 +576,16 @@ class HydronicRuntime:
             },
         )
         result = evaluate(evaluation_plant, self.snapshot, self.runtime_state, now)
+        cooling_shadow_only = result.control_plan.plant_mode is PlantMode.COOLING or (
+            self.runtime_state.plant_mode is PlantMode.COOLING
+            and not any(result.next_runtime.zone_demands.values())
+        )
         self.runtime_state = result.next_runtime
         self.evaluation = result
         self.last_execution = await self.executor.async_execute(
             result.control_plan,
             lambda operation: self._async_dispatch_actuator(hass, operation),
+            force_shadow=cooling_shadow_only,
         )
         if self._entry is not None or self._hass is not None:
             self._schedule_next_transition(hass, now)
@@ -619,9 +654,7 @@ def _stored_actuator_shadow_modes(entry: Any) -> Mapping[str, bool]:
     if not isinstance(raw, Mapping):
         return {}
     return {
-        str(actuator_id): value
-        for actuator_id, value in raw.items()
-        if isinstance(value, bool)
+        str(actuator_id): value for actuator_id, value in raw.items() if isinstance(value, bool)
     }
 
 

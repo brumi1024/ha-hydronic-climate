@@ -16,8 +16,9 @@ It models comfort zones, hydraulic circuits, delivery routes, valves, pumps, and
 The repository currently contains an early alpha shadow-mode implementation.
 The current release is `0.1.0-alpha.1`.
 
-The implementation can create and validate a plant through the Home Assistant UI, observe configured temperature sensors, calculate heating demand, and expose the virtual sequence that would be needed by the configured topology.
-It does not issue service calls to valves, pumps, heat sources, or other physical equipment.
+The implementation can create and validate a plant through the Home Assistant UI, observe configured sensors, calculate heating and cooling shadow demand, recommend eligible sources, and expose the virtual sequence that would be needed by the configured topology.
+The runtime also contains an explicit actuator executor seam for synthetic and intercepted service-call tests.
+New plants remain in shadow mode, and this alpha release is not a production authorization for physical control.
 
 The current implementation includes:
 
@@ -32,10 +33,12 @@ The current implementation includes:
 - Multiple zones per circuit and multiple circuits per zone.
 - Shared valve and pump modeling with active-consumer tracking.
 - Heating demand with hysteresis and virtual valve opening and pump overrun timing.
+- Cooling condensation diagnostics and shadow source recommendations.
+- Explicit, idempotent switch and native-valve executor operations behind shadow controls.
 - Shadow climate, demand, aggregate-temperature, blocked-state, actuator-request, topology-preview, and explanation entities.
 - Structured non-fatal warnings when shared valves limit independent control.
 
-Cooling, humidity and dew-point protection, source coordination, physical actuator execution, Repairs, downloadable diagnostics, and production rollout controls remain milestone work.
+Production cooling control, source changeover, Repairs, downloadable diagnostics, and rollout controls remain milestone work.
 Treat the roadmap as a statement of intent rather than a promise that those features are available in this release.
 
 ## Installation
@@ -84,8 +87,8 @@ The Zone demand entity should turn on, the virtual valve should move through ope
 Raise the synthetic sensor above the stop threshold to release demand.
 The virtual pump then follows its configured overrun period before the virtual valve closes.
 
-Changing a climate target changes the calculated shadow demand only.
-It does not send a command to the configured valve or pump entity.
+Changing a climate target changes the calculated shadow demand only while the Plant remains in its default shadow mode.
+It does not send a command to the configured valve or pump entity in that mode.
 
 See [configuration and simulation](docs/configuration.md) for a complete generic example and [troubleshooting](docs/troubleshooting.md) if the flow or entities do not behave as expected.
 
