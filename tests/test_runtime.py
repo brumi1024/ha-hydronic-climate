@@ -105,7 +105,11 @@ class _RuntimeHomeAssistant:
         return task
 
 
-def _configured_entry(*, zone_overrides: dict[str, object] | None = None) -> SimpleNamespace:
+def _configured_entry(
+    *,
+    zone_overrides: dict[str, object] | None = None,
+    pump_overrun_seconds: float = 120.0,
+) -> SimpleNamespace:
     zone = {
         "id": ZONE_UUID,
         "name": "Test zone",
@@ -142,7 +146,7 @@ def _configured_entry(*, zone_overrides: dict[str, object] | None = None) -> Sim
                         "id": PUMP_UUID,
                         "name": "Test pump",
                         "entity_id": "switch.test_pump",
-                        "overrun_seconds": 120.0,
+                        "overrun_seconds": pump_overrun_seconds,
                     }
                 ],
                 "routes": [
@@ -230,6 +234,46 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "off")
             self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "closed")
+
+    async def test_due_now_transition_runs_as_a_tracked_home_assistant_task(self) -> None:
+        """Zero overrun advances without relying on an untracked timer callback."""
+        runtime = HydronicRuntime.from_entry(_configured_entry(pump_overrun_seconds=0))
+        hass = _RuntimeHomeAssistant("20.0")
+        scheduled: list[tuple[float, object]] = []
+
+        def schedule(_hass, delay: float, action):
+            scheduled.append((delay, action))
+            return mock.Mock()
+
+        with (
+            mock.patch.object(
+                runtime_module,
+                "async_track_state_change_event",
+                return_value=mock.Mock(),
+            ),
+            mock.patch.object(runtime_module, "async_call_later", side_effect=schedule),
+            mock.patch.object(runtime_module, "datetime") as clock,
+        ):
+            clock.now.return_value = NOW
+            await runtime.async_start(hass)
+
+            clock.now.return_value = NOW + timedelta(seconds=30)
+            scheduled[0][1](clock.now.return_value)
+            await hass.tasks[-1]
+
+            hass.states.current = _State("22.0")
+            clock.now.return_value = NOW + timedelta(seconds=31)
+            prior_task_count = len(hass.tasks)
+            await runtime.async_refresh(hass)
+
+            self.assertEqual(len(hass.tasks), prior_task_count + 1)
+            await hass.tasks[-1]
+
+        scheduled_delays = [delay for delay, _action in scheduled]
+        self.assertEqual(scheduled_delays[0], 30.0)
+        self.assertNotIn(0, scheduled_delays)
+        self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "off")
+        self.assertEqual(runtime.runtime_state.valves[VALVE_UUID].state.value, "closed")
 
     async def test_battery_observation_uses_last_reported_timestamp(self) -> None:
         """An unchanged report should be newer than its last value update."""

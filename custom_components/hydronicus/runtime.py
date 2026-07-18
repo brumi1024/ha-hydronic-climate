@@ -499,10 +499,14 @@ class HydronicRuntime:
         """Replace the pending timer with the earliest controller deadline."""
         self._cancel_transition_timer()
         delay = self._next_transition_delay(now)
-        if delay is not None:
-            self._remove_transition_timer = async_call_later(
-                hass, delay, self._async_handle_transition_timer
-            )
+        if delay is None:
+            return
+        if delay == 0:
+            hass.async_create_task(self.async_refresh(hass))
+            return
+        self._remove_transition_timer = async_call_later(
+            hass, delay, self._async_handle_transition_timer
+        )
 
     async def async_refresh(self, hass: HomeAssistant) -> None:
         """Read sensor states, evaluate the controller, and notify shadow entities."""
