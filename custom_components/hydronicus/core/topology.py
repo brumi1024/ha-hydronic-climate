@@ -13,6 +13,7 @@ from .model import (
     PlantConfiguration,
     Source,
     SourceKind,
+    SourceSelectionActuator,
     TemperatureAggregation,
     TopologyWarning,
     Zone,
@@ -240,6 +241,38 @@ def _validate_source(source: Source) -> None:
             )
 
 
+def _validate_source_selector(selector: SourceSelectionActuator) -> None:
+    """Validate generic selector timing and optional entity binding."""
+    if not isinstance(selector.id, str) or not selector.id.strip():
+        raise TopologyValidationError("Source selector requires a non-empty id.")
+    if not isinstance(selector.name, str) or not selector.name.strip():
+        raise TopologyValidationError(f"Source selector {selector.id} requires a non-empty name.")
+    if selector.entity_id is not None and (
+        not isinstance(selector.entity_id, str) or not selector.entity_id.strip()
+    ):
+        raise TopologyValidationError(
+            f"Source selector {selector.id} entity must be a non-empty entity id."
+        )
+    if selector.entity_id is not None and selector.entity_id.partition(".")[0] != "select":
+        raise TopologyValidationError(
+            f"Source selector {selector.id} entity must belong to the select domain."
+        )
+    if not _finite_non_negative(selector.break_interval_seconds):
+        raise TopologyValidationError(
+            f"Source selector {selector.id} break interval must be finite and non-negative."
+        )
+    if not _finite_non_negative(selector.minimum_dwell_seconds):
+        raise TopologyValidationError(
+            f"Source selector {selector.id} minimum dwell must be finite and non-negative."
+        )
+    if not isinstance(selector.release_option, str) or not selector.release_option.strip():
+        raise TopologyValidationError(
+            f"Source selector {selector.id} release option must be non-empty."
+        )
+    if not isinstance(selector.shadow_only, bool):
+        raise TopologyValidationError(f"Source selector {selector.id} shadow_only must be boolean.")
+
+
 def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     """Validate and compile a plant configuration without reading runtime state."""
     if not configuration.id:
@@ -311,6 +344,9 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             _validate_feedback_binding(f"Pump {pump.id}", field_name, entity_id, max_age)
     for source in configuration.sources:
         _validate_source(source)
+    source_selector = configuration.source_selector
+    if source_selector is not None:
+        _validate_source_selector(source_selector)
 
     actuator_entity_ids = [
         *(valve.entity_id for valve in configuration.valves),
@@ -323,6 +359,22 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     if duplicates := _duplicates(actuator_entity_ids):
         raise TopologyValidationError(
             f"Duplicate actuator entity bindings: {', '.join(sorted(duplicates))}."
+        )
+    source_demand_entity_ids = [
+        source.demand_entity_id
+        for source in configuration.sources
+        if source.demand_entity_id is not None
+    ]
+    if source_selector is not None and source_selector.entity_id in source_demand_entity_ids:
+        raise TopologyValidationError(
+            f"Source selector entity binding is already used by another actuator: "
+            f"{source_selector.entity_id}."
+        )
+    object_ids = {*zone_ids, *valve_ids, *pump_ids, *circuit_ids, *source_ids}
+    source_actuator_ids = {f"source:{source_id}" for source_id in source_ids}
+    if source_selector is not None and source_selector.id in object_ids | source_actuator_ids:
+        raise TopologyValidationError(
+            f"Source selector id {source_selector.id!r} is already used by another object."
         )
 
     zones = {zone.id: zone for zone in sorted(configuration.zones, key=lambda zone: zone.id)}
@@ -582,4 +634,5 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         logic_summary=tuple(summary),
         sources=sources,
         warnings=tuple(warnings),
+        source_selector=source_selector,
     )

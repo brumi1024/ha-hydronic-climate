@@ -27,6 +27,7 @@ VALVE_ID = "00000000-0000-4000-8000-000000000003"
 PUMP_ID = "00000000-0000-4000-8000-000000000004"
 CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
 ROUTE_ID = "00000000-0000-4000-8000-000000000006"
+SELECTOR_ID = "00000000-0000-4000-8000-000000000007"
 
 
 def _entry() -> MockConfigEntry:
@@ -197,4 +198,37 @@ async def test_source_availability_and_buffer_freshness_update_entities(hass) ->
     assert "below" in hass.states.get("sensor.hydronic_plant_source_recommendation").state
     assert entry.runtime_data.plant.sources[source_id].temperature_entity_id == (
         "sensor.buffer_temperature"
+    )
+
+
+async def test_synthetic_selector_stays_shadow_only_while_recommendation_runs(hass) -> None:
+    """Selector diagnostics and fallback remain available without a physical select call."""
+    hass.states.async_set("sensor.living_temperature", "19.0")
+    hass.states.async_set("binary_sensor.buffer_available", "on")
+    hass.states.async_set("sensor.buffer_temperature", "45.0")
+    hass.states.async_set("select.synthetic_source", "none")
+    entry = _entry()
+    entry.data["topology"]["source_selector"] = {
+        "id": SELECTOR_ID,
+        "name": "Synthetic selector",
+        "entity_id": "select.synthetic_source",
+        "break_interval_seconds": 5,
+        "minimum_dwell_seconds": 10,
+    }
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await _add_buffer_source(hass, entry)
+    await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    runtime = entry.runtime_data
+    assert runtime.source_recommendation() is not None
+    assert runtime.source_recommendation().source_id is not None
+    assert runtime.evaluation is not None
+    assert runtime.evaluation.control_plan.source_selection is not None
+    assert runtime.last_execution is not None
+    assert all(
+        operation.entity_id != "select.synthetic_source"
+        for operation in runtime.last_execution.executed
     )
