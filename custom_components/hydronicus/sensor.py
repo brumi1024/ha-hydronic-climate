@@ -11,10 +11,90 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    MAX_RECONCILIATION_INTERVAL_SECONDS,
+    MIN_RECONCILIATION_INTERVAL_SECONDS,
+    RECONCILIATION_INTERVAL_SECONDS,
+)
 from .runtime import HydronicRuntime
 
 _MAX_STATE_LENGTH = 255
+
+
+class ControllerStatusSensor(SensorEntity):
+    """Expose one low-cardinality plant status for Recorder and dashboards."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:state-machine"
+    _attr_should_poll = False
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        """Bind the status to one plant runtime."""
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_controller_status"
+        self._attr_name = "Controller status"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after a config-entry reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to atomic controller evaluations."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        """Return a bounded, low-cardinality controller status."""
+        return self._runtime.operational_status()
+
+
+class ReconciliationStatusSensor(SensorEntity):
+    """Expose bounded reconciliation status without high-cardinality attributes."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:sync-circle"
+    _attr_should_poll = False
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        """Bind reconciliation telemetry to one plant runtime."""
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_reconciliation_status"
+        self._attr_name = "Reconciliation status"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after a config-entry reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to bounded reconciliation updates."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        """Return the latest bounded reconciliation outcome."""
+        return self._runtime.last_reconciliation_status
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose only static scheduling policy, keeping Recorder cardinality low."""
+        interval = min(
+            max(float(RECONCILIATION_INTERVAL_SECONDS), MIN_RECONCILIATION_INTERVAL_SECONDS),
+            MAX_RECONCILIATION_INTERVAL_SECONDS,
+        )
+        return {"interval_seconds": interval, "bounded": True}
 
 
 class TopologyPreviewSensor(SensorEntity):
@@ -491,7 +571,11 @@ async def async_setup_entry(
 ) -> None:
     """Add read-only explanations for all configured zones."""
     runtime = entry.runtime_data
-    parent_entities: list[SensorEntity] = [TopologyPreviewSensor(entry)]
+    parent_entities: list[SensorEntity] = [
+        ControllerStatusSensor(entry),
+        ReconciliationStatusSensor(entry),
+        TopologyPreviewSensor(entry),
+    ]
     parent_entities.extend(
         [RecommendedSourceSensor(entry), SourceRecommendationExplanationSensor(entry)]
     )
@@ -510,6 +594,8 @@ async def async_setup_entry(
         else:
             parent_entities.extend(entities)
     for actuator_id, actuator in (*runtime.plant.valves.items(), *runtime.plant.pumps.items()):
+        if not runtime.diagnostics_include_actuator_details:
+            continue
         entity = ActuatorFeedbackReasonSensor(entry, actuator_id, actuator.name)
         if subentry_id := runtime.actuator_subentry_ids.get(actuator_id):
             subentry_entities.setdefault(subentry_id, []).append(entity)
