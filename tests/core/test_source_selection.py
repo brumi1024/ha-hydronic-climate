@@ -111,7 +111,9 @@ def test_source_selection_waits_for_a_stable_hydraulic_transition() -> None:
 
     opening = evaluate(plant, _snapshot(NOW), RuntimeState(), NOW)
     assert _commands(opening) == (("valve", ActuatorAction.OPEN, None),)
-    assert not any(command.actuator_id.startswith("source:") for command in opening.control_plan.commands)
+    assert not any(
+        command.actuator_id.startswith("source:") for command in opening.control_plan.commands
+    )
     assert opening.diagnostics.source_diagnostics["buffer"].demand_requested is False
     assert opening.diagnostics.source_diagnostics["buffer"].demand_permitted is False
     assert (
