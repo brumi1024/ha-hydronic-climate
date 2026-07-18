@@ -26,6 +26,12 @@ from .const import (
     RECONCILIATION_INTERVAL_SECONDS,
 )
 from .core.controller import evaluate
+from .core.entity_bindings import (
+    EntityBinding,
+    configured_entity_bindings,
+    degraded_actuator_ids,
+    unresolved_entity_bindings,
+)
 from .core.executor import (
     ActuatorExecutor,
     ActuatorObservedState,
@@ -59,6 +65,7 @@ from .entry_configuration import (
     effective_plant_configuration,
     zone_target_temperature_update,
 )
+from .repairs import async_sync_repairs
 
 
 @dataclass(slots=True)
@@ -79,6 +86,8 @@ class HydronicRuntime:
     evaluation: Evaluation | None = None
     snapshot: PlantSnapshot | None = None
     last_execution: ExecutionReport | None = None
+    unresolved_bindings: tuple[EntityBinding, ...] = ()
+    unavailable_entity_ids: frozenset[str] = frozenset()
     _hass: HomeAssistant | None = None
     _entry: Any | None = None
     _remove_state_listener: Callable[[], None] | None = None
@@ -150,6 +159,8 @@ class HydronicRuntime:
     async def async_stop(self) -> None:
         """Remove runtime listeners without changing any physical equipment."""
         self._stopping = True
+        if self._hass is not None:
+            async_sync_repairs(self._hass, self.plant_id, ())
         if self._remove_state_listener is not None:
             with suppress(ValueError):
                 self._remove_state_listener()
@@ -304,6 +315,7 @@ class HydronicRuntime:
             effective_now,
             lambda operation: self._async_dispatch_actuator(active_hass, operation),
             force_shadow=self.shadow_mode,
+            unavailable_actuator_ids=self._unavailable_actuator_ids(),
         )
         self.runtime_state = report.next_runtime
         self.last_execution = report.execution
@@ -471,6 +483,30 @@ class HydronicRuntime:
             }
         )
         return states
+
+    def _refresh_binding_health(self, hass: HomeAssistant) -> None:
+        """Resolve configured references and synchronize the public Repairs state."""
+        if not hasattr(hass, "bus"):
+            # Preserve the small Home Assistant-free runtime seam used by the
+            # deterministic scheduling tests.
+            self.unresolved_bindings = ()
+            self.unavailable_entity_ids = frozenset()
+            return
+        bindings = configured_entity_bindings(self.plant)
+        resolved_entity_ids = {
+            binding.entity_id
+            for binding in bindings
+            if _entity_reference_is_resolved(hass.states.get(binding.entity_id))
+        }
+        self.unresolved_bindings = unresolved_entity_bindings(self.plant, resolved_entity_ids)
+        self.unavailable_entity_ids = frozenset(
+            binding.entity_id for binding in self.unresolved_bindings
+        )
+        async_sync_repairs(hass, self.plant_id, self.unresolved_bindings)
+
+    def _unavailable_actuator_ids(self) -> frozenset[str]:
+        """Return primary actuator IDs that must never receive a command."""
+        return degraded_actuator_ids(self.plant, self.unavailable_entity_ids)
 
     def _actuator_ids_for_entity(self, entity_id: str) -> set[str]:
         """Return actuators whose command or readiness feedback uses one entity."""
@@ -825,6 +861,7 @@ class HydronicRuntime:
         """Read sensor states, evaluate the controller, and notify shadow entities."""
         if self._stopping:
             return
+        self._refresh_binding_health(hass)
         if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
             await self.async_safe_shutdown(hass)
             return
@@ -919,6 +956,7 @@ class HydronicRuntime:
             source_temperatures=source_temperatures,
             source_availability=source_availability,
             actuator_feedback=actuator_feedback,
+            unavailable_entity_ids=self.unavailable_entity_ids,
         )
         now = self._now()
         evaluation_plant = replace(
@@ -945,6 +983,7 @@ class HydronicRuntime:
             lambda operation: self._async_dispatch_actuator(hass, operation),
             force_shadow=cooling_shadow_only,
             force_shadow_actuator_ids=result.control_plan.cooling_actuator_ids,
+            unavailable_actuator_ids=self._unavailable_actuator_ids(),
         )
         self._apply_execution_contract(self.last_execution, now)
         if self._entry is not None or self._hass is not None:
@@ -1013,6 +1052,13 @@ class HydronicRuntime:
 
 
 _PRESET_MODES = {"comfort", "eco", "away"}
+
+
+def _entity_reference_is_resolved(state: Any) -> bool:
+    """Return whether Home Assistant currently exposes a usable entity state."""
+    if state is None:
+        return False
+    return str(getattr(state, "state", "")).strip().lower() not in {"unknown", "unavailable"}
 
 
 def _state_is_available(state: Any) -> bool:

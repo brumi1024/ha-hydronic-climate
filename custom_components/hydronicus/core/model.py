@@ -795,6 +795,7 @@ class PlantSnapshot:
     source_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
     source_availability: Mapping[str, bool] = field(default_factory=dict)
     actuator_feedback: Mapping[str, ActuatorFeedback] = field(default_factory=dict)
+    unavailable_entity_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
