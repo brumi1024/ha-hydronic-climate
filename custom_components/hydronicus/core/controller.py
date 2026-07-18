@@ -1046,7 +1046,16 @@ def safe_shutdown(
     active_pumps = False
     for pump_id, pump in sorted(plant.pumps.items()):
         previous = pumps.get(pump_id, PumpRuntime())
-        if previous.state is PumpState.RUNNING:
+        if previous.state is PumpState.STARTING:
+            pumps[pump_id] = PumpRuntime(PumpState.OFF, now)
+            pump_stop_commands.append(
+                ActuatorCommand(
+                    pump_id,
+                    ActuatorAction.TURN_OFF,
+                    "Stop an unconfirmed pump start before closing valves.",
+                )
+            )
+        elif previous.state is PumpState.RUNNING:
             active_pumps = True
             if pump.overrun_seconds > 0:
                 pumps[pump_id] = PumpRuntime(PumpState.OVERRUN, now)
@@ -1520,7 +1529,12 @@ def evaluate(
         consumers = pump_consumers.get(pump.id, set())
         previous = runtime.pumps.get(pump.id, PumpRuntime())
         if consumers:
-            if previous.state is not PumpState.RUNNING:
+            if previous.state is PumpState.STARTING:
+                current = previous
+                actuator_reasons[pump.id] = (
+                    "Waiting for pump state feedback after the start command."
+                )
+            elif previous.state is not PumpState.RUNNING:
                 current = PumpRuntime(PumpState.RUNNING, now)
                 commands.append(
                     ActuatorCommand(
@@ -1529,9 +1543,20 @@ def evaluate(
                         "A ready circuit needs this pump.",
                     )
                 )
+                actuator_reasons[pump.id] = "Running for ready circuit consumers."
             else:
                 current = previous
-            actuator_reasons[pump.id] = "Running for ready circuit consumers."
+                actuator_reasons[pump.id] = "Running for ready circuit consumers."
+        elif previous.state is PumpState.STARTING:
+            current = PumpRuntime(PumpState.OFF, now)
+            commands.append(
+                ActuatorCommand(
+                    pump.id,
+                    ActuatorAction.TURN_OFF,
+                    "Stop a pump whose start was not observed before demand released.",
+                )
+            )
+            actuator_reasons[pump.id] = "Stopping an unconfirmed pump start."
         elif previous.state is PumpState.RUNNING:
             current = PumpRuntime(PumpState.OVERRUN, now)
             actuator_reasons[pump.id] = "Overrunning after the final ready circuit released demand."

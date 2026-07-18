@@ -260,12 +260,13 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
             clock.now.return_value = NOW + timedelta(seconds=31)
             await runtime.async_refresh(hass)
 
-            self.assertEqual(scheduled[-1][0], 120.0)
+            overrun_timer = next(item for item in scheduled if item[0] == 120.0)
+            self.assertEqual(overrun_timer[0], 120.0)
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "overrun")
             self.assertEqual(runtime.evaluation.control_plan.commands, ())
 
             clock.now.return_value = NOW + timedelta(seconds=151)
-            scheduled[-1][1](clock.now.return_value)
+            overrun_timer[1](clock.now.return_value)
             await hass.tasks[-1]
 
             self.assertEqual(runtime.runtime_state.pumps[PUMP_UUID].state.value, "off")
@@ -369,7 +370,8 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
             clock.now.return_value = NOW
             await runtime.async_start(hass)
 
-        self.assertEqual(scheduled, [60.0])
+        self.assertIn(60.0, scheduled)
+        self.assertIn(30.0, scheduled)
 
     async def test_stop_cancels_state_and_timer_listeners(self) -> None:
         runtime = HydronicRuntime.from_entry(_configured_entry())
@@ -389,7 +391,43 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
             await runtime.async_stop()
 
         cancel_state.assert_called_once_with()
-        cancel_timer.assert_called_once_with()
+        self.assertEqual(cancel_timer.call_count, 2)
+
+    async def test_stop_cancels_in_flight_runtime_work(self) -> None:
+        """Unload cancels tracked work rather than leaving a delayed command alive."""
+        runtime = HydronicRuntime.from_entry(_configured_entry())
+        task = asyncio.create_task(asyncio.sleep(60))
+        runtime._tasks.add(task)
+
+        await runtime.async_stop()
+
+        self.assertTrue(task.cancelled())
+
+    async def test_homeassistant_stop_handler_cancels_all_runtime_resources(self) -> None:
+        """The Home Assistant stop callback cancels listeners, timers, and work."""
+        runtime = HydronicRuntime.from_entry(_configured_entry())
+        hass = _RuntimeHomeAssistant("20.0")
+        cancel_state = mock.Mock()
+        cancel_transition = mock.Mock()
+        cancel_reconciliation = mock.Mock()
+        cancel_stop_listener = mock.Mock()
+        task = asyncio.create_task(asyncio.sleep(60))
+        runtime._hass = hass
+        runtime._remove_state_listener = cancel_state
+        runtime._remove_transition_timer = cancel_transition
+        runtime._remove_reconciliation_timer = cancel_reconciliation
+        runtime._remove_stop_listener = cancel_stop_listener
+        runtime._tasks.add(task)
+
+        await runtime._async_handle_homeassistant_stop(_Event())
+
+        cancel_state.assert_called_once_with()
+        cancel_transition.assert_called_once_with()
+        cancel_reconciliation.assert_called_once_with()
+        cancel_stop_listener.assert_called_once_with()
+        self.assertTrue(task.cancelled())
+        self.assertIsNone(runtime._hass)
+        self.assertTrue(runtime._stopping)
 
 
 if __name__ == "__main__":

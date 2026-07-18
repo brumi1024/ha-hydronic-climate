@@ -25,6 +25,7 @@ class PumpState(StrEnum):
 
     OFF = "off"
     WAITING_FOR_VALVES = "waiting_for_valves"
+    STARTING = "starting"
     RUNNING = "running"
     OVERRUN = "overrun"
 

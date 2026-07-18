@@ -28,6 +28,22 @@ class ActuatorObservedState(StrEnum):
     OFF = "off"
 
 
+class ActuatorFailureKind(StrEnum):
+    """Stable categories for an unsuccessful actuator service call."""
+
+    TIMEOUT = "timeout"
+    REJECTED = "rejected"
+
+
+class ReconciliationStatus(StrEnum):
+    """Outcome of comparing desired, observed, and retained command state."""
+
+    OBSERVED = "observed"
+    RETAINED = "retained"
+    REQUIRED = "required"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True, slots=True)
 class ActuatorBinding:
     """The Home Assistant entity bound to one controller actuator ID."""
@@ -48,12 +64,47 @@ class ActuatorOperation:
 
 
 @dataclass(frozen=True, slots=True)
+class ActuatorExecutionFailure:
+    """A deterministic explanation for one rejected or timed-out command."""
+
+    operation: ActuatorOperation
+    kind: ActuatorFailureKind
+    explanation: str
+
+    @property
+    def actuator_id(self) -> str:
+        """Return the failed actuator identifier."""
+        return self.operation.actuator_id
+
+
+ExecutionFailure = ActuatorExecutionFailure
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationResult:
+    """The state comparison used before an actuator operation is dispatched."""
+
+    actuator_id: str
+    desired: ActuatorObservedState
+    observed: ActuatorObservedState
+    retained: ActuatorObservedState | None
+    status: ReconciliationStatus
+    explanation: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionReport:
     """The result of executing one immutable control plan."""
 
     executed: tuple[ActuatorOperation, ...] = ()
     suppressed: tuple[ActuatorOperation, ...] = ()
     shadowed: tuple[ActuatorOperation, ...] = ()
+    failures: tuple[ActuatorExecutionFailure, ...] = ()
+
+    @property
+    def failed(self) -> tuple[ActuatorExecutionFailure, ...]:
+        """Return failed operations using the concise public spelling."""
+        return self.failures
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +199,8 @@ class ActuatorExecutor:
     observed_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
     feedback_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
     requested_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
+    failure_states: dict[str, ActuatorExecutionFailure] = field(default_factory=dict)
+    reconciliations: dict[str, ReconciliationResult] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Copy configuration and initialize every actuator conservatively."""
@@ -173,6 +226,16 @@ class ActuatorExecutor:
             actuator_id: self.requested_states[actuator_id]
             for actuator_id in self.bindings
             if actuator_id in self.requested_states
+        }
+        self.failure_states = {
+            actuator_id: failure
+            for actuator_id, failure in self.failure_states.items()
+            if actuator_id in self.bindings
+        }
+        self.reconciliations = {
+            actuator_id: reconciliation
+            for actuator_id, reconciliation in self.reconciliations.items()
+            if actuator_id in self.bindings
         }
 
     @classmethod
@@ -223,6 +286,40 @@ class ActuatorExecutor:
             raise KeyError(f"Unknown actuator {actuator_id!r}.")
         return self.requested_states.get(actuator_id)
 
+    def failure_for(self, actuator_id: str) -> ActuatorExecutionFailure | None:
+        """Return the last command failure until trustworthy feedback repairs it."""
+        if actuator_id not in self.bindings:
+            raise KeyError(f"Unknown actuator {actuator_id!r}.")
+        return self.failure_states.get(actuator_id)
+
+    def reconcile(self, operation: ActuatorOperation) -> ReconciliationResult:
+        """Compare desired, observed, and retained state before dispatch."""
+        observed = self.actuator_state(operation.actuator_id)
+        retained = self.requested_state(operation.actuator_id)
+        failure = self.failure_for(operation.actuator_id)
+        if observed is operation.target_state:
+            status = ReconciliationStatus.OBSERVED
+            explanation = "Observed feedback already satisfies the desired state."
+        elif failure is not None and retained is None:
+            status = ReconciliationStatus.FAILED
+            explanation = failure.explanation
+        elif retained is operation.target_state:
+            status = ReconciliationStatus.RETAINED
+            explanation = "The desired state is already retained as an in-flight request."
+        else:
+            status = ReconciliationStatus.REQUIRED
+            explanation = "Observed and retained state do not satisfy the desired state."
+        result = ReconciliationResult(
+            actuator_id=operation.actuator_id,
+            desired=operation.target_state,
+            observed=observed,
+            retained=retained,
+            status=status,
+            explanation=explanation,
+        )
+        self.reconciliations[operation.actuator_id] = result
+        return result
+
     def readiness_state(self, actuator_id: str) -> bool | None:
         """Return explicit readiness feedback, or None when only a timer is available."""
         if actuator_id not in self.bindings:
@@ -253,6 +350,10 @@ class ActuatorExecutor:
                 self.observed_states[actuator_id] = observed
                 if self.requested_states.get(actuator_id) is observed:
                     self.requested_states.pop(actuator_id, None)
+                    self.failure_states.pop(actuator_id, None)
+                failure = self.failure_states.get(actuator_id)
+                if failure is not None and failure.operation.target_state is observed:
+                    self.failure_states.pop(actuator_id, None)
         for actuator_id, feedback_entity_id in self.readiness_bindings.items():
             if feedback_entity_id == entity_id:
                 self.feedback_states[actuator_id] = observed
@@ -260,9 +361,14 @@ class ActuatorExecutor:
     def observe_entities(self, states: Mapping[str, str | None]) -> None:
         """Reconcile configured entity states without assuming desired state."""
         for binding in self.bindings.values():
-            self.observed_states[binding.actuator_id] = observed_state_for(
-                binding.entity_id, states.get(binding.entity_id)
-            )
+            observed = observed_state_for(binding.entity_id, states.get(binding.entity_id))
+            self.observed_states[binding.actuator_id] = observed
+            if self.requested_states.get(binding.actuator_id) is observed:
+                self.requested_states.pop(binding.actuator_id, None)
+                self.failure_states.pop(binding.actuator_id, None)
+            failure = self.failure_states.get(binding.actuator_id)
+            if failure is not None and failure.operation.target_state is observed:
+                self.failure_states.pop(binding.actuator_id, None)
         for actuator_id, entity_id in self.readiness_bindings.items():
             self.feedback_states[actuator_id] = observed_state_for(entity_id, states.get(entity_id))
 
@@ -273,11 +379,13 @@ class ActuatorExecutor:
         *,
         force_shadow: bool = False,
         force_shadow_actuator_ids: frozenset[str] = frozenset(),
+        force_dispatch: bool = False,
     ) -> ExecutionReport:
         """Dispatch only unsatisfied, non-shadowed explicit operations."""
         executed: list[ActuatorOperation] = []
         suppressed: list[ActuatorOperation] = []
         shadowed: list[ActuatorOperation] = []
+        failures: list[ActuatorExecutionFailure] = []
         for command in plan.commands:
             try:
                 binding = self.bindings[command.actuator_id]
@@ -286,10 +394,12 @@ class ActuatorExecutor:
                     f"Control plan references unknown actuator {command.actuator_id!r}."
                 ) from error
             operation = operation_for(command, binding)
-            if (
-                self.actuator_state(command.actuator_id) is operation.target_state
-                or self.requested_state(command.actuator_id) is operation.target_state
-            ):
+            reconciliation = self.reconcile(operation)
+            if not force_dispatch and reconciliation.status in {
+                ReconciliationStatus.OBSERVED,
+                ReconciliationStatus.RETAINED,
+                ReconciliationStatus.FAILED,
+            }:
                 suppressed.append(operation)
                 continue
             if (
@@ -300,10 +410,39 @@ class ActuatorExecutor:
             ):
                 shadowed.append(operation)
                 continue
-            await dispatch(operation)
+            try:
+                await dispatch(operation)
+            except TimeoutError as error:
+                failure = ActuatorExecutionFailure(
+                    operation,
+                    ActuatorFailureKind.TIMEOUT,
+                    f"Command {command.action.value} for actuator {command.actuator_id} "
+                    f"timed out: {error or 'no response'}",
+                )
+                self.requested_states.pop(command.actuator_id, None)
+                self.failure_states[command.actuator_id] = failure
+                failures.append(failure)
+                continue
+            except Exception as error:
+                failure = ActuatorExecutionFailure(
+                    operation,
+                    ActuatorFailureKind.REJECTED,
+                    f"Command {command.action.value} for actuator {command.actuator_id} "
+                    f"was rejected: {error or type(error).__name__}",
+                )
+                self.requested_states.pop(command.actuator_id, None)
+                self.failure_states[command.actuator_id] = failure
+                failures.append(failure)
+                continue
             self.requested_states[command.actuator_id] = operation.target_state
+            if (
+                command.actuator_id in self.failure_states
+                and self.failure_states[command.actuator_id].operation.target_state
+                is not operation.target_state
+            ):
+                self.failure_states.pop(command.actuator_id, None)
             executed.append(operation)
-        return ExecutionReport(tuple(executed), tuple(suppressed), tuple(shadowed))
+        return ExecutionReport(tuple(executed), tuple(suppressed), tuple(shadowed), tuple(failures))
 
     async def async_safe_shutdown(
         self,
@@ -321,5 +460,10 @@ class ActuatorExecutor:
             valve_consumers={},
             pump_consumers={},
         )
-        execution = await self.async_execute(control_plan, dispatch, force_shadow=force_shadow)
+        execution = await self.async_execute(
+            control_plan,
+            dispatch,
+            force_shadow=force_shadow,
+            force_dispatch=True,
+        )
         return SafeShutdownReport(plan, next_runtime, execution)

@@ -8,6 +8,7 @@ import pytest
 from hydronicus_core.executor import (
     ActuatorBinding,
     ActuatorExecutor,
+    ActuatorFailureKind,
     ActuatorObservedState,
     ActuatorOperation,
     observed_state_for,
@@ -197,6 +198,89 @@ async def test_executor_suppresses_an_already_satisfied_command() -> None:
     assert first.executed == tuple(dispatched)
     assert second.suppressed == tuple(dispatched)
     assert second.shadowed == ()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_records_desired_observed_and_retained_state() -> None:
+    """Repeated evaluation retains an in-flight request until feedback arrives."""
+    executor = ActuatorExecutor(
+        {"valve": ActuatorBinding("valve", "switch.floor_valve")},
+        shadow_mode=False,
+    )
+    dispatched: list[ActuatorOperation] = []
+
+    async def dispatch(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    first = await executor.async_execute(
+        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        dispatch,
+    )
+    second = await executor.async_execute(
+        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        dispatch,
+    )
+
+    reconciliation = executor.reconciliations["valve"]
+    assert reconciliation.desired is ActuatorObservedState.ON
+    assert reconciliation.observed is ActuatorObservedState.UNKNOWN
+    assert reconciliation.retained is ActuatorObservedState.ON
+    assert reconciliation.status.value == "retained"
+    assert first.executed == tuple(dispatched)
+    assert second.suppressed == tuple(dispatched)
+
+    executor.observe_entity_state("switch.floor_valve", "on")
+    await executor.async_execute(
+        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        dispatch,
+    )
+    assert executor.reconciliations["valve"].status.value == "observed"
+
+
+@pytest.mark.asyncio
+async def test_rejected_service_call_is_a_deterministic_failure_without_retaining_request() -> None:
+    """A rejected call is reported and cannot masquerade as actuator feedback."""
+    executor = ActuatorExecutor(
+        {"valve": ActuatorBinding("valve", "switch.floor_valve")},
+        shadow_mode=False,
+    )
+
+    async def reject(_operation: ActuatorOperation) -> None:
+        raise RuntimeError("synthetic service rejected")
+
+    report = await executor.async_execute(
+        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        reject,
+    )
+
+    assert len(report.failures) == 1
+    failure = report.failures[0]
+    assert failure.kind is ActuatorFailureKind.REJECTED
+    assert "synthetic service rejected" in failure.explanation
+    assert executor.requested_state("valve") is None
+    assert executor.failure_for("valve") == failure
+
+
+@pytest.mark.asyncio
+async def test_timeout_is_distinguished_from_a_rejected_service_call() -> None:
+    """Timeouts retain a stable failure explanation for the adapter."""
+    executor = ActuatorExecutor(
+        {"valve": ActuatorBinding("valve", "switch.floor_valve")},
+        shadow_mode=False,
+    )
+
+    async def timeout(_operation: ActuatorOperation) -> None:
+        raise TimeoutError("synthetic command timeout")
+
+    report = await executor.async_execute(
+        _plan(ActuatorCommand("valve", "open", "synthetic demand")),
+        timeout,
+    )
+
+    assert report.failures[0].kind is ActuatorFailureKind.TIMEOUT
+    assert report.failures[0].explanation == (
+        "Command open for actuator valve timed out: synthetic command timeout"
+    )
 
 
 @pytest.mark.asyncio

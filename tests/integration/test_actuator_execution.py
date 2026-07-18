@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
@@ -14,7 +16,7 @@ from custom_components.hydronicus.const import (
     CONF_SHADOW_MODE,
     DOMAIN,
 )
-from custom_components.hydronicus.core.executor import ActuatorObservedState
+from custom_components.hydronicus.core.executor import ActuatorFailureKind, ActuatorObservedState
 from custom_components.hydronicus.core.model import ActuatorAction
 from custom_components.hydronicus.runtime import HydronicRuntime
 
@@ -151,6 +153,112 @@ async def test_demand_reaches_the_expected_generic_service_call(
     assert calls == [(expected_domain, expected_service, entity_id)]
 
 
+async def test_rejected_service_call_is_explained_without_failing_setup(hass) -> None:
+    """A service rejection becomes a stable runtime failure report."""
+
+    async def reject(_call) -> None:
+        raise HomeAssistantError("synthetic rejection")
+
+    hass.services.async_register("switch", "turn_on", reject)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    entry = _entry(shadow_mode=False)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    report = entry.runtime_data.last_execution
+    assert report is not None
+    assert len(report.failures) == 1
+    assert report.failures[0].kind is ActuatorFailureKind.REJECTED
+    assert "synthetic rejection" in report.failures[0].explanation
+    assert entry.runtime_data.executor.failure_for(VALVE_ID) == report.failures[0]
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].state.value == "closed"
+
+
+async def test_delayed_service_success_is_reconciled_without_a_duplicate_command(hass) -> None:
+    """A command that outlives its timeout recovers from synthetic feedback."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def delayed_open(call) -> None:
+        calls.append(call.data["entity_id"])
+        started.set()
+        await release.wait()
+        hass.states.async_set("switch.synthetic_valve", "on")
+
+    hass.services.async_register("switch", "turn_on", delayed_open)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    entry = _entry(shadow_mode=False)
+    entry.add_to_hass(hass)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("custom_components.hydronicus.runtime.ACTUATOR_COMMAND_TIMEOUT_SECONDS", 0.01)
+        setup_task = asyncio.create_task(hass.config_entries.async_setup(entry.entry_id))
+        await started.wait()
+        assert await setup_task
+
+    report = entry.runtime_data.last_execution
+    assert report is not None
+    assert report.failures[0].kind is ActuatorFailureKind.TIMEOUT
+    assert calls == ["switch.synthetic_valve"]
+
+    release.set()
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.executor.failure_for(VALVE_ID) is None
+    assert entry.runtime_data.executor.actuator_state(VALVE_ID) is ActuatorObservedState.ON
+    assert calls == ["switch.synthetic_valve"]
+
+
+async def test_periodic_reconciliation_repairs_a_missed_feedback_event_without_churn(hass) -> None:
+    """A periodic read advances synthetic feedback even when its event was missed."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(shadow_mode=False, valve_opening_seconds=0.0)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert calls == [
+        ("switch", "turn_on", "switch.synthetic_valve"),
+        ("switch", "turn_on", "switch.synthetic_pump"),
+    ]
+
+    # Simulate a missed state event by removing the listener before synthetic feedback.
+    remove_state_listener = entry.runtime_data._remove_state_listener
+    assert remove_state_listener is not None
+    remove_state_listener()
+    entry.runtime_data._remove_state_listener = None
+    hass.states.async_set("switch.synthetic_valve", "on")
+    hass.states.async_set("switch.synthetic_pump", "on")
+    calls.clear()
+    remove_reconciliation_timer = entry.runtime_data._remove_reconciliation_timer
+    assert remove_reconciliation_timer is not None
+    remove_reconciliation_timer()
+    entry.runtime_data._remove_reconciliation_timer = None
+    entry.runtime_data._async_handle_reconciliation_timer(datetime.now(UTC))
+    await hass.async_block_till_done()
+
+    assert calls == []
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].is_ready is True
+    assert entry.runtime_data.runtime_state.pumps[PUMP_ID].state.value == "running"
+    remove_reconciliation_timer = entry.runtime_data._remove_reconciliation_timer
+    assert remove_reconciliation_timer is not None
+    remove_reconciliation_timer()
+    entry.runtime_data._remove_reconciliation_timer = None
+    entry.runtime_data._async_handle_reconciliation_timer(datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert calls == []
+    await entry.runtime_data.async_stop()
+
+
 async def test_readiness_feedback_allows_pump_only_after_the_valve_is_ready(hass) -> None:
     """A readiness feedback event advances the synthetic valve-to-pump sequence."""
     calls: list[tuple[str, str, str]] = []
@@ -272,6 +380,78 @@ async def test_reload_during_valve_opening_does_not_start_pump_early(hass) -> No
     assert all(entity != "switch.synthetic_pump" for _domain, _service, entity in calls)
 
 
+async def test_reload_during_pump_starting_does_not_assume_running_feedback(hass) -> None:
+    """A pending start is reasserted only because synthetic feedback still says off."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(shadow_mode=False, valve_opening_seconds=0.0)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.states.async_set("switch.synthetic_valve", "on")
+    await hass.async_block_till_done()
+    calls.clear()
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert calls == [("switch", "turn_on", "switch.synthetic_pump")]
+    assert entry.runtime_data.runtime_state.pumps[PUMP_ID].state.value == "starting"
+    assert entry.runtime_data.executor.actuator_state(PUMP_ID) is ActuatorObservedState.OFF
+
+
+async def test_reload_during_pump_running_keeps_observed_running_state_without_churn(hass) -> None:
+    """Observed synthetic pump feedback is enough to reconstruct running state."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "on")
+    hass.states.async_set("switch.synthetic_pump", "on")
+    entry = _entry(shadow_mode=False, valve_opening_seconds=0.0)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    calls.clear()
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert calls == []
+    assert entry.runtime_data.runtime_state.pumps[PUMP_ID].state.value == "running"
+
+
+async def test_reload_during_shutdown_preserves_pump_overrun_before_valve_close(hass) -> None:
+    """Restarting during shutdown never closes a valve while observed pump is on."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "22.0")
+    hass.states.async_set("switch.synthetic_valve", "on")
+    hass.states.async_set("switch.synthetic_pump", "on")
+    entry = _entry(shadow_mode=False, pump_overrun_seconds=60.0)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    runtime = entry.runtime_data
+    started_at = runtime.runtime_state.pumps[PUMP_ID].changed_at
+    assert started_at is not None
+    shutdown = await runtime.async_safe_shutdown(hass, now=started_at)
+    assert shutdown.plan.phase.value == "pump_overrun"
+    calls.clear()
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert calls == []
+    assert entry.runtime_data.runtime_state.pumps[PUMP_ID].state.value == "overrun"
+    assert all(service != "close_valve" for _domain, service, _entity in calls)
+
+
 async def test_reload_during_pump_overrun_keeps_valve_protected(hass) -> None:
     """Observed open and running equipment reconstructs overrun before valve closure."""
     calls: list[tuple[str, str, str]] = []
@@ -314,7 +494,6 @@ async def test_reload_reconciles_observed_active_actuators_before_idle_shutdown(
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-
     assert ("switch", "turn_off", "switch.synthetic_pump") in calls
     assert ("switch", "turn_off", "switch.synthetic_valve") in calls
 
@@ -338,6 +517,7 @@ async def test_safe_shutdown_is_ordered_and_idempotent_with_intercepted_services
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     runtime = entry.runtime_data
+    hass.states.async_set("switch.synthetic_pump", "on")
     await runtime.async_refresh(hass)
     await hass.async_block_till_done()
     started_at = runtime.runtime_state.pumps[PUMP_ID].changed_at

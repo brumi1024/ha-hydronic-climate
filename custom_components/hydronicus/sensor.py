@@ -432,6 +432,9 @@ class ActuatorFeedbackReasonSensor(SensorEntity):
     @property
     def native_value(self) -> str:
         """Return a stable bounded diagnostic explanation."""
+        failure = self._runtime.actuator_execution_failure(self._actuator_id)
+        if failure is not None:
+            return f"{failure.kind.value}: {failure.explanation}"[:_MAX_STATE_LENGTH]
         diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
         reason = str(getattr(diagnostic, "reason", "No actuator feedback diagnostic."))
         return reason[:_MAX_STATE_LENGTH]
@@ -440,6 +443,7 @@ class ActuatorFeedbackReasonSensor(SensorEntity):
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose structured mismatch and fail-closed details."""
         diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        failure = self._runtime.actuator_execution_failure(self._actuator_id)
         return {
             "status": getattr(getattr(diagnostic, "status", None), "value", None),
             "mismatch": getattr(diagnostic, "mismatch", False),
@@ -447,6 +451,8 @@ class ActuatorFeedbackReasonSensor(SensorEntity):
             "expected": getattr(diagnostic, "expected", None),
             "observed": getattr(diagnostic, "observed", None),
             "stale_feedback": list(getattr(diagnostic, "stale_feedback", ())),
+            "execution_failure_kind": getattr(getattr(failure, "kind", None), "value", None),
+            "execution_failure": getattr(failure, "explanation", None),
         }
 
 

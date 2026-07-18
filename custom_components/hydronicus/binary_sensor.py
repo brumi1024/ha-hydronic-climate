@@ -154,7 +154,7 @@ class ActuatorRequestedBinarySensor(HydronicShadowEntity):
             )
         return self._runtime.runtime_state.pumps.get(self._actuator_id, None) is not None and (
             self._runtime.runtime_state.pumps[self._actuator_id].state
-            in (PumpState.RUNNING, PumpState.OVERRUN)
+            in (PumpState.STARTING, PumpState.RUNNING, PumpState.OVERRUN)
         )
 
 
@@ -172,6 +172,8 @@ class ActuatorMismatchBinarySensor(HydronicShadowEntity):
     @property
     def is_on(self) -> bool:
         """Return the structured mismatch state."""
+        if self._runtime.actuator_execution_failure(self._actuator_id) is not None:
+            return True
         diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
         return bool(getattr(diagnostic, "mismatch", False))
 
@@ -179,11 +181,13 @@ class ActuatorMismatchBinarySensor(HydronicShadowEntity):
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose expected and observed values for operator diagnosis."""
         diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        failure = self._runtime.actuator_execution_failure(self._actuator_id)
         return {
             "expected": getattr(diagnostic, "expected", None),
             "observed": getattr(diagnostic, "observed", None),
             "reason": getattr(diagnostic, "reason", None),
             "feedback_kind": getattr(diagnostic, "feedback_kind", None),
+            "execution_failure": getattr(failure, "explanation", None),
         }
 
 
@@ -201,6 +205,8 @@ class ActuatorBlockedBinarySensor(HydronicShadowEntity):
     @property
     def is_on(self) -> bool:
         """Return whether dependent circuits fail closed."""
+        if self._runtime.actuator_execution_failure(self._actuator_id) is not None:
+            return True
         diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
         return bool(getattr(diagnostic, "blocked", False))
 
@@ -208,10 +214,12 @@ class ActuatorBlockedBinarySensor(HydronicShadowEntity):
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose stale feedback and the dependent block reason."""
         diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        failure = self._runtime.actuator_execution_failure(self._actuator_id)
         return {
             "reason": getattr(diagnostic, "reason", None),
             "stale_feedback": list(getattr(diagnostic, "stale_feedback", ())),
             "dependent_blocked": getattr(diagnostic, "blocked", False),
+            "execution_failure": getattr(failure, "explanation", None),
         }
 
 
