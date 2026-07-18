@@ -23,6 +23,7 @@ from .model import (
     Evaluation,
     FeedbackObservation,
     InterlockStatus,
+    ModeChangeoverPhase,
     ModeConflict,
     PlantMode,
     PlantSnapshot,
@@ -710,6 +711,78 @@ def _apply_zone_timing(
     )
 
 
+def _target_mode(
+    requested_mode: PlantMode,
+    *,
+    heating_demand: bool,
+    cooling_demand: bool,
+) -> PlantMode:
+    """Select the next mode without allowing safety-sensitive cooling to win ties."""
+    if requested_mode is PlantMode.IDLE:
+        return PlantMode.IDLE
+    if requested_mode is PlantMode.HEATING:
+        return PlantMode.HEATING
+    if requested_mode is PlantMode.COOLING:
+        return PlantMode.COOLING
+    if heating_demand:
+        return PlantMode.HEATING
+    if cooling_demand:
+        return PlantMode.COOLING
+    return PlantMode.IDLE
+
+
+def _equipment_requires_safe_idle(
+    plant: CompiledPlant,
+    runtime: RuntimeState,
+) -> bool:
+    """Return whether any shared path or source can still carry the old mode."""
+    if runtime.selected_source_id is not None:
+        return True
+    if any(
+        runtime_state.state is not ValveState.CLOSED
+        for runtime_state in runtime.valves.values()
+    ):
+        return True
+    return any(runtime_state.state is not PumpState.OFF for runtime_state in runtime.pumps.values())
+
+
+def _source_release_commands(plant: CompiledPlant) -> list[ActuatorCommand]:
+    """Release every configured source demand before moving hydraulic mode."""
+    return [
+        ActuatorCommand(
+            f"source:{source.id}",
+            ActuatorAction.TURN_OFF,
+            "Release source demand before changing the shared plant mode.",
+        )
+        for source in sorted(plant.sources.values(), key=lambda item: item.id)
+        if source.demand_entity_id is not None
+    ]
+
+
+def _advance_changeover_phase(
+    phase: ModeChangeoverPhase,
+    *,
+    pumps: Mapping[str, PumpRuntime],
+    valves: Mapping[str, ValveRuntime],
+) -> ModeChangeoverPhase:
+    """Advance only after observed virtual state satisfies the prior phase."""
+    pumps_idle = all(item.state is PumpState.OFF for item in pumps.values())
+    valves_idle = all(item.state is ValveState.CLOSED for item in valves.values())
+    if phase is ModeChangeoverPhase.IDLE:
+        return phase
+    if phase is ModeChangeoverPhase.SOURCE_RELEASE:
+        if not pumps_idle:
+            return (
+                ModeChangeoverPhase.PUMP_OVERRUN
+                if any(item.state is PumpState.OVERRUN for item in pumps.values())
+                else ModeChangeoverPhase.PUMPS_STOPPING
+            )
+        return ModeChangeoverPhase.IDLE if valves_idle else ModeChangeoverPhase.VALVES_CLOSING
+    if phase in {ModeChangeoverPhase.PUMP_OVERRUN, ModeChangeoverPhase.PUMPS_STOPPING}:
+        return ModeChangeoverPhase.VALVES_CLOSING if pumps_idle else phase
+    return ModeChangeoverPhase.IDLE if valves_idle else ModeChangeoverPhase.VALVES_CLOSING
+
+
 def resolve_delivery_routes(
     plant: CompiledPlant, zone_demands: Mapping[str, bool]
 ) -> tuple[DeliveryRoute, ...]:
@@ -1361,7 +1434,12 @@ def evaluate(
                 condensation_margin=prior.condensation_margin,
                 interlocks=prior.interlocks,
             )
-    mode_conflicts = resolve_mode_conflicts(plant, eligible_routes, requested_cooling_routes)
+    requested_mode = runtime.requested_mode
+    mode_conflicts = (
+        resolve_mode_conflicts(plant, eligible_routes, requested_cooling_routes)
+        if requested_mode is PlantMode.AUTO
+        else ()
+    )
     blocked_circuit_ids = frozenset(
         circuit_id
         for conflict in mode_conflicts
@@ -1436,6 +1514,129 @@ def evaluate(
                 *(conflict_interlocks[item.interlock_id] for item in affected),
             ),
         )
+
+    target_mode = _target_mode(
+        requested_mode,
+        heating_demand=any(zone_demands.values()),
+        cooling_demand=any(cooling_zone_demands.values()),
+    )
+    changeover_phase = runtime.changeover_phase
+    changeover_started_at = runtime.changeover_started_at
+    equipment_active = _equipment_requires_safe_idle(plant, runtime)
+    mode_change_requested = (
+        changeover_phase is not ModeChangeoverPhase.IDLE
+        or (
+            target_mode in {PlantMode.HEATING, PlantMode.COOLING}
+            and target_mode != runtime.plant_mode
+            and (
+                runtime.plant_mode in {PlantMode.HEATING, PlantMode.COOLING}
+                or equipment_active
+                and (
+                    target_mode is PlantMode.COOLING
+                    or requested_mode is PlantMode.HEATING
+                )
+            )
+        )
+    )
+    if changeover_phase is ModeChangeoverPhase.IDLE and mode_change_requested:
+        changeover_phase = ModeChangeoverPhase.SOURCE_RELEASE
+        changeover_started_at = now
+    elif changeover_phase is not ModeChangeoverPhase.IDLE:
+        # A new request may retarget the destination, but never bypasses the
+        # already active safe-idle sequence.
+        changeover_started_at = changeover_started_at or now
+
+    independent_dual_mode = (
+        requested_mode is PlantMode.AUTO
+        and any(zone_demands.values())
+        and any(cooling_zone_demands.values())
+        and not mode_conflicts
+    )
+    if changeover_phase is not ModeChangeoverPhase.IDLE:
+        transition_reason = (
+            f"Mode change to {target_mode.value} is locked until the shared plant is safely "
+            f"idle ({changeover_phase.value})."
+        )
+        for zone_id, prior in list(zone_decisions.items()):
+            if not prior.demand:
+                continue
+            zone_demands[zone_id] = False
+            zone_reasons[zone_id] = f"Heating blocked: {transition_reason}"
+            zone_decisions[zone_id] = ZoneDecision(
+                status=ZoneDecisionStatus.MODE_BLOCKED,
+                demand=False,
+                aggregation=prior.aggregation,
+                explanation=zone_reasons[zone_id],
+                deadline=prior.deadline,
+            )
+        for zone_id, prior in list(cooling_zone_decisions.items()):
+            if not prior.demand:
+                continue
+            cooling_zone_demands[zone_id] = False
+            cooling_zone_reasons[zone_id] = f"Cooling blocked: {transition_reason}"
+            cooling_zone_decisions[zone_id] = ZoneDecision(
+                status=ZoneDecisionStatus.MODE_BLOCKED,
+                demand=False,
+                aggregation=prior.aggregation,
+                explanation=cooling_zone_reasons[zone_id],
+                humidity_aggregation=prior.humidity_aggregation,
+                dew_point=prior.dew_point,
+                condensation_margin=prior.condensation_margin,
+                interlocks=prior.interlocks,
+            )
+    elif target_mode is PlantMode.HEATING and not independent_dual_mode:
+        for zone_id, prior in list(cooling_zone_decisions.items()):
+            if not prior.demand:
+                continue
+            cooling_zone_demands[zone_id] = False
+            cooling_zone_reasons[zone_id] = (
+                f"Cooling blocked: the plant is operating in {PlantMode.HEATING.value} mode."
+            )
+            cooling_zone_decisions[zone_id] = ZoneDecision(
+                status=ZoneDecisionStatus.MODE_BLOCKED,
+                demand=False,
+                aggregation=prior.aggregation,
+                explanation=cooling_zone_reasons[zone_id],
+                humidity_aggregation=prior.humidity_aggregation,
+                dew_point=prior.dew_point,
+                condensation_margin=prior.condensation_margin,
+                interlocks=prior.interlocks,
+            )
+    elif target_mode is PlantMode.COOLING:
+        for zone_id, prior in list(zone_decisions.items()):
+            if not prior.demand:
+                continue
+            zone_demands[zone_id] = False
+            zone_reasons[zone_id] = (
+                f"Heating blocked: the plant is operating in {PlantMode.COOLING.value} mode."
+            )
+            zone_decisions[zone_id] = ZoneDecision(
+                status=ZoneDecisionStatus.MODE_BLOCKED,
+                demand=False,
+                aggregation=prior.aggregation,
+                explanation=zone_reasons[zone_id],
+                deadline=prior.deadline,
+            )
+
+    if changeover_phase is not ModeChangeoverPhase.IDLE:
+        eligible_routes = ()
+        cooling_routes = ()
+    elif independent_dual_mode:
+        eligible_routes = resolve_delivery_routes(plant, zone_demands)
+        cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+    elif target_mode is PlantMode.HEATING:
+        eligible_routes = resolve_delivery_routes(plant, zone_demands)
+        cooling_routes = ()
+    elif target_mode is PlantMode.COOLING:
+        eligible_routes = ()
+        cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+    else:
+        eligible_routes = ()
+        cooling_routes = ()
+
+    cooling_routes_by_zone = defaultdict(tuple)
+    for route in cooling_routes:
+        cooling_routes_by_zone[route.zone_id] = (*cooling_routes_by_zone[route.zone_id], route)
 
     # A conflict can remove the last cooling route for a zone.  The public
     # zone demand map is updated above while the filtered route set remains the
@@ -1589,6 +1790,22 @@ def evaluate(
     cooling_actuator_ids.update(
         plant.circuits[circuit_id].pump_id for circuit_id in ready_cooling_circuits
     )
+    if (
+        target_mode is PlantMode.COOLING
+        or runtime.plant_mode is PlantMode.COOLING
+        or runtime.changeover_target_mode is PlantMode.COOLING
+    ):
+        cooling_circuit_ids = {
+            circuit.id for circuit in plant.circuits.values() if circuit.cooling_enabled
+        }
+        cooling_actuator_ids.update(
+            valve_id
+            for circuit_id in cooling_circuit_ids
+            for valve_id in plant.circuits[circuit_id].valve_ids
+        )
+        cooling_actuator_ids.update(
+            plant.circuits[circuit_id].pump_id for circuit_id in cooling_circuit_ids
+        )
 
     pumps: dict[str, PumpRuntime] = {}
     for pump_id in sorted(plant.pumps):
@@ -1659,7 +1876,18 @@ def evaluate(
             circuit.pump_id in overrun_pumps and valve_id in circuit.valve_ids
             for circuit in plant.circuits.values()
         )
-        if valve_consumers.get(valve_id) or protected_by_overrun:
+        pumps_were_active = any(
+            runtime.pumps.get(pump_id, PumpRuntime()).state is not PumpState.OFF
+            for pump_id in plant.pumps
+        )
+        if (
+            valve_consumers.get(valve_id)
+            or protected_by_overrun
+            or (
+                changeover_phase is not ModeChangeoverPhase.IDLE
+                and pumps_were_active
+            )
+        ):
             continue
         if valve.state is not ValveState.CLOSED:
             valves[valve_id] = ValveRuntime(ValveState.CLOSED, now, False)
@@ -1671,6 +1899,47 @@ def evaluate(
                 )
             )
             actuator_reasons[valve_id] = "Closing because its consumer set is empty."
+
+    if changeover_phase is ModeChangeoverPhase.SOURCE_RELEASE:
+        # Releasing source demand is idempotent and remains visible after a
+        # restart that restored this phase.
+        commands[:0] = _source_release_commands(plant)
+    next_changeover_phase = _advance_changeover_phase(
+        changeover_phase,
+        pumps=pumps,
+        valves=valves,
+    )
+    changeover_deadline: datetime | None = None
+    if next_changeover_phase is ModeChangeoverPhase.PUMP_OVERRUN:
+        deadlines = [
+            (pump.changed_at or now) + timedelta(seconds=plant.pumps[pump_id].overrun_seconds)
+            for pump_id, pump in pumps.items()
+            if pump.state is PumpState.OVERRUN
+        ]
+        if deadlines:
+            changeover_deadline = min(deadlines)
+    elif next_changeover_phase is ModeChangeoverPhase.PUMPS_STOPPING:
+        changeover_deadline = now
+    mode_explanation = (
+        (
+            f"Mode change to {target_mode.value} is locked until the shared plant is safely "
+            f"idle ({next_changeover_phase.value})."
+        )
+        if next_changeover_phase is not ModeChangeoverPhase.IDLE
+        else f"Plant mode is {target_mode.value}; the shared hydraulic path is safe to use."
+    )
+    active_mode = (
+        target_mode
+        if next_changeover_phase is ModeChangeoverPhase.IDLE
+        and (
+            (target_mode is PlantMode.HEATING and bool(eligible_routes))
+            or (target_mode is PlantMode.COOLING and bool(cooling_routes))
+        )
+        else PlantMode.IDLE
+    )
+    changeover_reason = (
+        mode_explanation if next_changeover_phase is not ModeChangeoverPhase.IDLE else ""
+    )
 
     circuit_reasons = {
         circuit_id: (
@@ -1699,7 +1968,7 @@ def evaluate(
         snapshot,
         runtime,
         now,
-        active_heating=any(zone_demands.values()),
+        active_heating=active_mode is PlantMode.HEATING,
     )
     selected_source_id = (
         source_recommendation.source_id if source_recommendation is not None else None
@@ -1711,14 +1980,20 @@ def evaluate(
             zone_runtime=zone_runtime,
             valves=valves,
             pumps=pumps,
-            plant_mode=(
-                PlantMode.HEATING
-                if any(zone_demands.values())
-                else PlantMode.COOLING
-                if any(cooling_zone_demands.values())
-                else PlantMode.IDLE
+            plant_mode=active_mode,
+            requested_mode=requested_mode,
+            selected_source_id=selected_source_id if active_mode is PlantMode.HEATING else None,
+            changeover_phase=next_changeover_phase,
+            changeover_target_mode=(
+                target_mode if next_changeover_phase is not ModeChangeoverPhase.IDLE else None
             ),
-            selected_source_id=selected_source_id,
+            changeover_started_at=(
+                changeover_started_at
+                if next_changeover_phase is not ModeChangeoverPhase.IDLE
+                else None
+            ),
+            changeover_deadline=changeover_deadline,
+            changeover_reason=changeover_reason,
         ),
         control_plan=ControlPlan(
             commands=tuple(commands),
@@ -1726,13 +2001,14 @@ def evaluate(
                 key: frozenset(value) for key, value in sorted(valve_consumers.items())
             },
             pump_consumers={key: frozenset(value) for key, value in sorted(pump_consumers.items())},
-            plant_mode=(
-                PlantMode.HEATING
-                if any(zone_demands.values())
-                else PlantMode.COOLING
-                if any(cooling_zone_demands.values())
-                else PlantMode.IDLE
+            plant_mode=active_mode,
+            requested_mode=requested_mode,
+            changeover_phase=next_changeover_phase,
+            changeover_target_mode=(
+                target_mode if next_changeover_phase is not ModeChangeoverPhase.IDLE else None
             ),
+            changeover_deadline=changeover_deadline,
+            mode_explanation=mode_explanation,
             source_recommendation=source_recommendation,
             cooling_zone_demands=cooling_zone_demands,
             cooling_valve_consumers={
@@ -1759,5 +2035,13 @@ def evaluate(
             cooling_zone_reasons=cooling_zone_reasons,
             mode_conflicts=mode_conflicts,
             actuator_diagnostics=feedback_diagnostics,
+            requested_mode=requested_mode,
+            active_mode=active_mode,
+            changeover_phase=next_changeover_phase,
+            changeover_target_mode=(
+                target_mode if next_changeover_phase is not ModeChangeoverPhase.IDLE else None
+            ),
+            changeover_deadline=changeover_deadline,
+            mode_explanation=mode_explanation,
         ),
     )

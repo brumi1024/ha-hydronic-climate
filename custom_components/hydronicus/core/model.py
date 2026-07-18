@@ -53,9 +53,20 @@ class ActuatorFeedbackStatus(StrEnum):
 class PlantMode(StrEnum):
     """Operating mode shared by heating, cooling, and idle evaluations."""
 
+    AUTO = "auto"
     IDLE = "idle"
     HEATING = "heating"
     COOLING = "cooling"
+
+
+class ModeChangeoverPhase(StrEnum):
+    """Ordered phases used while moving the shared plant between modes."""
+
+    IDLE = "idle"
+    SOURCE_RELEASE = "source_release"
+    PUMP_OVERRUN = "pump_overrun"
+    PUMPS_STOPPING = "pumps_stopping"
+    VALVES_CLOSING = "valves_closing"
 
 
 class ActuatorAction(StrEnum):
@@ -102,6 +113,7 @@ class ZoneDecisionStatus(StrEnum):
     DURATION_HELD = "duration_held"
     DURATION_LOCKED = "duration_locked"
     SENSOR_BLOCKED = "sensor_blocked"
+    MODE_BLOCKED = "mode_blocked"
 
 
 class PresetMode(StrEnum):
@@ -835,7 +847,13 @@ class RuntimeState:
     valves: Mapping[str, ValveRuntime] = field(default_factory=dict)
     pumps: Mapping[str, PumpRuntime] = field(default_factory=dict)
     plant_mode: PlantMode = PlantMode.IDLE
+    requested_mode: PlantMode = PlantMode.AUTO
     selected_source_id: str | None = None
+    changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
+    changeover_target_mode: PlantMode | None = None
+    changeover_started_at: datetime | None = None
+    changeover_deadline: datetime | None = None
+    changeover_reason: str = ""
     safe_shutdown_phase: SafeShutdownPhase = SafeShutdownPhase.IDLE
     safe_shutdown_started_at: datetime | None = None
 
@@ -873,6 +891,11 @@ class ControlPlan:
     cooling_pump_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
     cooling_actuator_ids: frozenset[str] = frozenset()
     mode_conflicts: tuple[ModeConflict, ...] = ()
+    requested_mode: PlantMode = PlantMode.AUTO
+    changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
+    changeover_target_mode: PlantMode | None = None
+    changeover_deadline: datetime | None = None
+    mode_explanation: str = ""
 
     @property
     def conflicts(self) -> tuple[ModeConflict, ...]:
@@ -905,6 +928,12 @@ class ControllerDiagnostics:
     cooling_zone_reasons: Mapping[str, str] = field(default_factory=dict)
     mode_conflicts: tuple[ModeConflict, ...] = ()
     actuator_diagnostics: Mapping[str, ActuatorDiagnostic] = field(default_factory=dict)
+    requested_mode: PlantMode = PlantMode.AUTO
+    active_mode: PlantMode = PlantMode.IDLE
+    changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
+    changeover_target_mode: PlantMode | None = None
+    changeover_deadline: datetime | None = None
+    mode_explanation: str = ""
 
     @property
     def actuator_feedback(self) -> Mapping[str, ActuatorDiagnostic]:

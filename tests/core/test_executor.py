@@ -15,6 +15,7 @@ from hydronicus_core.executor import (
     operation_for,
 )
 from hydronicus_core.model import (
+    ActuatorAction,
     ActuatorCommand,
     CompiledPlant,
     ControlPlan,
@@ -326,6 +327,31 @@ async def test_forced_shadow_preserves_commands_without_dispatching() -> None:
     assert dispatched == []
     assert [operation.actuator_id for operation in report.shadowed] == ["valve"]
     assert executor.actuator_state("valve") is ActuatorObservedState.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_cooling_shadow_suppresses_starts_but_allows_safe_shutdowns() -> None:
+    """Cooling starts stay synthetic while shutdown commands can make paths safe."""
+    executor = ActuatorExecutor(
+        {"pump": ActuatorBinding("pump", "switch.floor_pump")},
+        shadow_mode=False,
+    )
+    dispatched: list[ActuatorOperation] = []
+
+    async def dispatch(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    report = await executor.async_execute(
+        _plan(
+            ActuatorCommand("pump", ActuatorAction.TURN_OFF, "safe shutdown"),
+            ActuatorCommand("pump", ActuatorAction.TURN_ON, "cooling demand"),
+        ),
+        dispatch,
+        force_shadow_start_actuator_ids=frozenset({"pump"}),
+    )
+
+    assert [operation.service for operation in dispatched] == ["turn_off"]
+    assert [operation.service for operation in report.shadowed] == ["turn_on"]
 
 
 @pytest.mark.asyncio

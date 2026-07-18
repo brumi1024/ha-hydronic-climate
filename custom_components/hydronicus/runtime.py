@@ -23,6 +23,7 @@ from .const import (
     CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
     CONF_NAME,
     CONF_PLANT_ID,
+    CONF_REQUESTED_MODE,
     CONF_SHADOW_MODE,
     MAX_RECONCILIATION_INTERVAL_SECONDS,
     MIN_RECONCILIATION_INTERVAL_SECONDS,
@@ -50,6 +51,7 @@ from .core.model import (
     CompiledPlant,
     Evaluation,
     FeedbackObservation,
+    ModeChangeoverPhase,
     PlantMode,
     PlantSnapshot,
     PumpRuntime,
@@ -138,6 +140,9 @@ class HydronicRuntime:
                 entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
             ),
             source_subentry_ids=effective.source_subentry_ids,
+            runtime_state=RuntimeState(
+                requested_mode=_stored_requested_mode(entry),
+            ),
             zone_target_temperatures={
                 zone.id: zone.target_temperature for zone in plant.zones.values()
             },
@@ -147,6 +152,44 @@ class HydronicRuntime:
             },
             _entry=entry,
         )
+
+    async def async_set_requested_mode(
+        self,
+        mode: PlantMode | str,
+        *,
+        hass: HomeAssistant | None = None,
+    ) -> None:
+        """Persist a requested plant mode and immediately reevaluate safely."""
+        try:
+            requested = PlantMode(mode)
+        except ValueError as error:
+            raise ValueError(f"Unsupported plant mode {mode!r}.") from error
+        active_hass = hass or self._hass
+        if active_hass is None or self._entry is None:
+            raise RuntimeError("Hydronic runtime is not started.")
+        data = dict(self._entry.data)
+        data[CONF_REQUESTED_MODE] = requested.value
+        active_hass.config_entries.async_update_entry(self._entry, data=data)
+        self.runtime_state = replace(self.runtime_state, requested_mode=requested)
+        await self.async_refresh(active_hass)
+
+    def requested_mode(self) -> PlantMode:
+        """Return the persisted operator request."""
+        return self.runtime_state.requested_mode
+
+    def active_mode(self) -> PlantMode:
+        """Return the mode currently allowed to use the shared plant."""
+        return self.runtime_state.plant_mode
+
+    def mode_is_locked(self) -> bool:
+        """Return whether a mode transition is waiting for safe idle."""
+        return self.runtime_state.changeover_phase is not ModeChangeoverPhase.IDLE
+
+    def mode_explanation(self) -> str:
+        """Return the structured mode or lockout explanation."""
+        if self.evaluation is None:
+            return "The controller has not evaluated the plant yet."
+        return self.evaluation.diagnostics.mode_explanation
 
     async def async_start(self, hass: HomeAssistant) -> None:
         """Reconcile observations, evaluate the plan, and execute safe commands."""
@@ -297,12 +340,18 @@ class HydronicRuntime:
     def cooling_zone_is_blocked(self, zone_id: str) -> bool:
         """Return whether cooling safety currently blocks one zone."""
         decision = self.cooling_zone_decision(zone_id)
-        return decision is not None and decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+        return decision is not None and decision.status in {
+            ZoneDecisionStatus.SENSOR_BLOCKED,
+            ZoneDecisionStatus.MODE_BLOCKED,
+        }
 
     def cooling_zone_blocked_reason(self, zone_id: str) -> str | None:
         """Return the structured cooling interlock explanation for one zone."""
         decision = self.cooling_zone_decision(zone_id)
-        if decision is None or decision.status is not ZoneDecisionStatus.SENSOR_BLOCKED:
+        if decision is None or decision.status not in {
+            ZoneDecisionStatus.SENSOR_BLOCKED,
+            ZoneDecisionStatus.MODE_BLOCKED,
+        }:
             return None
         return decision.explanation
 
@@ -357,16 +406,20 @@ class HydronicRuntime:
         """Return structured blocked state without parsing a reason string."""
         decision = self.zone_decision(zone_id)
         if decision is not None:
-            return decision.status == ZoneDecisionStatus.SENSOR_BLOCKED or (
-                decision.aggregation is not None and decision.aggregation.is_blocked
-            )
+            return decision.status in {
+                ZoneDecisionStatus.SENSOR_BLOCKED,
+                ZoneDecisionStatus.MODE_BLOCKED,
+            } or (decision.aggregation is not None and decision.aggregation.is_blocked)
         aggregation = self.zone_aggregation(zone_id)
         return aggregation.is_blocked if aggregation is not None else False
 
     def zone_blocked_reason(self, zone_id: str) -> str | None:
         """Return the structured blocking explanation for one zone."""
         decision = self.zone_decision(zone_id)
-        if decision is not None and decision.status == ZoneDecisionStatus.SENSOR_BLOCKED:
+        if decision is not None and decision.status in {
+            ZoneDecisionStatus.SENSOR_BLOCKED,
+            ZoneDecisionStatus.MODE_BLOCKED,
+        }:
             return decision.explanation or (
                 decision.aggregation.explanation if decision.aggregation is not None else None
             )
@@ -591,8 +644,10 @@ class HydronicRuntime:
         """Seed virtual actuator state from feedback without trusting commands as feedback."""
         now = self._now()
         valves = dict(self.runtime_state.valves)
-        selected = actuator_ids if actuator_ids is not None else set(self.plant.valves) | set(
-            self.plant.pumps
+        selected = (
+            actuator_ids
+            if actuator_ids is not None
+            else set(self.plant.valves) | set(self.plant.pumps)
         )
         for actuator_id in sorted(set(self.plant.valves) & selected):
             current = valves.get(actuator_id)
@@ -688,7 +743,20 @@ class HydronicRuntime:
                     current.changed_at or now,
                 )
 
-        self.runtime_state = replace(self.runtime_state, valves=valves, pumps=pumps)
+        observed_sources = [
+            source.id
+            for source in sorted(self.plant.sources.values(), key=lambda item: item.id)
+            if source.demand_entity_id is not None
+            and self.executor.actuator_state(f"source:{source.id}") is not ActuatorObservedState.OFF
+        ]
+        self.runtime_state = replace(
+            self.runtime_state,
+            valves=valves,
+            pumps=pumps,
+            selected_source_id=(
+                observed_sources[0] if observed_sources else self.runtime_state.selected_source_id
+            ),
+        )
 
     def _humidity_sensor_ids(self) -> tuple[str, ...]:
         """Return every configured humidity sensor once."""
@@ -786,9 +854,7 @@ class HydronicRuntime:
             )
         )
         try:
-            await asyncio.wait_for(
-                asyncio.shield(service_task), ACTUATOR_COMMAND_TIMEOUT_SECONDS
-            )
+            await asyncio.wait_for(asyncio.shield(service_task), ACTUATOR_COMMAND_TIMEOUT_SECONDS)
         finally:
             if service_task.done():
                 self._tasks.discard(service_task)
@@ -798,6 +864,8 @@ class HydronicRuntime:
         delays: list[float] = []
         if self.runtime_state.safe_shutdown_phase is SafeShutdownPhase.PUMPS_STOPPED:
             return 0.0
+        if self.runtime_state.changeover_deadline is not None:
+            delays.append(max(0.0, (self.runtime_state.changeover_deadline - now).total_seconds()))
         for valve_node in self.plant.valves.values():
             valve = self.runtime_state.valves.get(valve_node.id)
             if (
@@ -1046,18 +1114,13 @@ class HydronicRuntime:
         )
         result = evaluate(evaluation_plant, self.snapshot, self.runtime_state, now)
         self.evaluation_count += 1
-        cooling_shadow_only = result.control_plan.plant_mode is PlantMode.COOLING or (
-            self.runtime_state.plant_mode is PlantMode.COOLING
-            and not any(result.next_runtime.zone_demands.values())
-        )
         self.runtime_state = result.next_runtime
         self.evaluation = result
         self.last_execution = await self.executor.async_execute(
             result.control_plan,
             lambda operation: self._async_dispatch_actuator(hass, operation),
-            force_shadow=cooling_shadow_only,
-            force_shadow_actuator_ids=result.control_plan.cooling_actuator_ids,
             unavailable_actuator_ids=self._unavailable_actuator_ids(),
+            force_shadow_start_actuator_ids=result.control_plan.cooling_actuator_ids,
         )
         self._apply_execution_contract(self.last_execution, now)
         if self._entry is not None or self._hass is not None:
@@ -1207,6 +1270,15 @@ class HydronicRuntime:
                 changed = True
         if changed:
             self.runtime_state = replace(self.runtime_state, valves=valves, pumps=pumps)
+
+
+def _stored_requested_mode(entry: Any) -> PlantMode:
+    """Decode the operator mode conservatively across old config entries."""
+    raw_mode = entry.data.get(CONF_REQUESTED_MODE, PlantMode.AUTO.value)
+    try:
+        return PlantMode(raw_mode)
+    except ValueError:
+        return PlantMode.AUTO
 
 
 _PRESET_MODES = {"comfort", "eco", "away"}

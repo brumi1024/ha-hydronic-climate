@@ -33,6 +33,43 @@ class HydronicShadowEntity(BinarySensorEntity):
         self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
 
 
+class ModeChangeoverLockoutBinarySensor(HydronicShadowEntity):
+    """Whether a requested mode is waiting for safe shared-plant idle."""
+
+    _attr_icon = "mdi:lock-clock"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{self._runtime.plant_id}_mode_changeover_lockout"
+        self._attr_name = "Mode changeover lockout"
+
+    @property
+    def is_on(self) -> bool:
+        """Return the structured transition state."""
+        return self._runtime.mode_is_locked()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose mode, phase, and deadline as machine-readable attributes."""
+        state = self._runtime.runtime_state
+        return {
+            "requested_mode": state.requested_mode.value,
+            "active_mode": state.plant_mode.value,
+            "phase": state.changeover_phase.value,
+            "target_mode": (
+                state.changeover_target_mode.value
+                if state.changeover_target_mode is not None
+                else None
+            ),
+            "deadline": (
+                state.changeover_deadline.isoformat()
+                if state.changeover_deadline is not None
+                else None
+            ),
+            "reason": self._runtime.mode_explanation(),
+        }
+
+
 class ZoneDemandBinarySensor(HydronicShadowEntity):
     """Whether a zone currently requests heat in shadow mode."""
 
@@ -228,7 +265,7 @@ async def async_setup_entry(
 ) -> None:
     """Add read-only shadow demand and actuator-request entities."""
     runtime = entry.runtime_data
-    parent_entities: list[BinarySensorEntity] = []
+    parent_entities: list[BinarySensorEntity] = [ModeChangeoverLockoutBinarySensor(entry)]
     subentry_entities: dict[str, list[BinarySensorEntity]] = {}
     for zone in runtime.plant.zones.values():
         entities = [
