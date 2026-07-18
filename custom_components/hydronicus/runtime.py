@@ -887,6 +887,21 @@ class HydronicRuntime:
                 if decision.deadline is not None:
                     delays.append(max(0.0, (decision.deadline - now).total_seconds()))
 
+        selection = self.runtime_state.source_selection
+        if self.plant.source_selector is not None:
+            if selection.phase.value == "breaking" and selection.transition_started_at is not None:
+                deadline = selection.transition_started_at + timedelta(
+                    seconds=self.plant.source_selector.break_interval_seconds
+                )
+                if deadline > now:
+                    delays.append((deadline - now).total_seconds())
+            if selection.phase.value == "minimum_dwell" and selection.last_selected_at is not None:
+                deadline = selection.last_selected_at + timedelta(
+                    seconds=self.plant.source_selector.minimum_dwell_seconds
+                )
+                if deadline > now:
+                    delays.append((deadline - now).total_seconds())
+
         for zone_id, zone in self.plant.zones.items():
             zone_runtime = self.runtime_state.zone_runtime.get(zone_id)
             if zone_runtime is None or zone_runtime.last_demand_transition_at is None:
@@ -1028,6 +1043,8 @@ class HydronicRuntime:
             )
         source_temperatures: dict[str, TemperatureObservation] = {}
         source_availability: dict[str, bool] = {}
+        source_selector_states: dict[str, str | None] = {}
+        source_demand_states: dict[str, bool] = {}
         for source in self.plant.sources.values():
             if source.temperature_entity_id is not None:
                 state = hass.states.get(source.temperature_entity_id)
@@ -1044,6 +1061,18 @@ class HydronicRuntime:
             if source.availability_entity_id is not None:
                 state = hass.states.get(source.availability_entity_id)
                 source_availability[source.id] = _state_is_available(state)
+            if source.demand_entity_id is not None:
+                state = hass.states.get(source.demand_entity_id)
+                if state is not None:
+                    source_demand_states[source.id] = _state_is_on(state)
+        if (
+            self.plant.source_selector is not None
+            and self.plant.source_selector.entity_id is not None
+        ):
+            state = hass.states.get(self.plant.source_selector.entity_id)
+            source_selector_states[self.plant.source_selector.id] = (
+                getattr(state, "state", None) if state is not None else None
+            )
         actuator_feedback: dict[str, ActuatorFeedback] = {}
 
         def feedback_reading(entity_id: str | None) -> FeedbackObservation | None:
@@ -1096,6 +1125,8 @@ class HydronicRuntime:
             surface_temperatures={sensor_id: observations[sensor_id] for sensor_id in surface_ids},
             source_temperatures=source_temperatures,
             source_availability=source_availability,
+            source_selector_states=source_selector_states,
+            source_demand_states=source_demand_states,
             actuator_feedback=actuator_feedback,
             unavailable_entity_ids=self.unavailable_entity_ids,
         )
@@ -1121,6 +1152,7 @@ class HydronicRuntime:
             lambda operation: self._async_dispatch_actuator(hass, operation),
             unavailable_actuator_ids=self._unavailable_actuator_ids(),
             force_shadow_start_actuator_ids=result.control_plan.cooling_actuator_ids,
+            force_shadow_actuator_ids=result.control_plan.source_selection_actuator_ids,
         )
         self._apply_execution_contract(self.last_execution, now)
         if self._entry is not None or self._hass is not None:
@@ -1301,6 +1333,13 @@ def _state_is_available(state: Any) -> bool:
     if normalized in {"off", "false", "0", "no", "unavailable", "unknown", "away"}:
         return False
     return False
+
+
+def _state_is_on(state: Any) -> bool:
+    """Interpret a synthetic source-demand switch state conservatively."""
+    if state is None:
+        return False
+    return str(state.state).strip().lower() in {"on", "true", "1", "yes"}
 
 
 def _validate_target_temperature(temperature: float) -> float:

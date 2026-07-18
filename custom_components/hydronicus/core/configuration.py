@@ -14,6 +14,7 @@ from .model import (
     Pump,
     Source,
     SourceKind,
+    SourceSelectionActuator,
     TemperatureAggregation,
     TemperatureSensorMetadata,
     Valve,
@@ -233,6 +234,48 @@ def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> S
         maximum_age_seconds=maximum_age,
         hysteresis=hysteresis,
         demand_entity_id=demand_entity,
+    )
+
+
+def _source_selector_from_mapping(
+    topology: Mapping[str, Any], *, require_uuid: bool
+) -> SourceSelectionActuator | None:
+    """Decode the optional generic selector, defaulting it to synthetic-only."""
+    raw = topology.get("source_selector", topology.get("source_selection_actuator"))
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise StoredTopologyError("Stored source selector must be an object.")
+    entity_id = _optional_entity_id(raw, "entity_id")
+    selector_entity_id = _optional_entity_id(raw, "selector_entity_id")
+    if entity_id is not None and selector_entity_id is not None and entity_id != selector_entity_id:
+        raise StoredTopologyError("Stored source selector entity was provided more than once.")
+    break_seconds = _number(
+        raw,
+        "break_interval_seconds",
+        _number(raw, "break_seconds", 30.0, non_negative=True),
+        non_negative=True,
+    )
+    dwell_seconds = _number(
+        raw,
+        "minimum_dwell_seconds",
+        _number(raw, "minimum_source_dwell_seconds", 300.0, non_negative=True),
+        non_negative=True,
+    )
+    release_option = raw.get("release_option", "none")
+    if not isinstance(release_option, str) or not release_option:
+        raise StoredTopologyError("Stored source selector release option must be non-empty.")
+    shadow_only = raw.get("shadow_only", True)
+    if not isinstance(shadow_only, bool):
+        raise StoredTopologyError("Stored source selector shadow_only must be boolean.")
+    return SourceSelectionActuator(
+        id=_id(raw, "id", require_uuid=require_uuid),
+        name=str(_required(raw, "name")),
+        entity_id=entity_id or selector_entity_id,
+        break_interval_seconds=break_seconds,
+        minimum_dwell_seconds=dwell_seconds,
+        release_option=release_option,
+        shadow_only=shadow_only,
     )
 
 
@@ -722,6 +765,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
         valves = tuple(valve_data.values())
         pumps = tuple(pump_data.values())
     sources = tuple(_source_from_mapping(item, require_uuid=require_uuid) for item in raw_sources)
+    source_selector = _source_selector_from_mapping(raw_topology, require_uuid=require_uuid)
     routes = tuple(
         DeliveryRoute(
             id=_id(item, "id", require_uuid=require_uuid),
@@ -739,4 +783,5 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
         circuits=tuple(circuits),
         routes=routes,
         sources=sources,
+        source_selector=source_selector,
     )

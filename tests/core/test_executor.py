@@ -22,6 +22,7 @@ from hydronicus_core.model import (
     Pump,
     RuntimeState,
     Source,
+    SourceSelectionActuator,
     Valve,
 )
 
@@ -89,6 +90,34 @@ def test_generic_adapter_translates_only_explicit_services(
         target,
     )
     assert operation.service != "toggle"
+
+
+@pytest.mark.asyncio
+async def test_source_selector_translates_select_option_and_is_idempotent() -> None:
+    """A selector receives one explicit option command and no toggle operation."""
+    command = ActuatorCommand("selector", "select", "synthetic source selection", "buffer")
+    binding = ActuatorBinding("selector", "select.synthetic_source")
+    assert operation_for(command, binding) == ActuatorOperation(
+        "selector",
+        "select.synthetic_source",
+        "select",
+        "select_option",
+        ActuatorObservedState.SELECTED,
+        "buffer",
+    )
+
+    executor = ActuatorExecutor({"selector": binding}, shadow_mode=False)
+    dispatched: list[ActuatorOperation] = []
+
+    async def dispatch(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    await executor.async_execute(_plan(command), dispatch)
+    second = await executor.async_execute(_plan(command), dispatch)
+
+    assert len(dispatched) == 1
+    assert second.suppressed == tuple(dispatched)
+    assert all(operation.service != "toggle" for operation in dispatched)
 
 
 def test_native_valve_rejects_switch_only_actions() -> None:
@@ -171,6 +200,44 @@ async def test_executor_safe_shutdown_dispatches_only_intercepted_source_release
 
     assert report.plan.phase.value == "valves_closed"
     assert [operation.actuator_id for operation in dispatched] == ["source:source"]
+    assert report.execution.executed == tuple(dispatched)
+
+
+@pytest.mark.asyncio
+async def test_executor_safe_shutdown_releases_bound_source_selector() -> None:
+    """Safe shutdown releases a bound selector through the explicit select option seam."""
+    plant = CompiledPlant(
+        id="plant",
+        zones={},
+        valves={},
+        pumps={},
+        circuits={},
+        routes=(),
+        logic_summary=(),
+        source_selector=SourceSelectionActuator(
+            "selector",
+            "Synthetic selector",
+            entity_id="select.synthetic_source",
+            release_option="none",
+            shadow_only=False,
+        ),
+    )
+    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    dispatched: list[ActuatorOperation] = []
+
+    async def dispatch(operation: ActuatorOperation) -> None:
+        dispatched.append(operation)
+
+    report = await executor.async_safe_shutdown(
+        plant,
+        RuntimeState(),
+        datetime(2026, 7, 18, tzinfo=UTC),
+        dispatch,
+    )
+
+    assert [operation.actuator_id for operation in dispatched] == ["selector"]
+    assert dispatched[0].service == "select_option"
+    assert dispatched[0].target_value == "none"
     assert report.execution.executed == tuple(dispatched)
 
 

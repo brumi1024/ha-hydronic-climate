@@ -17,13 +17,18 @@ from hydronicus_core.model import (
     PlantMode,
     PlantSnapshot,
     Pump,
+    PumpRuntime,
     PumpState,
     RuntimeState,
     Source,
     SourceKind,
+    SourceSelectionActuator,
+    SourceSelectionPhase,
+    SourceSelectionRuntime,
     TemperatureObservation,
     TemperatureSensorMetadata,
     Valve,
+    ValveRuntime,
     ValveState,
     Zone,
     ZoneDecisionStatus,
@@ -284,6 +289,7 @@ def _single_zone_scenario_plant(
     valve_opening: float = 0,
     pump_power: str | None = None,
     sources: tuple[Source, ...] = (),
+    source_selector: SourceSelectionActuator | None = None,
 ) -> object:
     """Build a small synthetic plant for named fake-clock scenarios."""
     return compile_topology(
@@ -312,8 +318,91 @@ def _single_zone_scenario_plant(
             circuits=(Circuit("circuit", "Scenario circuit", ("valve",), "pump"),),
             routes=(DeliveryRoute("route", "zone", "circuit"),),
             sources=sources,
+            source_selector=source_selector,
         )
     )
+
+
+def test_source_selection_falls_back_after_source_unavailable() -> None:
+    """A synthetic source failure follows release, break, and fallback selection order."""
+    plant = _single_zone_scenario_plant(
+        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        sources=(
+            Source(
+                "buffer",
+                "Buffer",
+                priority=1,
+                kind=SourceKind.TEMPERATURE_QUALIFIED_BUFFER,
+                temperature_entity_id="sensor.buffer_temperature",
+                minimum_temperature=40,
+                maximum_age_seconds=30,
+                demand_entity_id="switch.synthetic_buffer",
+            ),
+            Source("boiler", "Boiler", priority=2, demand_entity_id="switch.synthetic_boiler"),
+        ),
+        source_selector=SourceSelectionActuator(
+            "selector",
+            "Synthetic selector",
+            break_interval_seconds=5,
+            minimum_dwell_seconds=0,
+        ),
+    )
+    runtime = RuntimeState(
+        selected_source_id="buffer",
+        source_selection=SourceSelectionRuntime(
+            phase=SourceSelectionPhase.ACTIVE,
+            active_source_id="buffer",
+            target_source_id="buffer",
+            last_selected_at=NOW - timedelta(seconds=30),
+        ),
+        valves={"valve": ValveRuntime(ValveState.OPEN, NOW, True)},
+        pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW)},
+        plant_mode=PlantMode.HEATING,
+    )
+
+    failed = evaluate(
+        plant,
+        PlantSnapshot(
+            {"sensor.zone": TemperatureObservation(19.0, NOW)},
+            source_temperatures={"buffer": TemperatureObservation(45.0, NOW)},
+            source_availability={"buffer": False},
+        ),
+        runtime,
+        NOW,
+    )
+    assert tuple(
+        (command.actuator_id, command.action) for command in failed.control_plan.commands
+    ) == (("source:buffer", ActuatorAction.TURN_OFF),)
+
+    waiting = evaluate(
+        plant,
+        PlantSnapshot(
+            {"sensor.zone": TemperatureObservation(19.0, NOW + timedelta(seconds=4))},
+            source_temperatures={
+                "buffer": TemperatureObservation(45.0, NOW + timedelta(seconds=4))
+            },
+            source_availability={"buffer": False},
+        ),
+        failed.next_runtime,
+        NOW + timedelta(seconds=4),
+    )
+    assert waiting.control_plan.commands == ()
+
+    fallback = evaluate(
+        plant,
+        PlantSnapshot(
+            {"sensor.zone": TemperatureObservation(19.0, NOW + timedelta(seconds=5))},
+            source_temperatures={
+                "buffer": TemperatureObservation(45.0, NOW + timedelta(seconds=5))
+            },
+            source_availability={"buffer": False},
+        ),
+        waiting.next_runtime,
+        NOW + timedelta(seconds=5),
+    )
+    assert tuple(
+        (command.actuator_id, command.action) for command in fallback.control_plan.commands
+    ) == (("source:boiler", ActuatorAction.TURN_ON),)
 
 
 def test_buffer_becomes_ineligible_during_active_heating() -> None:

@@ -26,6 +26,7 @@ class ActuatorObservedState(StrEnum):
     CLOSED = "closed"
     ON = "on"
     OFF = "off"
+    SELECTED = "selected"
 
 
 class ActuatorFailureKind(StrEnum):
@@ -61,6 +62,7 @@ class ActuatorOperation:
     domain: str
     service: str
     target_state: ActuatorObservedState
+    target_value: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +124,7 @@ type DispatchOperation = Callable[[ActuatorOperation], Awaitable[None]]
 def _entity_domain(entity_id: str) -> str:
     """Return the Home Assistant domain from an entity ID."""
     domain, separator, _object_id = entity_id.partition(".")
-    if not separator or domain not in {"switch", "valve"}:
+    if not separator or domain not in {"switch", "valve", "select"}:
         raise ValueError(
             f"Actuator entity {entity_id!r} must belong to the switch or valve domain."
         )
@@ -132,7 +134,7 @@ def _entity_domain(entity_id: str) -> str:
 def _observation_domain(entity_id: str) -> str:
     """Return the domain accepted for actuator or readiness observations."""
     domain, separator, _object_id = entity_id.partition(".")
-    if not separator or domain not in {"switch", "valve", "binary_sensor"}:
+    if not separator or domain not in {"switch", "valve", "binary_sensor", "select"}:
         raise ValueError(
             f"Actuator feedback entity {entity_id!r} must belong to a switch, valve, "
             "or binary_sensor domain."
@@ -143,6 +145,25 @@ def _observation_domain(entity_id: str) -> str:
 def operation_for(command: ActuatorCommand, binding: ActuatorBinding) -> ActuatorOperation:
     """Translate one explicit domain command into a non-toggle service operation."""
     domain = _entity_domain(binding.entity_id)
+    if command.action is ActuatorAction.SELECT:
+        if domain != "select":
+            raise ValueError(
+                f"Source selector actuator {binding.actuator_id!r} requires a select entity."
+            )
+        if command.target is None:
+            raise ValueError("A source selector command requires an explicit option.")
+        return ActuatorOperation(
+            binding.actuator_id,
+            binding.entity_id,
+            domain,
+            "select_option",
+            ActuatorObservedState.SELECTED,
+            command.target,
+        )
+    if domain == "select":
+        raise ValueError(
+            f"Select actuator {binding.actuator_id!r} requires an explicit select command."
+        )
     if domain == "switch":
         if command.action is ActuatorAction.OPEN or command.action is ActuatorAction.TURN_ON:
             service = "turn_on"
@@ -182,10 +203,28 @@ def observed_state_for(entity_id: str, state: str | None) -> ActuatorObservedSta
             "on": ActuatorObservedState.ON,
             "off": ActuatorObservedState.OFF,
         }.get(normalized, ActuatorObservedState.UNKNOWN)
+    if domain == "select":
+        return (
+            ActuatorObservedState.UNKNOWN
+            if normalized in {"", "unknown", "unavailable"}
+            else ActuatorObservedState.SELECTED
+        )
     return {
         "open": ActuatorObservedState.OPEN,
         "closed": ActuatorObservedState.CLOSED,
     }.get(normalized, ActuatorObservedState.UNKNOWN)
+
+
+def _is_observed_command_satisfied(
+    requested_state: ActuatorObservedState | None,
+    requested_value: str | None,
+    observed_state: ActuatorObservedState,
+    observed_value: str | None,
+) -> bool:
+    """Compare an observed actuator state and optional selector option."""
+    return requested_state is observed_state and (
+        requested_value is None or requested_value == observed_value
+    )
 
 
 @dataclass(slots=True)
@@ -197,8 +236,10 @@ class ActuatorExecutor:
     actuator_shadow_modes: Mapping[str, bool] = field(default_factory=dict)
     readiness_bindings: Mapping[str, str] = field(default_factory=dict)
     observed_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
+    observed_values: dict[str, str] = field(default_factory=dict)
     feedback_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
     requested_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
+    requested_values: dict[str, str] = field(default_factory=dict)
     failure_states: dict[str, ActuatorExecutionFailure] = field(default_factory=dict)
     reconciliations: dict[str, ReconciliationResult] = field(default_factory=dict)
 
@@ -218,6 +259,11 @@ class ActuatorExecutor:
             actuator_id: self.observed_states.get(actuator_id, ActuatorObservedState.UNKNOWN)
             for actuator_id in self.bindings
         }
+        self.observed_values = {
+            actuator_id: str(value)
+            for actuator_id, value in self.observed_values.items()
+            if actuator_id in self.bindings
+        }
         self.feedback_states = {
             actuator_id: self.feedback_states.get(actuator_id, ActuatorObservedState.UNKNOWN)
             for actuator_id in self.readiness_bindings
@@ -226,6 +272,11 @@ class ActuatorExecutor:
             actuator_id: self.requested_states[actuator_id]
             for actuator_id in self.bindings
             if actuator_id in self.requested_states
+        }
+        self.requested_values = {
+            actuator_id: str(value)
+            for actuator_id, value in self.requested_values.items()
+            if actuator_id in self.bindings
         }
         self.failure_states = {
             actuator_id: failure
@@ -248,6 +299,7 @@ class ActuatorExecutor:
     ) -> ActuatorExecutor:
         """Build generic bindings from the compiled plant topology."""
         bindings: dict[str, ActuatorBinding] = {}
+        configured_shadow_modes = dict(actuator_shadow_modes or {})
         for actuator_id, valve in plant.valves.items():
             bindings[actuator_id] = ActuatorBinding(actuator_id, valve.entity_id)
         readiness_bindings = {
@@ -267,10 +319,17 @@ class ActuatorExecutor:
                         f"Actuator ID {binding_id!r} is used by more than one actuator."
                     )
                 bindings[binding_id] = ActuatorBinding(binding_id, source.demand_entity_id)
+        if plant.source_selector is not None and plant.source_selector.entity_id is not None:
+            selector_id = plant.source_selector.id
+            if selector_id in bindings:
+                raise ValueError(f"Actuator ID {selector_id!r} is used by more than one actuator.")
+            bindings[selector_id] = ActuatorBinding(selector_id, plant.source_selector.entity_id)
+            if plant.source_selector.shadow_only:
+                configured_shadow_modes[selector_id] = True
         return cls(
             bindings=bindings,
             shadow_mode=shadow_mode,
-            actuator_shadow_modes=actuator_shadow_modes or {},
+            actuator_shadow_modes=configured_shadow_modes,
             readiness_bindings=readiness_bindings,
         )
 
@@ -286,6 +345,12 @@ class ActuatorExecutor:
             raise KeyError(f"Unknown actuator {actuator_id!r}.")
         return self.requested_states.get(actuator_id)
 
+    def requested_value(self, actuator_id: str) -> str | None:
+        """Return a retained selector option without treating it as feedback."""
+        if actuator_id not in self.bindings:
+            raise KeyError(f"Unknown actuator {actuator_id!r}.")
+        return self.requested_values.get(actuator_id)
+
     def failure_for(self, actuator_id: str) -> ActuatorExecutionFailure | None:
         """Return the last command failure until trustworthy feedback repairs it."""
         if actuator_id not in self.bindings:
@@ -297,13 +362,23 @@ class ActuatorExecutor:
         observed = self.actuator_state(operation.actuator_id)
         retained = self.requested_state(operation.actuator_id)
         failure = self.failure_for(operation.actuator_id)
-        if observed is operation.target_state:
+        observed_satisfies = observed is operation.target_state and (
+            operation.target_value is None
+            or self.observed_values.get(operation.actuator_id) == operation.target_value
+        )
+        retained_satisfies = self.requested_states.get(
+            operation.actuator_id
+        ) is operation.target_state and (
+            operation.target_value is None
+            or self.requested_values.get(operation.actuator_id) == operation.target_value
+        )
+        if observed_satisfies:
             status = ReconciliationStatus.OBSERVED
             explanation = "Observed feedback already satisfies the desired state."
         elif failure is not None and retained is None:
             status = ReconciliationStatus.FAILED
             explanation = failure.explanation
-        elif retained is operation.target_state:
+        elif retained_satisfies:
             status = ReconciliationStatus.RETAINED
             explanation = "The desired state is already retained as an in-flight request."
         else:
@@ -348,8 +423,14 @@ class ActuatorExecutor:
         for actuator_id, binding in self.bindings.items():
             if binding.entity_id == entity_id:
                 self.observed_states[actuator_id] = observed
-                if self.requested_states.get(actuator_id) is observed:
+                if _is_observed_command_satisfied(
+                    self.requested_states.get(actuator_id),
+                    self.requested_values.get(actuator_id),
+                    observed,
+                    state,
+                ):
                     self.requested_states.pop(actuator_id, None)
+                    self.requested_values.pop(actuator_id, None)
                     self.failure_states.pop(actuator_id, None)
                 failure = self.failure_states.get(actuator_id)
                 if failure is not None and failure.operation.target_state is observed:
@@ -357,15 +438,34 @@ class ActuatorExecutor:
         for actuator_id, feedback_entity_id in self.readiness_bindings.items():
             if feedback_entity_id == entity_id:
                 self.feedback_states[actuator_id] = observed
+        for actuator_id, binding in self.bindings.items():
+            if binding.entity_id == entity_id and _entity_domain(entity_id) == "select":
+                if state is not None and observed is ActuatorObservedState.SELECTED:
+                    self.observed_values[actuator_id] = str(state)
+                else:
+                    self.observed_values.pop(actuator_id, None)
 
     def observe_entities(self, states: Mapping[str, str | None]) -> None:
         """Reconcile configured entity states without assuming desired state."""
         for binding in self.bindings.values():
             observed = observed_state_for(binding.entity_id, states.get(binding.entity_id))
             self.observed_states[binding.actuator_id] = observed
-            if self.requested_states.get(binding.actuator_id) is observed:
+            state = states.get(binding.entity_id)
+            if _is_observed_command_satisfied(
+                self.requested_states.get(binding.actuator_id),
+                self.requested_values.get(binding.actuator_id),
+                observed,
+                state,
+            ):
                 self.requested_states.pop(binding.actuator_id, None)
+                self.requested_values.pop(binding.actuator_id, None)
                 self.failure_states.pop(binding.actuator_id, None)
+            if _entity_domain(binding.entity_id) == "select" and (
+                state is None or observed is not ActuatorObservedState.SELECTED
+            ):
+                self.observed_values.pop(binding.actuator_id, None)
+            elif _entity_domain(binding.entity_id) == "select" and state is not None:
+                self.observed_values[binding.actuator_id] = str(state)
             failure = self.failure_states.get(binding.actuator_id)
             if failure is not None and failure.operation.target_state is observed:
                 self.failure_states.pop(binding.actuator_id, None)
@@ -443,6 +543,8 @@ class ActuatorExecutor:
                 failures.append(failure)
                 continue
             self.requested_states[command.actuator_id] = operation.target_state
+            if operation.target_value is not None:
+                self.requested_values[command.actuator_id] = operation.target_value
             if (
                 command.actuator_id in self.failure_states
                 and self.failure_states[command.actuator_id].operation.target_state

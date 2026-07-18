@@ -76,6 +76,7 @@ class ActuatorAction(StrEnum):
     CLOSE = "close"
     TURN_ON = "turn_on"
     TURN_OFF = "turn_off"
+    SELECT = "select"
 
 
 class InterlockStatus(StrEnum):
@@ -131,6 +132,21 @@ class SourceKind(StrEnum):
     EXTERNAL = "external"
     TEMPERATURE_QUALIFIED_BUFFER = "temperature_qualified_buffer"
     BUFFER = "temperature_qualified_buffer"
+
+
+class SourceSelectionPhase(StrEnum):
+    """Ordered phases of a deterministic source changeover."""
+
+    IDLE = "idle"
+    WAITING_FOR_HYDRAULICS = "waiting_for_hydraulics"
+    MINIMUM_DWELL = "minimum_dwell"
+    RELEASING = "releasing"
+    BREAKING = "breaking"
+    SELECTING = "selecting"
+    ACTIVE = "active"
+
+
+SourceSelectionState = SourceSelectionPhase
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +514,105 @@ class Source:
         return self.demand_entity_id
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class SourceSelectionActuator:
+    """Generic source selector configuration with a synthetic-safe default."""
+
+    id: str
+    name: str
+    entity_id: str | None
+    break_interval_seconds: float
+    minimum_dwell_seconds: float
+    release_option: str
+    shadow_only: bool
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        entity_id: str | None = None,
+        break_interval_seconds: float = 30.0,
+        minimum_dwell_seconds: float = 300.0,
+        *,
+        selector_entity_id: str | None = None,
+        break_seconds: float | None = None,
+        minimum_source_dwell_seconds: float | None = None,
+        release_option: str = "none",
+        shadow_only: bool = True,
+    ) -> None:
+        """Accept descriptive aliases while keeping selector execution synthetic by default."""
+        if (
+            entity_id is not None
+            and selector_entity_id is not None
+            and entity_id != selector_entity_id
+        ):
+            raise ValueError("Source selector entity was provided more than once.")
+        if selector_entity_id is not None:
+            entity_id = selector_entity_id
+        if break_seconds is not None:
+            break_interval_seconds = break_seconds
+        if minimum_source_dwell_seconds is not None:
+            minimum_dwell_seconds = minimum_source_dwell_seconds
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "entity_id", entity_id)
+        object.__setattr__(self, "break_interval_seconds", float(break_interval_seconds))
+        object.__setattr__(self, "minimum_dwell_seconds", float(minimum_dwell_seconds))
+        object.__setattr__(self, "release_option", release_option)
+        object.__setattr__(self, "shadow_only", bool(shadow_only))
+
+    @property
+    def selector_entity_id(self) -> str | None:
+        """Return the optional Home Assistant select binding."""
+        return self.entity_id
+
+    @property
+    def break_before_make_seconds(self) -> float:
+        """Return the configured old-source release interval."""
+        return self.break_interval_seconds
+
+    @property
+    def minimum_source_dwell_seconds(self) -> float:
+        """Return the configured minimum time between source selections."""
+        return self.minimum_dwell_seconds
+
+
+SourceSelector = SourceSelectionActuator
+SourceSelectionConfig = SourceSelectionActuator
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSelectionRuntime:
+    """Persistable state for one break-before-make source transition."""
+
+    phase: SourceSelectionPhase = SourceSelectionPhase.IDLE
+    active_source_id: str | None = None
+    target_source_id: str | None = None
+    transition_started_at: datetime | None = None
+    last_selected_at: datetime | None = None
+    released_source_id: str | None = None
+
+    @property
+    def selected_source_id(self) -> str | None:
+        """Return the source believed to be selected after a completed transition."""
+        return self.active_source_id
+
+
+SourceSelectorRuntime = SourceSelectionRuntime
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSelectionDiagnostic:
+    """Structured explanation for source selection and its safety gate."""
+
+    phase: SourceSelectionPhase
+    active_source_id: str | None
+    target_source_id: str | None
+    recommended_source_id: str | None
+    hydraulically_safe: bool
+    explanation: str
+
+
 HeatSource = Source
 SourceConfig = Source
 HeatSourceKind = SourceKind
@@ -720,6 +835,7 @@ class PlantConfiguration:
     circuits: tuple[Circuit, ...]
     routes: tuple[DeliveryRoute, ...]
     sources: tuple[Source, ...] = ()
+    source_selector: SourceSelectionActuator | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,6 +851,7 @@ class CompiledPlant:
     logic_summary: tuple[str, ...]
     warnings: tuple[TopologyWarning, ...] = ()
     sources: Mapping[str, Source] = field(default_factory=dict)
+    source_selector: SourceSelectionActuator | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -806,6 +923,8 @@ class PlantSnapshot:
     surface_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
     source_temperatures: Mapping[str, TemperatureObservation] = field(default_factory=dict)
     source_availability: Mapping[str, bool] = field(default_factory=dict)
+    source_selector_states: Mapping[str, str | None] = field(default_factory=dict)
+    source_demand_states: Mapping[str, bool] = field(default_factory=dict)
     actuator_feedback: Mapping[str, ActuatorFeedback] = field(default_factory=dict)
     unavailable_entity_ids: frozenset[str] = frozenset()
 
@@ -849,6 +968,7 @@ class RuntimeState:
     plant_mode: PlantMode = PlantMode.IDLE
     requested_mode: PlantMode = PlantMode.AUTO
     selected_source_id: str | None = None
+    source_selection: SourceSelectionRuntime = field(default_factory=SourceSelectionRuntime)
     changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
     changeover_target_mode: PlantMode | None = None
     changeover_started_at: datetime | None = None
@@ -870,10 +990,16 @@ class ActuatorCommand:
     actuator_id: str
     action: ActuatorAction
     reason: str
+    target: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize legacy string construction while rejecting unknown actions."""
         object.__setattr__(self, "action", ActuatorAction(self.action))
+
+    @property
+    def target_source_id(self) -> str | None:
+        """Return the source option for a selector command, when present."""
+        return self.target
 
 
 @dataclass(frozen=True, slots=True)
@@ -891,6 +1017,8 @@ class ControlPlan:
     cooling_pump_consumers: Mapping[str, frozenset[str]] = field(default_factory=dict)
     cooling_actuator_ids: frozenset[str] = frozenset()
     mode_conflicts: tuple[ModeConflict, ...] = ()
+    source_selection: SourceSelectionDiagnostic | None = None
+    source_selection_actuator_ids: frozenset[str] = frozenset()
     requested_mode: PlantMode = PlantMode.AUTO
     changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
     changeover_target_mode: PlantMode | None = None
@@ -928,6 +1056,7 @@ class ControllerDiagnostics:
     cooling_zone_reasons: Mapping[str, str] = field(default_factory=dict)
     mode_conflicts: tuple[ModeConflict, ...] = ()
     actuator_diagnostics: Mapping[str, ActuatorDiagnostic] = field(default_factory=dict)
+    source_selection: SourceSelectionDiagnostic | None = None
     requested_mode: PlantMode = PlantMode.AUTO
     active_mode: PlantMode = PlantMode.IDLE
     changeover_phase: ModeChangeoverPhase = ModeChangeoverPhase.IDLE
