@@ -158,6 +158,63 @@ class ActuatorRequestedBinarySensor(HydronicShadowEntity):
         )
 
 
+class ActuatorMismatchBinarySensor(HydronicShadowEntity):
+    """Expose a manual actuator-state mismatch without toggle behavior."""
+
+    _attr_icon = "mdi:alert-outline"
+
+    def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._actuator_id = actuator_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{actuator_id}_mismatch"
+        self._attr_name = f"{name} mismatch"
+
+    @property
+    def is_on(self) -> bool:
+        """Return the structured mismatch state."""
+        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        return bool(getattr(diagnostic, "mismatch", False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose expected and observed values for operator diagnosis."""
+        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        return {
+            "expected": getattr(diagnostic, "expected", None),
+            "observed": getattr(diagnostic, "observed", None),
+            "reason": getattr(diagnostic, "reason", None),
+            "feedback_kind": getattr(diagnostic, "feedback_kind", None),
+        }
+
+
+class ActuatorBlockedBinarySensor(HydronicShadowEntity):
+    """Expose whether unsafe actuator feedback blocks dependent circuits."""
+
+    _attr_icon = "mdi:shield-alert-outline"
+
+    def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
+        super().__init__(entry)
+        self._actuator_id = actuator_id
+        self._attr_unique_id = f"{self._runtime.plant_id}_{actuator_id}_blocked"
+        self._attr_name = f"{name} blocked"
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether dependent circuits fail closed."""
+        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        return bool(getattr(diagnostic, "blocked", False))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose stale feedback and the dependent block reason."""
+        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        return {
+            "reason": getattr(diagnostic, "reason", None),
+            "stale_feedback": list(getattr(diagnostic, "stale_feedback", ())),
+            "dependent_blocked": getattr(diagnostic, "blocked", False),
+        }
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: HydronicConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -177,15 +234,23 @@ async def async_setup_entry(
         else:
             parent_entities.extend(entities)
     for valve in runtime.plant.valves.values():
-        entity = ActuatorRequestedBinarySensor(entry, valve.id, valve.name, "valve")
+        entities = [
+            ActuatorRequestedBinarySensor(entry, valve.id, valve.name, "valve"),
+            ActuatorMismatchBinarySensor(entry, valve.id, valve.name),
+            ActuatorBlockedBinarySensor(entry, valve.id, valve.name),
+        ]
         if subentry_id := runtime.actuator_subentry_ids.get(valve.id):
-            subentry_entities.setdefault(subentry_id, []).append(entity)
+            subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
-            parent_entities.append(entity)
-    parent_entities.extend(
-        ActuatorRequestedBinarySensor(entry, pump.id, pump.name, "pump")
-        for pump in runtime.plant.pumps.values()
-    )
+            parent_entities.extend(entities)
+    for pump in runtime.plant.pumps.values():
+        parent_entities.extend(
+            (
+                ActuatorRequestedBinarySensor(entry, pump.id, pump.name, "pump"),
+                ActuatorMismatchBinarySensor(entry, pump.id, pump.name),
+                ActuatorBlockedBinarySensor(entry, pump.id, pump.name),
+            )
+        )
     async_add_entities(parent_entities)
     for subentry_id, entities in subentry_entities.items():
         async_add_entities(entities, config_subentry_id=subentry_id)

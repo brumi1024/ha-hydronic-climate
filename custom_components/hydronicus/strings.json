@@ -58,6 +58,14 @@
           "pump_entity": "Pump entity",
           "valve_opening_time_seconds": "Valve opening time (seconds)",
           "pump_overrun_seconds": "Pump overrun (seconds)",
+          "position_feedback_entity": "Valve position feedback",
+          "position_feedback_max_age_seconds": "Valve position feedback maximum age (seconds)",
+          "power_feedback_entity": "Pump power feedback",
+          "power_feedback_max_age_seconds": "Pump power feedback maximum age (seconds)",
+          "flow_feedback_entity": "Pump flow feedback",
+          "flow_feedback_max_age_seconds": "Pump flow feedback maximum age (seconds)",
+          "fault_feedback_entity": "Pump fault feedback",
+          "fault_feedback_max_age_seconds": "Pump fault feedback maximum age (seconds)",
           "cooling_enabled": "Cooling enabled",
           "supply_temperature_sensor": "Supply temperature reference",
           "surface_temperature_sensor": "Surface temperature reference",
@@ -92,6 +100,8 @@
             "name": "Actuator name",
             "entity_id": "Valve entity",
             "opening_time_seconds": "Opening time (seconds)",
+            "position_feedback_entity": "Valve position feedback",
+            "position_feedback_max_age_seconds": "Valve position feedback maximum age (seconds)",
             "circuit_ids": "Circuits"
           }
         },
@@ -102,6 +112,8 @@
             "name": "Actuator name",
             "entity_id": "Valve entity",
             "opening_time_seconds": "Opening time (seconds)",
+            "position_feedback_entity": "Valve position feedback",
+            "position_feedback_max_age_seconds": "Valve position feedback maximum age (seconds)",
             "circuit_ids": "Circuits"
           }
         },
@@ -283,6 +295,7 @@
             "source_type": "Source type",
             "priority": "Priority (lower wins)",
             "availability_entity": "Availability entity",
+            "source_demand_entity": "Source demand entity",
             "temperature_entity": "Buffer temperature entity",
             "minimum_temperature": "Minimum buffer temperature (degrees Celsius)",
             "maximum_age_seconds": "Maximum buffer temperature age (seconds)",
@@ -297,6 +310,7 @@
             "source_type": "Source type",
             "priority": "Priority (lower wins)",
             "availability_entity": "Availability entity",
+            "source_demand_entity": "Source demand entity",
             "temperature_entity": "Buffer temperature entity",
             "minimum_temperature": "Minimum buffer temperature (degrees Celsius)",
             "maximum_age_seconds": "Maximum buffer temperature age (seconds)",

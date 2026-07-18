@@ -10,6 +10,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
     CONF_SOURCE_AVAILABILITY_ENTITY,
+    CONF_SOURCE_DEMAND_ENTITY,
     CONF_SOURCE_HYSTERESIS,
     CONF_SOURCE_MAXIMUM_AGE,
     CONF_SOURCE_MINIMUM_TEMPERATURE,
@@ -91,6 +92,7 @@ async def _add_buffer_source(hass, entry):
             CONF_SOURCE_TYPE: "temperature_qualified_buffer",
             CONF_SOURCE_PRIORITY: 1,
             CONF_SOURCE_AVAILABILITY_ENTITY: "binary_sensor.buffer_available",
+            CONF_SOURCE_DEMAND_ENTITY: "switch.synthetic_source",
             CONF_SOURCE_TEMPERATURE_ENTITY: "sensor.buffer_temperature",
             CONF_SOURCE_MINIMUM_TEMPERATURE: 40.0,
             CONF_SOURCE_MAXIMUM_AGE: 60.0,
@@ -116,6 +118,7 @@ async def test_source_setup_reconfigure_reload_delete_and_entities(hass) -> None
     )
     source_id = subentry.data["id"]
     assert entry.runtime_data.plant.sources[source_id].priority == 1
+    assert entry.runtime_data.plant.sources[source_id].demand_entity_id == "switch.synthetic_source"
     assert entry.runtime_data.plant.sources[source_id].minimum_temperature == 40.0
     assert hass.states.get("sensor.hydronic_plant_recommended_source").state == source_id
     assert hass.states.get("sensor.hydronic_plant_source_recommendation").state.startswith(

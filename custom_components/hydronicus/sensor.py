@@ -402,6 +402,54 @@ class ZoneCondensationMarginSensor(SensorEntity):
         return _cooling_diagnostic_attributes(self._runtime, self._zone_id)
 
 
+class ActuatorFeedbackReasonSensor(SensorEntity):
+    """Expose the structured feedback or manual-intervention explanation."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:information-outline"
+
+    def __init__(self, entry: HydronicConfigEntry, actuator_id: str, name: str) -> None:
+        """Bind one diagnostic state to an actuator."""
+        self._entry = entry
+        self._actuator_id = actuator_id
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_{actuator_id}_feedback_reason"
+        self._attr_name = f"{name} feedback reason"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after a config-entry reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to atomic evaluations."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        """Return a stable bounded diagnostic explanation."""
+        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        reason = str(getattr(diagnostic, "reason", "No actuator feedback diagnostic."))
+        return reason[:_MAX_STATE_LENGTH]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose structured mismatch and fail-closed details."""
+        diagnostic = self._runtime.actuator_diagnostic(self._actuator_id)
+        return {
+            "status": getattr(getattr(diagnostic, "status", None), "value", None),
+            "mismatch": getattr(diagnostic, "mismatch", False),
+            "blocked": getattr(diagnostic, "blocked", False),
+            "expected": getattr(diagnostic, "expected", None),
+            "observed": getattr(diagnostic, "observed", None),
+            "stale_feedback": list(getattr(diagnostic, "stale_feedback", ())),
+        }
+
+
 def _zone_diagnostic_attributes(runtime: Any, zone_id: str) -> dict[str, object]:
     """Build common structured attributes for all zone explanation entities."""
     aggregation = runtime.zone_aggregation(zone_id)
@@ -455,6 +503,12 @@ async def async_setup_entry(
             subentry_entities.setdefault(subentry_id, []).extend(entities)
         else:
             parent_entities.extend(entities)
+    for actuator_id, actuator in (*runtime.plant.valves.items(), *runtime.plant.pumps.items()):
+        entity = ActuatorFeedbackReasonSensor(entry, actuator_id, actuator.name)
+        if subentry_id := runtime.actuator_subentry_ids.get(actuator_id):
+            subentry_entities.setdefault(subentry_id, []).append(entity)
+        else:
+            parent_entities.append(entity)
     async_add_entities(parent_entities)
     for subentry_id, entities in subentry_entities.items():
         async_add_entities(entities, config_subentry_id=subentry_id)
