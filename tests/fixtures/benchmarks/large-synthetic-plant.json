@@ -20,7 +20,7 @@
     "shadow_mode": true,
     "thresholds": {
       "compile_ms_max": 1000.0,
-      "evaluation_ms_max": 1000.0,
+      "evaluation_ms_max": 2000.0,
       "peak_memory_mib_max": 128.0,
       "minimum_reconciliation_count": 2,
       "minimum_entity_update_count": 1,

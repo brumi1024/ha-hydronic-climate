@@ -26,7 +26,11 @@ The registered entity-update listener was called 3 times.
 
 The intercepted Home Assistant service-call count was 0.
 
-The checked-in thresholds are 1000 ms for compile, 1000 ms for evaluation, 128 MiB for traced memory, at least 2 reconciliations, at least 1 entity update, and 0 service calls.
+The checked-in thresholds are 1000 ms for compile, 2000 ms for evaluation, 128 MiB for traced memory, at least 2 reconciliations, at least 1 entity update, and 0 service calls.
+
+GitHub-hosted Linux runs measured pure evaluation at 1109.536 ms and 1127.982 ms, while the recorded macOS run measured 24.758 ms.
+
+Those runs isolated the variation to evaluation timing, so the 2000 ms budget accommodates the slower hosted runner while retaining a bounded check.
 
 If a future run crosses a threshold, retain the topology and emitted metrics, identify whether the regression is in compilation, evaluation, reconciliation, or publication, and document the reason before changing the threshold.
 
