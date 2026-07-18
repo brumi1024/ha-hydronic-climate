@@ -20,9 +20,12 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 from .const import (
     ACTUATOR_COMMAND_TIMEOUT_SECONDS,
     CONF_ACTUATOR_SHADOW_MODES,
+    CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
     CONF_NAME,
     CONF_PLANT_ID,
     CONF_SHADOW_MODE,
+    MAX_RECONCILIATION_INTERVAL_SECONDS,
+    MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
 )
 from .core.controller import evaluate
@@ -72,6 +75,7 @@ class HydronicRuntime:
     actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     actuator_shadow_modes: Mapping[str, bool] = field(default_factory=dict)
+    diagnostics_include_actuator_details: bool = False
     source_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
@@ -89,6 +93,15 @@ class HydronicRuntime:
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     _refresh_task: asyncio.Task[Any] | None = None
     _stopping: bool = False
+    refresh_count: int = 0
+    evaluation_count: int = 0
+    coalesced_refresh_count: int = 0
+    reconciliation_count: int = 0
+    reconciliation_changed_count: int = 0
+    reconciliation_unchanged_count: int = 0
+    last_reconciliation_status: str = "not_started"
+    last_reconciliation_changed_actuator_count: int = 0
+    _last_publication_signature: str | None = None
     executor: ActuatorExecutor = field(init=False)
 
     def __post_init__(self) -> None:
@@ -112,6 +125,9 @@ class HydronicRuntime:
             actuator_subentry_ids=effective.actuator_subentry_ids,
             zone_subentry_ids=effective.zone_subentry_ids,
             actuator_shadow_modes=_stored_actuator_shadow_modes(entry),
+            diagnostics_include_actuator_details=bool(
+                entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
+            ),
             source_subentry_ids=effective.source_subentry_ids,
             zone_target_temperatures={
                 zone.id: zone.target_temperature for zone in plant.zones.values()
@@ -126,6 +142,7 @@ class HydronicRuntime:
     async def async_start(self, hass: HomeAssistant) -> None:
         """Reconcile observations, evaluate the plan, and execute safe commands."""
         self._stopping = False
+        self._last_publication_signature = None
         if self._remove_state_listener is not None:
             self._remove_state_listener()
             self._remove_state_listener = None
@@ -173,6 +190,7 @@ class HydronicRuntime:
         self._cancel_transition_timer()
         self._cancel_reconciliation_timer()
         self._refresh_task = None
+        self._last_publication_signature = None
         self._listeners.clear()
         self._hass = None
         self._entry = None
@@ -310,8 +328,7 @@ class HydronicRuntime:
         self._apply_execution_contract(report.execution, effective_now)
         if report.plan.next_deadline is not None:
             self._schedule_next_transition(active_hass, effective_now)
-        for listener in self._listeners:
-            listener()
+        self._notify_listeners_if_changed()
         return report
 
     def zone_dew_point(self, zone_id: str) -> float | None:
@@ -352,6 +369,24 @@ class HydronicRuntime:
             return None
         return self.evaluation.diagnostics.source_recommendation
 
+    def operational_status(self) -> str:
+        """Return a bounded plant-level status suitable for Recorder telemetry."""
+        if self._stopping:
+            return "stopped"
+        if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
+            return "safe_shutdown"
+        if self.evaluation is None:
+            return "initializing"
+        if any(
+            decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
+            for decision in (
+                *self.evaluation.diagnostics.zone_decisions.values(),
+                *self.evaluation.diagnostics.cooling_zone_decisions.values(),
+            )
+        ):
+            return "blocked"
+        return self.evaluation.control_plan.plant_mode.value
+
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register an entity update callback."""
         self._listeners.add(listener)
@@ -377,8 +412,7 @@ class HydronicRuntime:
             if actuator_ids:
                 self._reconcile_actuator_runtime(actuator_ids)
         if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-            for listener in self._listeners:
-                listener()
+            self._notify_listeners_if_changed()
             return
         if self._hass is not None:
             self._schedule_refresh(self._hass)
@@ -404,9 +438,34 @@ class HydronicRuntime:
         """Re-read actuator state, then schedule the next periodic reconciliation."""
         try:
             if not self._stopping:
+                previous_status = self.last_reconciliation_status
+                previous_observed = dict(self.executor.observed_states)
+                previous_feedback = dict(self.executor.feedback_states)
                 self.executor.observe_entities(self._actuator_states(hass))
-                self._reconcile_actuator_runtime()
-                await self.async_refresh(hass)
+                changed_actuators = {
+                    actuator_id
+                    for actuator_id in set(previous_observed) | set(self.executor.observed_states)
+                    if previous_observed.get(actuator_id)
+                    != self.executor.observed_states.get(actuator_id)
+                }
+                changed_actuators.update(
+                    f"feedback:{actuator_id}"
+                    for actuator_id in set(previous_feedback) | set(self.executor.feedback_states)
+                    if previous_feedback.get(actuator_id)
+                    != self.executor.feedback_states.get(actuator_id)
+                )
+                self.reconciliation_count += 1
+                self.last_reconciliation_changed_actuator_count = len(changed_actuators)
+                if changed_actuators:
+                    self.reconciliation_changed_count += 1
+                    self.last_reconciliation_status = "changed"
+                    self._reconcile_actuator_runtime()
+                    await self.async_refresh(hass)
+                else:
+                    self.reconciliation_unchanged_count += 1
+                    self.last_reconciliation_status = "unchanged"
+                    if self.last_reconciliation_status != previous_status:
+                        self._notify_listeners_if_changed()
         finally:
             if self._hass is hass and not self._stopping:
                 self._schedule_periodic_reconciliation(hass)
@@ -414,8 +473,12 @@ class HydronicRuntime:
     def _schedule_periodic_reconciliation(self, hass: HomeAssistant) -> None:
         """Schedule the next periodic actuator read."""
         self._cancel_reconciliation_timer()
+        interval = min(
+            max(float(RECONCILIATION_INTERVAL_SECONDS), MIN_RECONCILIATION_INTERVAL_SECONDS),
+            MAX_RECONCILIATION_INTERVAL_SECONDS,
+        )
         self._remove_reconciliation_timer = async_call_later(
-            hass, RECONCILIATION_INTERVAL_SECONDS, self._async_handle_reconciliation_timer
+            hass, interval, self._async_handle_reconciliation_timer
         )
 
     def _schedule_task(self, hass: HomeAssistant, coroutine: Any) -> asyncio.Task[Any]:
@@ -433,6 +496,7 @@ class HydronicRuntime:
     def _schedule_refresh(self, hass: HomeAssistant) -> None:
         """Coalesce state-event refreshes into one tracked task."""
         if self._refresh_task is not None and not self._refresh_task.done():
+            self.coalesced_refresh_count += 1
             return
         self._refresh_task = self._schedule_task(hass, self.async_refresh(hass))
 
@@ -520,6 +584,14 @@ class HydronicRuntime:
                     valves[actuator_id] = current
                 else:
                     valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
+            elif (
+                self.shadow_mode
+                and current is not None
+                and current.state is ValveState.OPENING
+            ):
+                # Shadow execution does not change the physical entity.  Keep
+                # the virtual opening transition stable across identical reads.
+                valves[actuator_id] = current
             elif readiness is False or observed is ActuatorObservedState.OFF:
                 valves[actuator_id] = ValveRuntime(ValveState.CLOSED, now, False)
             elif observed is ActuatorObservedState.ON:
@@ -825,6 +897,7 @@ class HydronicRuntime:
         """Read sensor states, evaluate the controller, and notify shadow entities."""
         if self._stopping:
             return
+        self.refresh_count += 1
         if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
             await self.async_safe_shutdown(hass)
             return
@@ -934,6 +1007,7 @@ class HydronicRuntime:
             },
         )
         result = evaluate(evaluation_plant, self.snapshot, self.runtime_state, now)
+        self.evaluation_count += 1
         cooling_shadow_only = result.control_plan.plant_mode is PlantMode.COOLING or (
             self.runtime_state.plant_mode is PlantMode.COOLING
             and not any(result.next_runtime.zone_demands.values())
@@ -949,8 +1023,92 @@ class HydronicRuntime:
         self._apply_execution_contract(self.last_execution, now)
         if self._entry is not None or self._hass is not None:
             self._schedule_next_transition(hass, now)
-        for listener in self._listeners:
+        self._notify_listeners_if_changed()
+
+    def _notify_listeners_if_changed(self) -> None:
+        """Publish only when recorder-visible runtime state has changed."""
+        signature = repr(
+            (
+                self.runtime_state,
+                tuple(sorted(self.zone_target_temperatures.items())),
+                tuple(sorted(self.zone_preset_modes.items())),
+                self.operational_status(),
+                self.last_reconciliation_status,
+                self.last_reconciliation_changed_actuator_count,
+                self._evaluation_publication_signature(),
+                tuple(sorted(self.executor.failure_states.items())),
+                tuple(sorted(self.executor.reconciliations.items()))
+                if self.diagnostics_include_actuator_details
+                else (),
+            )
+        )
+        if signature == self._last_publication_signature:
+            return
+        self._last_publication_signature = signature
+        for listener in tuple(self._listeners):
             listener()
+
+    def _evaluation_publication_signature(self) -> object:
+        """Return evaluation data without volatile deadline timestamps."""
+        if self.evaluation is None:
+            return None
+        diagnostics = self.evaluation.diagnostics
+
+        def decision_signature(decision: ZoneDecision) -> tuple[object, ...]:
+            aggregation = decision.aggregation
+            return (
+                decision.status,
+                decision.demand,
+                aggregation.value if aggregation is not None else None,
+                aggregation.usable_sensor_ids if aggregation is not None else (),
+                aggregation.excluded_optional_sensor_ids if aggregation is not None else (),
+                aggregation.blocking_required_sensor_ids if aggregation is not None else (),
+                decision.explanation,
+                decision.deadline is not None,
+                decision.humidity_aggregation.value
+                if decision.humidity_aggregation is not None
+                else None,
+                decision.dew_point,
+                decision.condensation_margin,
+                tuple(
+                    (interlock.interlock_id, interlock.status, interlock.reason)
+                    for interlock in decision.interlocks
+                ),
+            )
+
+        return (
+            tuple(
+                (zone_id, decision_signature(decision))
+                for zone_id, decision in sorted(diagnostics.zone_decisions.items())
+            ),
+            tuple(
+                (zone_id, decision_signature(decision))
+                for zone_id, decision in sorted(diagnostics.cooling_zone_decisions.items())
+            ),
+            tuple(sorted(diagnostics.zone_reasons.items())),
+            tuple(sorted(diagnostics.interlocks.items())),
+            diagnostics.source_recommendation,
+            diagnostics.mode_conflicts,
+            tuple(
+                (
+                    actuator_id,
+                    diagnostic.status,
+                    diagnostic.mismatch,
+                    diagnostic.blocked,
+                    diagnostic.expected,
+                    diagnostic.observed,
+                    diagnostic.stale_feedback,
+                )
+                for actuator_id, diagnostic in sorted(diagnostics.actuator_diagnostics.items())
+            ),
+            (
+                tuple(sorted(diagnostics.circuit_reasons.items())),
+                tuple(sorted(diagnostics.actuator_reasons.items())),
+                tuple(sorted(self.executor.reconciliations.items())),
+            )
+            if self.diagnostics_include_actuator_details
+            else (),
+        )
 
     def _now(self) -> datetime:
         """Read the UTC clock in one place so timer tests can control it."""
