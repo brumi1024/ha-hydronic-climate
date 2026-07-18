@@ -9,6 +9,7 @@ from .model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
     CompiledPlant,
+    EquipmentKind,
     PlantConfiguration,
     Source,
     SourceKind,
@@ -350,6 +351,8 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
     referenced_zones: set[str] = set()
     referenced_circuits: set[str] = set()
     for route in configuration.routes:
+        if not isinstance(route.enabled, bool):
+            raise TopologyValidationError(f"Route {route.id} enabled must be boolean.")
         if route.zone_id not in zones:
             raise TopologyValidationError(
                 f"Route {route.id} references unknown zone {route.zone_id}."
@@ -458,6 +461,8 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
                 valve_id=valve_id,
                 circuit_ids=shared_circuits,
                 zone_ids=affected_zones,
+                equipment_kind=EquipmentKind.VALVE,
+                equipment_id=valve_id,
             )
         )
 
@@ -473,6 +478,63 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
                 f"Pump {pump.name} is shared by circuits "
                 + ", ".join(circuits[circuit_id].name for circuit_id in summary_circuits)
                 + "."
+            )
+            affected_zones = tuple(
+                sorted(
+                    {
+                        route.zone_id
+                        for route in enabled_routes
+                        if route.circuit_id in shared_circuits
+                    }
+                )
+            )
+            warnings.append(
+                TopologyWarning(
+                    code="shared_pump_limits_independent_control",
+                    message=(
+                        f"Pump {pump.name} is shared by circuits "
+                        f"{', '.join(circuits[circuit_id].name for circuit_id in shared_circuits)}"
+                        "; "
+                        "separate climate entities cannot independently control heating and "
+                        "cooling "
+                        "through the same pump."
+                    ),
+                    valve_id=pump_id,
+                    circuit_ids=shared_circuits,
+                    zone_ids=affected_zones,
+                    equipment_kind=EquipmentKind.PUMP,
+                    equipment_id=pump_id,
+                )
+            )
+
+    cooling_circuit_ids = tuple(
+        sorted(circuit_id for circuit_id, circuit in circuits.items() if circuit.cooling_enabled)
+    )
+    if cooling_circuit_ids and sources:
+        affected_circuit_ids = tuple(sorted(circuits))
+        affected_zone_ids = tuple(
+            sorted(
+                {
+                    route.zone_id
+                    for route in enabled_routes
+                    if route.circuit_id in affected_circuit_ids
+                }
+            )
+        )
+        for source_id, source in sources.items():
+            warnings.append(
+                TopologyWarning(
+                    code="shared_source_limits_independent_control",
+                    message=(
+                        f"Source {source.name} is shared by the plant; separate climate entities "
+                        "cannot independently change heating and cooling source mode."
+                    ),
+                    valve_id=source_id,
+                    circuit_ids=affected_circuit_ids,
+                    zone_ids=affected_zone_ids,
+                    equipment_kind=EquipmentKind.SOURCE,
+                    equipment_id=source_id,
+                )
             )
 
     return CompiledPlant(

@@ -10,8 +10,10 @@ from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
+    CONF_COOLING_ENABLED,
     CONF_NAME,
     CONF_PUMP_ID,
+    CONF_SUPPLY_TEMPERATURE_SENSOR,
     CONF_VALVE_IDS,
     CONF_ZONE_IDS,
     DOMAIN,
@@ -27,6 +29,21 @@ BASE_CIRCUIT_ID = "00000000-0000-4000-8000-000000000006"
 LIVING_ROUTE_ID = "00000000-0000-4000-8000-000000000007"
 OFFICE_ROUTE_ID = "00000000-0000-4000-8000-000000000008"
 SECOND_VALVE_ID = "00000000-0000-4000-8000-000000000009"
+
+
+def _cooling_plant_entry() -> MockConfigEntry:
+    """Return the shared test plant with synthetic humidity topology."""
+    entry = _plant_entry()
+    data = deepcopy(dict(entry.data))
+    for zone in data["topology"]["zones"]:
+        sensor_id = f"sensor.{zone['id']}.humidity"
+        zone["humidity_sensors"] = [sensor_id]
+        zone["humidity_sensor_metadata"] = [{"entity_id": sensor_id}]
+    return MockConfigEntry(
+        domain=DOMAIN,
+        title=entry.title,
+        data=data,
+    )
 
 
 async def _confirm_warning_review(hass, result):
@@ -324,6 +341,71 @@ async def test_reconfigure_circuit_preserves_retained_route_enablement(hass) -> 
             "zone_id": OFFICE_ZONE_ID,
         },
     ]
+
+
+async def test_reconfigure_cooling_circuit_preserves_mode_and_route_uuids(hass) -> None:
+    """Cooling compatibility and relationship UUIDs survive subentry reconfiguration."""
+    entry = _cooling_plant_entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_CIRCUIT),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Cooling loop",
+            CONF_ZONE_IDS: [LIVING_ZONE_ID, OFFICE_ZONE_ID],
+            CONF_VALVE_IDS: [VALVE_ID],
+            CONF_PUMP_ID: PUMP_ID,
+            CONF_COOLING_ENABLED: True,
+            CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.synthetic_cooling_supply",
+        },
+    )
+    await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+
+    subentry = next(
+        item for item in entry.subentries.values() if item.subentry_type == SUBENTRY_TYPE_CIRCUIT
+    )
+    circuit_id = subentry.data["id"]
+    route_ids = {route["zone_id"]: route["id"] for route in subentry.data["routes"]}
+    assert subentry.data[CONF_COOLING_ENABLED] is True
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Updated cooling loop",
+            CONF_ZONE_IDS: [OFFICE_ZONE_ID],
+            CONF_VALVE_IDS: [VALVE_ID],
+            CONF_PUMP_ID: PUMP_ID,
+            CONF_COOLING_ENABLED: True,
+            CONF_SUPPLY_TEMPERATURE_SENSOR: "sensor.synthetic_cooling_supply",
+        },
+    )
+    await hass.async_block_till_done()
+    result = await _confirm_warning_review(hass, result)
+
+    assert result["reason"] == "reconfigure_successful"
+    assert subentry.data["id"] == circuit_id
+    assert subentry.data[CONF_COOLING_ENABLED] is True
+    assert subentry.data["routes"] == [
+        {"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}
+    ]
+    assert entry.runtime_data.plant.circuits[circuit_id].cooling_enabled is True
+    assert [
+        route.id for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id
+    ] == [route_ids[OFFICE_ZONE_ID]]
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    assert entry.runtime_data.plant.circuits[circuit_id].cooling_enabled is True
+    assert [
+        route.id for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id
+    ] == [route_ids[OFFICE_ZONE_ID]]
 
 
 async def test_add_rejects_unknown_relationship_without_mutating_entry(hass) -> None:

@@ -13,6 +13,7 @@ from hydronicus_core.model import (
     Pump,
     PumpState,
     RuntimeState,
+    Source,
     TemperatureAggregation,
     TemperatureObservation,
     TemperatureSensorMetadata,
@@ -330,3 +331,82 @@ def test_blocked_required_sensor_never_produces_zone_demand(
 
     assert result.next_runtime.zone_demands["zone"] is False
     assert result.diagnostics.zone_decisions["zone"].status is ZoneDecisionStatus.SENSOR_BLOCKED
+
+
+@given(shared_equipment=st.sampled_from(("valve", "pump", "source")))
+def test_generated_shared_equipment_conflicts_never_share_mode_consumers(
+    shared_equipment: str,
+) -> None:
+    """Every generated shared-equipment conflict fails closed for cooling."""
+    shared_valve = shared_equipment == "valve"
+    shared_pump = shared_equipment == "pump"
+    valves = (
+        (Valve("shared-valve", "Shared valve", "switch.shared_valve"),)
+        if shared_valve
+        else (
+            Valve("heating-valve", "Heating valve", "switch.heating_valve"),
+            Valve("cooling-valve", "Cooling valve", "switch.cooling_valve"),
+        )
+    )
+    pumps = (
+        (Pump("shared-pump", "Shared pump", "switch.shared_pump"),)
+        if shared_pump
+        else (
+            Pump("heating-pump", "Heating pump", "switch.heating_pump"),
+            Pump("cooling-pump", "Cooling pump", "switch.cooling_pump"),
+        )
+    )
+    plant = compile_topology(
+        PlantConfiguration(
+            id="generated-mode-conflict",
+            zones=(
+                Zone("heating", "Heating", 21.0, ("sensor.heating",)),
+                Zone(
+                    "cooling",
+                    "Cooling",
+                    24.0,
+                    temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.cooling"),),
+                    humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+                ),
+            ),
+            valves=valves,
+            pumps=pumps,
+            circuits=(
+                Circuit(
+                    "heating-circuit",
+                    "Heating circuit",
+                    ("shared-valve" if shared_valve else "heating-valve",),
+                    "shared-pump" if shared_pump else "heating-pump",
+                ),
+                Circuit(
+                    "cooling-circuit",
+                    "Cooling circuit",
+                    ("shared-valve" if shared_valve else "cooling-valve",),
+                    "shared-pump" if shared_pump else "cooling-pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor="sensor.supply",
+                ),
+            ),
+            routes=(
+                DeliveryRoute("heating-route", "heating", "heating-circuit"),
+                DeliveryRoute("cooling-route", "cooling", "cooling-circuit"),
+            ),
+            sources=(Source("source", "Shared source"),) if shared_equipment == "source" else (),
+        )
+    )
+    snapshot = PlantSnapshot(
+        temperatures={
+            "sensor.heating": TemperatureObservation(19.0, NOW),
+            "sensor.cooling": TemperatureObservation(25.0, NOW),
+        },
+        humidities={"sensor.humidity": TemperatureObservation(50.0, NOW)},
+        supply_temperatures={"sensor.supply": TemperatureObservation(18.0, NOW)},
+    )
+
+    result = evaluate(plant, snapshot, RuntimeState(), NOW)
+
+    assert result.diagnostics.mode_conflicts
+    assert result.next_runtime.cooling_zone_demands["cooling"] is False
+    assert result.control_plan.cooling_valve_consumers == {}
+    assert result.control_plan.cooling_pump_consumers == {}
+    assert result.control_plan.cooling_actuator_ids == frozenset()

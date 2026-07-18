@@ -155,13 +155,16 @@ def _circuit_data(
 ) -> dict[str, Any]:
     """Normalize one circuit and preserve route UUIDs for retained zones."""
     zone_ids = list(user_input[CONF_ZONE_IDS])
+    cooling_enabled = user_input.get(CONF_COOLING_ENABLED, False)
+    if not isinstance(cooling_enabled, bool):
+        raise ValueError("Cooling enablement must be an explicit boolean.")
     return {
         "id": circuit_id,
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
         CONF_ZONE_IDS: zone_ids,
         CONF_VALVE_IDS: list(user_input[CONF_VALVE_IDS]),
         CONF_PUMP_ID: user_input[CONF_PUMP_ID],
-        CONF_COOLING_ENABLED: bool(user_input.get(CONF_COOLING_ENABLED, False)),
+        CONF_COOLING_ENABLED: cooling_enabled,
         CONF_SUPPLY_TEMPERATURE_SENSOR: user_input.get(CONF_SUPPLY_TEMPERATURE_SENSOR),
         CONF_SURFACE_TEMPERATURE_SENSOR: user_input.get(CONF_SURFACE_TEMPERATURE_SENSOR),
         CONF_CONDENSATION_MARGIN: user_input.get(

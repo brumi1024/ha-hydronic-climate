@@ -44,6 +44,7 @@ class ScenarioStep:
     source_explanation: str | None = None
     cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
     cooling_zone_statuses: Mapping[str, ZoneDecisionStatus] = field(default_factory=dict)
+    mode_conflict_codes: tuple[str, ...] = ()
 
 
 def run_scenario(
@@ -120,4 +121,8 @@ def run_scenario(
                 zone_id: result.diagnostics.cooling_zone_decisions[zone_id].status
                 for zone_id in step.cooling_zone_statuses
             } == step.cooling_zone_statuses
+        if step.mode_conflict_codes:
+            assert tuple(conflict.code for conflict in result.diagnostics.mode_conflicts) == (
+                step.mode_conflict_codes
+            )
         runtime = result.next_runtime

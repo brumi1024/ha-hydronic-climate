@@ -499,3 +499,75 @@ def test_cooling_stops_before_condensation_margin_is_crossed() -> None:
             ),
         ),
     )
+
+
+def test_shared_mode_conflict_keeps_cooling_out_of_heating_path() -> None:
+    """A fake-clock arbitration pass never shares a valve or pump across modes."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="shared-mode-scenario",
+            zones=(
+                Zone("heating", "Heating zone", 21.0, ("sensor.heating",)),
+                Zone(
+                    "cooling",
+                    "Cooling zone",
+                    24.0,
+                    temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.cooling"),),
+                    humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+                ),
+            ),
+            valves=(Valve("shared-valve", "Shared valve", "switch.shared_valve", 0),),
+            pumps=(Pump("shared-pump", "Shared pump", "switch.shared_pump", 0),),
+            circuits=(
+                Circuit("heating-circuit", "Heating circuit", ("shared-valve",), "shared-pump"),
+                Circuit(
+                    "cooling-circuit",
+                    "Cooling circuit",
+                    ("shared-valve",),
+                    "shared-pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor="sensor.supply",
+                ),
+            ),
+            routes=(
+                DeliveryRoute("heating-route", "heating", "heating-circuit"),
+                DeliveryRoute("cooling-route", "cooling", "cooling-circuit"),
+            ),
+        )
+    )
+
+    run_scenario(
+        plant,
+        started_at=NOW,
+        steps=(
+            ScenarioStep(
+                timedelta(),
+                {"sensor.heating": 19.0, "sensor.cooling": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 18.0},
+                valves={"shared-valve": ValveState.OPENING},
+                pumps={"shared-pump": PumpState.OFF},
+                commands=frozenset({("shared-valve", "open")}),
+                cooling_zone_demands={"cooling": False},
+                cooling_zone_statuses={"cooling": ZoneDecisionStatus.SENSOR_BLOCKED},
+                mode_conflict_codes=(
+                    "shared_valve_heating_cooling_conflict",
+                    "shared_pump_heating_cooling_conflict",
+                ),
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.heating": 19.0, "sensor.cooling": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 18.0},
+                valves={"shared-valve": ValveState.OPEN},
+                pumps={"shared-pump": PumpState.RUNNING},
+                commands=frozenset({("shared-pump", "turn_on")}),
+                cooling_zone_demands={"cooling": False},
+                mode_conflict_codes=(
+                    "shared_valve_heating_cooling_conflict",
+                    "shared_pump_heating_cooling_conflict",
+                ),
+            ),
+        ),
+    )

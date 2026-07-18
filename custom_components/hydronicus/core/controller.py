@@ -16,8 +16,10 @@ from .model import (
     ControllerDiagnostics,
     ControlPlan,
     DeliveryRoute,
+    EquipmentKind,
     Evaluation,
     InterlockStatus,
+    ModeConflict,
     PlantMode,
     PlantSnapshot,
     PumpRuntime,
@@ -386,9 +388,17 @@ def _cooling_zone_demand(
 
 
 def resolve_cooling_delivery_routes(
-    plant: CompiledPlant, cooling_zone_demands: Mapping[str, bool]
+    plant: CompiledPlant,
+    cooling_zone_demands: Mapping[str, bool],
+    *,
+    blocked_circuit_ids: frozenset[str] = frozenset(),
 ) -> tuple[DeliveryRoute, ...]:
-    """Return enabled routes whose circuits explicitly support cooling."""
+    """Return enabled routes whose circuits explicitly support cooling.
+
+    ``blocked_circuit_ids`` is populated only by deterministic shared-equipment
+    arbitration.  Keeping it at the route seam makes heating-only circuits
+    impossible to select even when a caller supplies malformed demand maps.
+    """
     return tuple(
         sorted(
             (
@@ -397,10 +407,125 @@ def resolve_cooling_delivery_routes(
                 if route.enabled
                 and cooling_zone_demands.get(route.zone_id, False)
                 and plant.circuits[route.circuit_id].cooling_enabled
+                and route.circuit_id not in blocked_circuit_ids
             ),
             key=lambda route: (route.zone_id, route.circuit_id, route.id),
         )
     )
+
+
+def resolve_mode_conflicts(
+    plant: CompiledPlant,
+    heating_routes: tuple[DeliveryRoute, ...],
+    cooling_routes: tuple[DeliveryRoute, ...],
+) -> tuple[ModeConflict, ...]:
+    """Find deterministic heating/cooling conflicts on shared equipment.
+
+    Heating wins a conflict because cooling is the safety-sensitive mode.  The
+    caller removes the conflicting cooling routes before compiling consumer
+    sets, so one physical actuator never receives both mode requests.
+    """
+    heating_circuit_ids = {route.circuit_id for route in heating_routes}
+    cooling_circuit_ids = {route.circuit_id for route in cooling_routes}
+    if not heating_circuit_ids or not cooling_circuit_ids:
+        return ()
+
+    def _zone_ids(routes: tuple[DeliveryRoute, ...], circuit_ids: set[str]) -> tuple[str, ...]:
+        return tuple(sorted({route.zone_id for route in routes if route.circuit_id in circuit_ids}))
+
+    conflicts: list[ModeConflict] = []
+    for valve_id in sorted(plant.valves):
+        heating = tuple(
+            sorted(
+                circuit.id
+                for circuit in plant.circuits.values()
+                if circuit.id in heating_circuit_ids and valve_id in circuit.valve_ids
+            )
+        )
+        cooling = tuple(
+            sorted(
+                circuit.id
+                for circuit in plant.circuits.values()
+                if circuit.id in cooling_circuit_ids and valve_id in circuit.valve_ids
+            )
+        )
+        if not heating or not cooling:
+            continue
+        valve = plant.valves[valve_id]
+        conflicts.append(
+            ModeConflict(
+                code="shared_valve_heating_cooling_conflict",
+                equipment_kind=EquipmentKind.VALVE,
+                equipment_id=valve_id,
+                heating_circuit_ids=heating,
+                cooling_circuit_ids=cooling,
+                heating_zone_ids=_zone_ids(heating_routes, set(heating)),
+                cooling_zone_ids=_zone_ids(cooling_routes, set(cooling)),
+                message=(
+                    f"Cooling blocked by shared valve {valve.name} ({valve_id}): "
+                    f"heating circuits {', '.join(heating)} and cooling circuits "
+                    f"{', '.join(cooling)} cannot be requested simultaneously."
+                ),
+            )
+        )
+
+    for pump_id in sorted(plant.pumps):
+        heating = tuple(
+            sorted(
+                circuit.id
+                for circuit in plant.circuits.values()
+                if circuit.id in heating_circuit_ids and circuit.pump_id == pump_id
+            )
+        )
+        cooling = tuple(
+            sorted(
+                circuit.id
+                for circuit in plant.circuits.values()
+                if circuit.id in cooling_circuit_ids and circuit.pump_id == pump_id
+            )
+        )
+        if not heating or not cooling:
+            continue
+        pump = plant.pumps[pump_id]
+        conflicts.append(
+            ModeConflict(
+                code="shared_pump_heating_cooling_conflict",
+                equipment_kind=EquipmentKind.PUMP,
+                equipment_id=pump_id,
+                heating_circuit_ids=heating,
+                cooling_circuit_ids=cooling,
+                heating_zone_ids=_zone_ids(heating_routes, set(heating)),
+                cooling_zone_ids=_zone_ids(cooling_routes, set(cooling)),
+                message=(
+                    f"Cooling blocked by shared pump {pump.name} ({pump_id}): "
+                    f"heating circuits {', '.join(heating)} and cooling circuits "
+                    f"{', '.join(cooling)} cannot be requested simultaneously."
+                ),
+            )
+        )
+
+    # Sources are currently plant-owned rather than circuit-owned.  Therefore
+    # every configured source is shared by all active hydraulic mode requests.
+    for source_id in sorted(plant.sources):
+        source = plant.sources[source_id]
+        heating = tuple(sorted(heating_circuit_ids))
+        cooling = tuple(sorted(cooling_circuit_ids))
+        conflicts.append(
+            ModeConflict(
+                code="shared_source_heating_cooling_conflict",
+                equipment_kind=EquipmentKind.SOURCE,
+                equipment_id=source_id,
+                heating_circuit_ids=heating,
+                cooling_circuit_ids=cooling,
+                heating_zone_ids=_zone_ids(heating_routes, heating_circuit_ids),
+                cooling_zone_ids=_zone_ids(cooling_routes, cooling_circuit_ids),
+                message=(
+                    f"Cooling blocked by shared source {source.name} ({source_id}): "
+                    "heating and cooling requests cannot be active simultaneously."
+                ),
+            )
+        )
+    return tuple(conflicts)
 
 
 def _cooling_interlocks(
@@ -814,34 +939,87 @@ def evaluate(
             interlocks=interlocks,
         )
 
-    # Shared plant equipment cannot receive simultaneous heating and cooling
-    # requests.  Cooling remains fail-closed while heating is active.
-    if any(zone_demands.values()) and any(cooling_zone_demands.values()):
-        conflict = SafetyInterlockResult(
-            "cooling:mode-conflict",
+    eligible_routes = resolve_delivery_routes(plant, zone_demands)
+    requested_cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+    mode_conflicts = resolve_mode_conflicts(plant, eligible_routes, requested_cooling_routes)
+    blocked_circuit_ids = frozenset(
+        circuit_id
+        for conflict in mode_conflicts
+        for circuit_id in conflict.cooling_circuit_ids
+    )
+    cooling_routes = resolve_cooling_delivery_routes(
+        plant,
+        cooling_zone_demands,
+        blocked_circuit_ids=blocked_circuit_ids,
+    )
+    cooling_routes_by_zone: dict[str, tuple[DeliveryRoute, ...]] = defaultdict(tuple)
+    for route in cooling_routes:
+        cooling_routes_by_zone[route.zone_id] = (*cooling_routes_by_zone[route.zone_id], route)
+
+    conflict_interlocks = {
+        conflict.interlock_id: SafetyInterlockResult(
+            conflict.interlock_id,
             InterlockStatus.BLOCKED,
-            "Cooling is blocked while heating demand is active on the shared plant.",
+            conflict.message,
         )
-        cooling_interlocks[conflict.interlock_id] = conflict
-        for zone_id, demand in list(cooling_zone_demands.items()):
-            if not demand:
-                continue
-            cooling_zone_demands[zone_id] = False
-            prior = cooling_zone_decisions[zone_id]
-            cooling_zone_reasons[zone_id] = conflict.reason
+        for conflict in mode_conflicts
+    }
+    cooling_interlocks.update(conflict_interlocks)
+    for conflict in mode_conflicts:
+        for circuit_id in conflict.cooling_circuit_ids:
+            prior_reason = cooling_circuit_reasons.get(circuit_id)
+            cooling_circuit_reasons[circuit_id] = (
+                f"{prior_reason} {conflict.message}" if prior_reason else conflict.message
+            )
+    for zone_id, prior in list(cooling_zone_decisions.items()):
+        if not prior.demand:
+            continue
+        affected = tuple(
+            conflict
+            for conflict in mode_conflicts
+            if zone_id in conflict.cooling_zone_ids
+        )
+        if not affected:
+            continue
+        conflict_reasons = " ".join(conflict.message for conflict in affected)
+        if cooling_routes_by_zone.get(zone_id):
+            cooling_zone_reasons[zone_id] = (
+                f"{prior.explanation} {conflict_reasons} "
+                "Cooling remains eligible through an independent delivery route."
+            )
             cooling_zone_decisions[zone_id] = ZoneDecision(
-                status=ZoneDecisionStatus.SENSOR_BLOCKED,
-                demand=False,
+                status=ZoneDecisionStatus.REQUESTED,
+                demand=True,
                 aggregation=prior.aggregation,
-                explanation=conflict.reason,
+                explanation=cooling_zone_reasons[zone_id],
                 humidity_aggregation=prior.humidity_aggregation,
                 dew_point=prior.dew_point,
                 condensation_margin=prior.condensation_margin,
-                interlocks=(*prior.interlocks, conflict),
+                interlocks=(
+                    *prior.interlocks,
+                    *(conflict_interlocks[item.interlock_id] for item in affected),
+                ),
             )
+            continue
+        cooling_zone_demands[zone_id] = False
+        cooling_zone_reasons[zone_id] = conflict_reasons
+        cooling_zone_decisions[zone_id] = ZoneDecision(
+            status=ZoneDecisionStatus.SENSOR_BLOCKED,
+            demand=False,
+            aggregation=prior.aggregation,
+            explanation=conflict_reasons,
+            humidity_aggregation=prior.humidity_aggregation,
+            dew_point=prior.dew_point,
+            condensation_margin=prior.condensation_margin,
+            interlocks=(
+                *prior.interlocks,
+                *(conflict_interlocks[item.interlock_id] for item in affected),
+            ),
+        )
 
-    eligible_routes = resolve_delivery_routes(plant, zone_demands)
-    cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+    # A conflict can remove the last cooling route for a zone.  The public
+    # zone demand map is updated above while the filtered route set remains the
+    # single source of truth for actuator consumers.
     requested_circuits = {route.circuit_id for route in (*eligible_routes, *cooling_routes)}
     route_ids_by_circuit: dict[str, list[str]] = defaultdict(list)
     for route in eligible_routes:
@@ -915,6 +1093,15 @@ def evaluate(
     }
     for circuit_id in sorted(ready_cooling_circuits):
         cooling_pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
+
+    cooling_actuator_ids = {
+        valve_id
+        for route in cooling_routes
+        for valve_id in plant.circuits[route.circuit_id].valve_ids
+    }
+    cooling_actuator_ids.update(
+        plant.circuits[circuit_id].pump_id for circuit_id in ready_cooling_circuits
+    )
 
     pumps: dict[str, PumpRuntime] = {}
     for pump_id in sorted(plant.pumps):
@@ -1040,6 +1227,8 @@ def evaluate(
                 key: frozenset(value)
                 for key, value in sorted(cooling_pump_consumers.items())
             },
+            cooling_actuator_ids=frozenset(sorted(cooling_actuator_ids)),
+            mode_conflicts=mode_conflicts,
             interlocks=cooling_interlocks,
         ),
         diagnostics=ControllerDiagnostics(
@@ -1052,5 +1241,6 @@ def evaluate(
             interlocks=cooling_interlocks,
             cooling_circuit_reasons=cooling_circuit_reasons,
             cooling_zone_reasons=cooling_zone_reasons,
+            mode_conflicts=mode_conflicts,
         ),
     )

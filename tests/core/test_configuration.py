@@ -10,6 +10,66 @@ from hydronicus_core.configuration import (
 from hydronicus_core.model import TemperatureAggregation
 
 
+def test_existing_circuits_default_to_heating_only() -> None:
+    """Omitted cooling compatibility remains disabled for legacy persisted circuits."""
+    plant = plant_configuration_from_entry_data(
+        {
+            "plant_id": "plant-1",
+            "topology": {
+                "zones": [
+                    {
+                        "id": "zone-1",
+                        "name": "Living room",
+                        "target_temperature": 21.5,
+                        "temperature_sensor": "sensor.living_temperature",
+                    }
+                ],
+                "circuits": [
+                    {
+                        "id": "circuit-1",
+                        "name": "Floor loop",
+                        "valve_id": "valve-1",
+                        "pump_id": "pump-1",
+                    }
+                ],
+                "routes": [{"id": "route-1", "zone_id": "zone-1", "circuit_id": "circuit-1"}],
+            },
+        }
+    )
+
+    assert plant.circuits[0].cooling_enabled is False
+
+
+def test_cooling_compatibility_requires_a_persisted_boolean() -> None:
+    """Malformed stored mode flags cannot silently enable cooling."""
+    with pytest.raises(StoredTopologyError, match="cooling_enabled.*boolean"):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "plant-1",
+                "topology": {
+                    "zones": [
+                        {
+                            "id": "zone-1",
+                            "name": "Living room",
+                            "target_temperature": 21.5,
+                            "temperature_sensor": "sensor.living_temperature",
+                        }
+                    ],
+                    "circuits": [
+                        {
+                            "id": "circuit-1",
+                            "name": "Floor loop",
+                            "valve_id": "valve-1",
+                            "pump_id": "pump-1",
+                            "cooling_enabled": "false",
+                        }
+                    ],
+                    "routes": [{"id": "route-1", "zone_id": "zone-1", "circuit_id": "circuit-1"}],
+                },
+            }
+        )
+
+
 def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
     plant = plant_configuration_from_entry_data(
         {
