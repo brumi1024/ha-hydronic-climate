@@ -208,9 +208,7 @@ async def test_per_source_shadow_preserves_guarded_demand_without_dispatch() -> 
     )
 
     assert dispatched == []
-    assert [operation.entity_id for operation in report.shadowed] == [
-        "switch.synthetic_heat_pump"
-    ]
+    assert [operation.entity_id for operation in report.shadowed] == ["switch.synthetic_heat_pump"]
 
 
 @pytest.mark.asyncio
