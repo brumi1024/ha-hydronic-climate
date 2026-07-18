@@ -326,5 +326,19 @@
         "invalid_source": "The source configuration is not valid."
       }
     }
+  },
+  "issues": {
+    "missing_sensor_binding": {
+      "title": "Resolve a missing or renamed sensor for {object_type} {object_name}",
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected topology path is blocked. Restore the entity or open Hydronicus configuration, select the current sensor, and save the configuration."
+    },
+    "missing_feedback_binding": {
+      "title": "Resolve missing or renamed feedback for {object_type} {object_name}",
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed. Restore the feedback entity or open Hydronicus configuration, select the current feedback entity, and save the configuration."
+    },
+    "missing_actuator_binding": {
+      "title": "Resolve a missing or renamed actuator for {object_type} {object_name}",
+      "description": "The configured {binding_label} for {object_type} {object_name} is missing or renamed, so the affected circuit is held fail-closed and no command is sent to that binding. Restore the actuator or open Hydronicus configuration, select the current actuator, and save the configuration."
+    }
   }
 }

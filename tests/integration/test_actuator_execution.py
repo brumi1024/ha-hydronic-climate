@@ -29,6 +29,12 @@ ROUTE_ID = "00000000-0000-4000-8000-000000000006"
 SOURCE_ID = "00000000-0000-4000-8000-000000000007"
 
 
+@pytest.fixture(autouse=True)
+def declare_synthetic_pump_state(hass) -> None:
+    """Declare the synthetic pump so tests exercise actuator execution, not repair mode."""
+    hass.states.async_set("switch.synthetic_pump", "off")
+
+
 def _entry(
     *,
     shadow_mode: bool,

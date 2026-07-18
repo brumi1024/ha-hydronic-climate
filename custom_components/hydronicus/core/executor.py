@@ -380,6 +380,7 @@ class ActuatorExecutor:
         force_shadow: bool = False,
         force_shadow_actuator_ids: frozenset[str] = frozenset(),
         force_dispatch: bool = False,
+        unavailable_actuator_ids: frozenset[str] = frozenset(),
     ) -> ExecutionReport:
         """Dispatch only unsatisfied, non-shadowed explicit operations."""
         executed: list[ActuatorOperation] = []
@@ -393,6 +394,8 @@ class ActuatorExecutor:
                 raise ValueError(
                     f"Control plan references unknown actuator {command.actuator_id!r}."
                 ) from error
+            if command.actuator_id in unavailable_actuator_ids:
+                continue
             operation = operation_for(command, binding)
             reconciliation = self.reconcile(operation)
             if not force_dispatch and reconciliation.status in {
@@ -452,6 +455,7 @@ class ActuatorExecutor:
         dispatch: DispatchOperation,
         *,
         force_shadow: bool = False,
+        unavailable_actuator_ids: frozenset[str] = frozenset(),
     ) -> SafeShutdownReport:
         """Execute one explicit source-release, overrun, pump, or valve phase."""
         plan, next_runtime = build_safe_shutdown(plant, runtime, now)
@@ -465,5 +469,6 @@ class ActuatorExecutor:
             dispatch,
             force_shadow=force_shadow,
             force_dispatch=True,
+            unavailable_actuator_ids=unavailable_actuator_ids,
         )
         return SafeShutdownReport(plan, next_runtime, execution)

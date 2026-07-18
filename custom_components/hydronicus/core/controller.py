@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from math import fsum, isfinite, log
 from statistics import median
 
+from .entity_bindings import degraded_circuit_ids
 from .model import (
     ActuatorAction,
     ActuatorCommand,
@@ -1297,8 +1298,69 @@ def evaluate(
             interlocks=interlocks,
         )
 
-    eligible_routes = resolve_delivery_routes(plant, zone_demands)
-    requested_cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+    degraded_circuits = degraded_circuit_ids(plant, snapshot.unavailable_entity_ids)
+    raw_eligible_routes = resolve_delivery_routes(plant, zone_demands)
+    eligible_routes = tuple(
+        route for route in raw_eligible_routes if route.circuit_id not in degraded_circuits
+    )
+    for zone_id, demand in list(zone_demands.items()):
+        if not demand:
+            continue
+        raw_zone_routes = tuple(route for route in raw_eligible_routes if route.zone_id == zone_id)
+        healthy_zone_routes = tuple(route for route in eligible_routes if route.zone_id == zone_id)
+        if raw_zone_routes and not healthy_zone_routes:
+            zone = plant.zones[zone_id]
+            reason = (
+                f"Blocked: every delivery route for zone {zone.name} uses an unresolved "
+                "actuator or feedback binding."
+            )
+            prior = zone_decisions[zone_id]
+            previous = zone_runtime[zone_id]
+            zone_demands[zone_id] = False
+            zone_runtime[zone_id] = ZoneRuntime(
+                False,
+                now
+                if previous.demand or previous.last_demand_transition_at is None
+                else previous.last_demand_transition_at,
+            )
+            zone_reasons[zone_id] = reason
+            zone_decisions[zone_id] = ZoneDecision(
+                status=ZoneDecisionStatus.SENSOR_BLOCKED,
+                demand=False,
+                aggregation=prior.aggregation,
+                explanation=reason,
+            )
+
+    raw_cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+    requested_cooling_routes = tuple(
+        route for route in raw_cooling_routes if route.circuit_id not in degraded_circuits
+    )
+    for zone_id, demand in list(cooling_zone_demands.items()):
+        if not demand:
+            continue
+        raw_zone_routes = tuple(route for route in raw_cooling_routes if route.zone_id == zone_id)
+        healthy_zone_routes = tuple(
+            route for route in requested_cooling_routes if route.zone_id == zone_id
+        )
+        if raw_zone_routes and not healthy_zone_routes:
+            zone = plant.zones[zone_id]
+            reason = (
+                f"Blocked: every cooling delivery route for zone {zone.name} uses an "
+                "unresolved actuator or feedback binding."
+            )
+            prior = cooling_zone_decisions[zone_id]
+            cooling_zone_demands[zone_id] = False
+            cooling_zone_reasons[zone_id] = reason
+            cooling_zone_decisions[zone_id] = ZoneDecision(
+                status=ZoneDecisionStatus.SENSOR_BLOCKED,
+                demand=False,
+                aggregation=prior.aggregation,
+                explanation=reason,
+                humidity_aggregation=prior.humidity_aggregation,
+                dew_point=prior.dew_point,
+                condensation_margin=prior.condensation_margin,
+                interlocks=prior.interlocks,
+            )
     mode_conflicts = resolve_mode_conflicts(plant, eligible_routes, requested_cooling_routes)
     blocked_circuit_ids = frozenset(
         circuit_id
@@ -1419,7 +1481,12 @@ def evaluate(
         valve = plant.valves[valve_id]
         consumers = valve_consumers.get(valve.id, set())
         previous = runtime.valves.get(valve.id, ValveRuntime())
-        if consumers:
+        if valve.entity_id in snapshot.unavailable_entity_ids:
+            current = ValveRuntime(ValveState.CLOSED, now, False)
+            actuator_reasons[valve.id] = (
+                "Blocked: the configured valve actuator binding is unresolved."
+            )
+        elif consumers:
             position_feedback = feedback_diagnostics[valve.id]
             observed_open = position_feedback.observed == "open"
             if valve.position_entity_id is not None and observed_open:
@@ -1528,7 +1595,12 @@ def evaluate(
         pump = plant.pumps[pump_id]
         consumers = pump_consumers.get(pump.id, set())
         previous = runtime.pumps.get(pump.id, PumpRuntime())
-        if consumers:
+        if pump.entity_id in snapshot.unavailable_entity_ids:
+            current = PumpRuntime(PumpState.OFF, now)
+            actuator_reasons[pump.id] = (
+                "Blocked: the configured pump actuator binding is unresolved."
+            )
+        elif consumers:
             if previous.state is PumpState.STARTING:
                 current = previous
                 actuator_reasons[pump.id] = (
@@ -1602,7 +1674,9 @@ def evaluate(
 
     circuit_reasons = {
         circuit_id: (
-            "Blocked: "
+            "Blocked: configured actuator or feedback binding is unresolved."
+            if circuit_id in degraded_circuits
+            else "Blocked: "
             + feedback_diagnostics[plant.circuits[circuit_id].pump_id].reason
             if circuit_id in blocked_pump_circuits
             else "Blocked: required valve feedback is unavailable or unsafe."
