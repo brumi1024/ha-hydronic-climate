@@ -566,6 +566,110 @@ def _zone_diagnostic_attributes(runtime: Any, zone_id: str) -> dict[str, object]
     return attributes
 
 
+class PlantModeSensor(SensorEntity):
+    """Expose the mode currently permitted to use shared equipment."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:state-machine"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        """Bind the active mode to the plant runtime."""
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_operating_mode"
+        self._attr_name = "Operating mode"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after a config-entry reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to atomic controller evaluations."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        """Return the active, safety-permitted operating mode."""
+        return self._runtime.active_mode().value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose requested mode and transition state without prose parsing."""
+        state = self._runtime.runtime_state
+        return {
+            "requested_mode": state.requested_mode.value,
+            "changeover_phase": state.changeover_phase.value,
+            "changeover_target_mode": (
+                state.changeover_target_mode.value
+                if state.changeover_target_mode is not None
+                else None
+            ),
+            "changeover_deadline": (
+                state.changeover_deadline.isoformat()
+                if state.changeover_deadline is not None
+                else None
+            ),
+            "explanation": self._runtime.mode_explanation(),
+        }
+
+
+class ModeChangeoverExplanationSensor(SensorEntity):
+    """Explain why a requested mode is active, idle, or locked."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:text-box-outline"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        """Bind the explanation to the plant runtime."""
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_mode_changeover_explanation"
+        self._attr_name = "Mode changeover explanation"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after a config-entry reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to atomic controller evaluations."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        """Return the bounded changeover explanation."""
+        return self._runtime.mode_explanation()[:_MAX_STATE_LENGTH]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the complete structured mode lockout."""
+        state = self._runtime.runtime_state
+        return {
+            "requested_mode": state.requested_mode.value,
+            "active_mode": state.plant_mode.value,
+            "changeover_phase": state.changeover_phase.value,
+            "changeover_target_mode": (
+                state.changeover_target_mode.value
+                if state.changeover_target_mode is not None
+                else None
+            ),
+            "deadline": (
+                state.changeover_deadline.isoformat()
+                if state.changeover_deadline is not None
+                else None
+            ),
+        }
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: HydronicConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -575,6 +679,8 @@ async def async_setup_entry(
         ControllerStatusSensor(entry),
         ReconciliationStatusSensor(entry),
         TopologyPreviewSensor(entry),
+        PlantModeSensor(entry),
+        ModeChangeoverExplanationSensor(entry),
     ]
     parent_entities.extend(
         [RecommendedSourceSensor(entry), SourceRecommendationExplanationSensor(entry)]

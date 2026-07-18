@@ -14,6 +14,7 @@ from hydronicus_core.model import (
     DeliveryRoute,
     FeedbackObservation,
     PlantConfiguration,
+    PlantMode,
     PlantSnapshot,
     Pump,
     PumpState,
@@ -706,6 +707,108 @@ def test_shared_mode_conflict_keeps_cooling_out_of_heating_path() -> None:
                     "shared_valve_heating_cooling_conflict",
                     "shared_pump_heating_cooling_conflict",
                 ),
+            ),
+        ),
+    )
+
+
+def test_heat_to_cool_changeover_waits_for_safe_idle() -> None:
+    """A requested cooling mode waits for source, pump, and valve release."""
+    plant = compile_topology(
+        PlantConfiguration(
+            id="changeover-scenario",
+            zones=(
+                Zone(
+                    "zone",
+                    "Changeover zone",
+                    21.0,
+                    temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+                    humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+                ),
+            ),
+            valves=(Valve("valve", "Shared valve", "switch.shared_valve", 0),),
+            pumps=(Pump("pump", "Shared pump", "switch.shared_pump", 10),),
+            circuits=(
+                Circuit(
+                    "circuit",
+                    "Shared circuit",
+                    ("valve",),
+                    "pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor="sensor.supply",
+                ),
+            ),
+            routes=(DeliveryRoute("route", "zone", "circuit"),),
+            sources=(Source("source", "Heat source", demand_entity_id="switch.source_demand"),),
+        )
+    )
+
+    run_scenario(
+        plant,
+        started_at=NOW,
+        steps=(
+            ScenarioStep(
+                timedelta(),
+                {"sensor.zone": 19.0},
+                requested_mode=PlantMode.HEATING,
+                valves={"valve": ValveState.OPENING},
+                pumps={"pump": PumpState.OFF},
+                commands=frozenset({("valve", "open")}),
+                zone_demands={"zone": True},
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.zone": 19.0},
+                requested_mode=PlantMode.HEATING,
+                valves={"valve": ValveState.OPEN},
+                pumps={"pump": PumpState.RUNNING},
+                commands=frozenset({("pump", "turn_on")}),
+                zone_demands={"zone": True},
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.zone": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 18.0},
+                requested_mode=PlantMode.COOLING,
+                valves={"valve": ValveState.OPEN},
+                pumps={"pump": PumpState.OVERRUN},
+                commands=frozenset({("source:source", "turn_off")}),
+                cooling_zone_demands={"zone": False},
+                cooling_zone_statuses={"zone": ZoneDecisionStatus.MODE_BLOCKED},
+            ),
+            ScenarioStep(
+                timedelta(seconds=10),
+                {"sensor.zone": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 18.0},
+                requested_mode=PlantMode.COOLING,
+                valves={"valve": ValveState.OPEN},
+                pumps={"pump": PumpState.OFF},
+                commands=frozenset({("pump", "turn_off")}),
+                cooling_zone_demands={"zone": False},
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.zone": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 18.0},
+                requested_mode=PlantMode.COOLING,
+                valves={"valve": ValveState.CLOSED},
+                pumps={"pump": PumpState.OFF},
+                commands=frozenset({("valve", "close")}),
+                cooling_zone_demands={"zone": False},
+            ),
+            ScenarioStep(
+                timedelta(seconds=1),
+                {"sensor.zone": 25.0},
+                humidities={"sensor.humidity": 50.0},
+                supply_temperatures={"sensor.supply": 18.0},
+                requested_mode=PlantMode.COOLING,
+                valves={"valve": ValveState.OPENING},
+                pumps={"pump": PumpState.OFF},
+                commands=frozenset({("valve", "open")}),
+                cooling_zone_demands={"zone": True},
             ),
         ),
     )

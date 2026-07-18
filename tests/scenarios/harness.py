@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from hydronicus_core.controller import evaluate
 from hydronicus_core.model import (
     ActuatorFeedback,
+    PlantMode,
     PlantSnapshot,
     PumpState,
     RuntimeState,
@@ -47,6 +48,7 @@ class ScenarioStep:
     cooling_zone_demands: Mapping[str, bool] = field(default_factory=dict)
     cooling_zone_statuses: Mapping[str, ZoneDecisionStatus] = field(default_factory=dict)
     mode_conflict_codes: tuple[str, ...] = ()
+    requested_mode: PlantMode | None = None
 
 
 def run_scenario(
@@ -85,6 +87,8 @@ def run_scenario(
             source_availability=step.source_availability,
             actuator_feedback=step.actuator_feedback,
         )
+        if step.requested_mode is not None:
+            runtime = replace(runtime, requested_mode=step.requested_mode)
         result = evaluate(plant, snapshot, runtime, now)
         assert {
             actuator_id: result.next_runtime.valves[actuator_id].state

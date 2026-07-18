@@ -22,7 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import HydronicConfigEntry
 from .const import DOMAIN
-from .core.model import MAX_ZONE_TARGET_TEMPERATURE, MIN_ZONE_TARGET_TEMPERATURE
+from .core.model import MAX_ZONE_TARGET_TEMPERATURE, MIN_ZONE_TARGET_TEMPERATURE, PlantMode
 from .runtime import HydronicRuntime
 
 
@@ -127,6 +127,17 @@ class ZoneClimate(ClimateEntity):
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Persist the selected preset and recalculate shadow demand immediately."""
         await self._runtime.async_set_zone_preset_mode(self._zone_id, preset_mode, hass=self.hass)
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        """Request a plant mode change through the shared safe-idle controller."""
+        requested_mode = {
+            HVACMode.HEAT: PlantMode.HEATING,
+            HVACMode.COOL: PlantMode.COOLING,
+            HVACMode.OFF: PlantMode.IDLE,
+        }.get(hvac_mode)
+        if requested_mode is None:
+            raise ValueError(f"Unsupported HVAC mode {hvac_mode!r}.")
+        await self._runtime.async_set_requested_mode(requested_mode, hass=self.hass)
 
 
 async def async_setup_entry(

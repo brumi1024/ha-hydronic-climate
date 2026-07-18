@@ -267,6 +267,62 @@ async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
     } <= warning_codes
 
 
+async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> None:
+    """The HA mode request exposes the lockout while keeping cooling shadow-only."""
+    calls: list[tuple[str, str, str]] = []
+
+    async def record(call) -> None:
+        calls.append((call.domain, call.service, call.data["entity_id"]))
+
+    hass.services.async_register("switch", "turn_on", record)
+    hass.services.async_register("switch", "turn_off", record)
+    for entity_id, state in (
+        ("sensor.heating_temperature", "19.0"),
+        ("sensor.cooling_temperature", "23.0"),
+        ("sensor.cooling_humidity", "50.0"),
+        ("sensor.shared_mode_supply", "18.0"),
+        ("switch.shared_mode_valve", "off"),
+        ("switch.shared_mode_pump", "off"),
+    ):
+        hass.states.async_set(entity_id, state)
+    entry = _shared_mode_entry()
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.states.async_set("switch.shared_mode_valve", "on")
+    await hass.async_block_till_done()
+    hass.states.async_set("switch.shared_mode_pump", "on")
+    await hass.async_block_till_done()
+
+    assert hass.states.get("select.shared_mode_plant_requested_mode").state == "auto"
+    assert hass.states.get("sensor.shared_mode_plant_operating_mode").state == "heating"
+
+    hass.states.async_set("sensor.cooling_temperature", "25.0")
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {
+            "entity_id": "select.shared_mode_plant_requested_mode",
+            "option": "cooling",
+        },
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.shared_mode_plant_mode_changeover_lockout").state == "on"
+    assert hass.states.get("sensor.shared_mode_plant_operating_mode").state == "idle"
+    assert (
+        "safely idle"
+        in hass.states.get("sensor.shared_mode_plant_mode_changeover_explanation").state
+    )
+    assert (
+        hass.states.get("binary_sensor.shared_mode_plant_cooling_zone_cooling_demand").state
+        == "off"
+    )
+    assert calls == []
+
+
 async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
     """The public setup flow persists cooling topology and sensor relationships."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})

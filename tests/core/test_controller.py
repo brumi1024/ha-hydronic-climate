@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -21,8 +22,10 @@ from hydronicus_core.model import (
     Circuit,
     DeliveryRoute,
     InterlockStatus,
+    ModeChangeoverPhase,
     ModeConflict,
     PlantConfiguration,
+    PlantMode,
     PlantSnapshot,
     Pump,
     PumpRuntime,
@@ -1196,3 +1199,161 @@ def test_circuit_waits_for_every_series_valve_before_pump_request() -> None:
         (command.actuator_id, command.action) for command in all_ready.control_plan.commands
     ]
     assert commands == [("pump", "turn_on")]
+
+
+def _changeover_plant():
+    return compile_topology(
+        PlantConfiguration(
+            id="changeover",
+            zones=(
+                Zone(
+                    "zone",
+                    "Changeover",
+                    21.0,
+                    temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+                    humidity_sensor_metadata=(TemperatureSensorMetadata("sensor.humidity"),),
+                ),
+            ),
+            valves=(Valve("valve", "Shared valve", "switch.valve", 0),),
+            pumps=(Pump("pump", "Shared pump", "switch.pump", 10),),
+            circuits=(
+                Circuit(
+                    "circuit",
+                    "Shared circuit",
+                    ("valve",),
+                    "pump",
+                    cooling_enabled=True,
+                    supply_temperature_sensor="sensor.supply",
+                ),
+            ),
+            routes=(DeliveryRoute("route", "zone", "circuit"),),
+            sources=(Source("source", "Heat source", demand_entity_id="switch.source"),),
+        )
+    )
+
+
+def _changeover_snapshot(now: datetime, temperature: float) -> PlantSnapshot:
+    return PlantSnapshot(
+        temperatures={"sensor.zone": TemperatureObservation(temperature, now)},
+        humidities={"sensor.humidity": TemperatureObservation(50.0, now)},
+        supply_temperatures={"sensor.supply": TemperatureObservation(18.0, now)},
+    )
+
+
+def test_heat_to_cool_changeover_releases_source_and_waits_for_safe_idle() -> None:
+    """Cooling remains blocked until source, pump overrun, and valve closure finish."""
+    plant = _changeover_plant()
+    heating = RuntimeState(requested_mode=PlantMode.HEATING)
+    opening = evaluate(plant, _changeover_snapshot(NOW, 19.0), heating, NOW)
+    running = evaluate(
+        plant,
+        _changeover_snapshot(NOW + timedelta(seconds=1), 19.0),
+        opening.next_runtime,
+        NOW + timedelta(seconds=1),
+    )
+    cooling_request = replace(running.next_runtime, requested_mode=PlantMode.COOLING)
+
+    releasing = evaluate(
+        plant,
+        _changeover_snapshot(NOW + timedelta(seconds=2), 25.0),
+        cooling_request,
+        NOW + timedelta(seconds=2),
+    )
+    assert releasing.next_runtime.changeover_phase is ModeChangeoverPhase.PUMP_OVERRUN
+    assert releasing.next_runtime.pumps["pump"].state is PumpState.OVERRUN
+    assert releasing.next_runtime.cooling_zone_demands["zone"] is False
+    assert [
+        (command.actuator_id, command.action) for command in releasing.control_plan.commands
+    ] == [("source:source", "turn_off")]
+    assert "safely idle" in releasing.diagnostics.mode_explanation
+
+    pumps_stopped = evaluate(
+        plant,
+        _changeover_snapshot(NOW + timedelta(seconds=12), 25.0),
+        releasing.next_runtime,
+        NOW + timedelta(seconds=12),
+    )
+    assert pumps_stopped.next_runtime.changeover_phase is ModeChangeoverPhase.VALVES_CLOSING
+    assert pumps_stopped.next_runtime.cooling_zone_demands["zone"] is False
+    assert [
+        (command.actuator_id, command.action) for command in pumps_stopped.control_plan.commands
+    ] == [("pump", "turn_off")]
+
+    valves_closed = evaluate(
+        plant,
+        _changeover_snapshot(NOW + timedelta(seconds=13), 25.0),
+        pumps_stopped.next_runtime,
+        NOW + timedelta(seconds=13),
+    )
+    assert valves_closed.next_runtime.changeover_phase is ModeChangeoverPhase.IDLE
+    assert valves_closed.next_runtime.cooling_zone_demands["zone"] is False
+    assert [
+        (command.actuator_id, command.action) for command in valves_closed.control_plan.commands
+    ] == [("valve", "close")]
+
+    cooling = evaluate(
+        plant,
+        _changeover_snapshot(NOW + timedelta(seconds=14), 25.0),
+        valves_closed.next_runtime,
+        NOW + timedelta(seconds=14),
+    )
+    assert cooling.next_runtime.plant_mode is PlantMode.COOLING
+    assert cooling.next_runtime.cooling_zone_demands["zone"] is True
+    assert [
+        (command.actuator_id, command.action) for command in cooling.control_plan.commands
+    ] == [("valve", "open")]
+    assert cooling.control_plan.cooling_actuator_ids == frozenset({"valve", "pump"})
+
+
+@pytest.mark.parametrize(
+    ("phase", "pump_state", "valve_state"),
+    [
+        (ModeChangeoverPhase.SOURCE_RELEASE, PumpState.RUNNING, ValveState.OPEN),
+        (ModeChangeoverPhase.PUMP_OVERRUN, PumpState.OVERRUN, ValveState.OPEN),
+        (ModeChangeoverPhase.PUMPS_STOPPING, PumpState.STARTING, ValveState.OPEN),
+        (ModeChangeoverPhase.VALVES_CLOSING, PumpState.OFF, ValveState.OPEN),
+    ],
+)
+def test_restart_during_changeover_reconstructs_conservative_lockout(
+    phase: ModeChangeoverPhase,
+    pump_state: PumpState,
+    valve_state: ValveState,
+) -> None:
+    """Restored transition phases never start cooling before the safe-idle boundary."""
+    plant = _changeover_plant()
+    restored = RuntimeState(
+        requested_mode=PlantMode.COOLING,
+        plant_mode=PlantMode.HEATING,
+        changeover_phase=phase,
+        changeover_target_mode=PlantMode.COOLING,
+        changeover_started_at=NOW - timedelta(seconds=5),
+        valves={"valve": ValveRuntime(valve_state, NOW - timedelta(seconds=5))},
+        pumps={"pump": PumpRuntime(pump_state, NOW - timedelta(seconds=5))},
+    )
+
+    result = evaluate(plant, _changeover_snapshot(NOW, 25.0), restored, NOW)
+
+    assert result.next_runtime.cooling_zone_demands["zone"] is False
+    assert result.next_runtime.plant_mode is PlantMode.IDLE
+    assert all(
+        command.action not in {"open", "turn_on"} for command in result.control_plan.commands
+    )
+
+
+def test_explicit_cooling_request_blocks_heat_while_cooling_is_interlocked() -> None:
+    """A cooling request cannot fall back to heating when cooling safety is blocked."""
+    plant = _changeover_plant()
+    restored = RuntimeState(
+        requested_mode=PlantMode.COOLING,
+        plant_mode=PlantMode.HEATING,
+        valves={"valve": ValveRuntime(ValveState.OPEN, NOW - timedelta(seconds=5))},
+        pumps={"pump": PumpRuntime(PumpState.RUNNING, NOW - timedelta(seconds=5))},
+    )
+    snapshot = replace(_changeover_snapshot(NOW, 19.0), humidities={})
+
+    result = evaluate(plant, snapshot, restored, NOW)
+
+    assert result.next_runtime.changeover_phase is ModeChangeoverPhase.PUMP_OVERRUN
+    assert result.next_runtime.zone_demands["zone"] is False
+    assert result.diagnostics.zone_decisions["zone"].status is ZoneDecisionStatus.MODE_BLOCKED
+    assert result.next_runtime.cooling_zone_demands["zone"] is False

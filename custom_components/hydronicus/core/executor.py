@@ -379,6 +379,7 @@ class ActuatorExecutor:
         *,
         force_shadow: bool = False,
         force_shadow_actuator_ids: frozenset[str] = frozenset(),
+        force_shadow_start_actuator_ids: frozenset[str] = frozenset(),
         force_dispatch: bool = False,
         unavailable_actuator_ids: frozenset[str] = frozenset(),
     ) -> ExecutionReport:
@@ -408,6 +409,10 @@ class ActuatorExecutor:
             if (
                 force_shadow
                 or command.actuator_id in force_shadow_actuator_ids
+                or (
+                    command.actuator_id in force_shadow_start_actuator_ids
+                    and command.action in {ActuatorAction.OPEN, ActuatorAction.TURN_ON}
+                )
                 or self.shadow_mode
                 or self.actuator_shadow_modes.get(command.actuator_id, False)
             ):
