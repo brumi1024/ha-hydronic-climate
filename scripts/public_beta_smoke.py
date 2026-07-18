@@ -65,10 +65,13 @@ def _validate_upgrade_matrix(root: Path) -> None:
         if not isinstance(predecessor, dict):
             raise ReleaseValidationError("Upgrade matrix predecessor must be an object")
         release = predecessor.get("release")
+        schema = predecessor.get("schema")
         fixture_name = predecessor.get("fixture")
         raw_versions = predecessor.get("config_entry_versions")
         if not isinstance(release, str) or not release:
             raise ReleaseValidationError("Upgrade matrix predecessor has no release")
+        if not isinstance(schema, str) or not schema:
+            raise ReleaseValidationError(f"Upgrade matrix entry for {release} has no schema")
         if not isinstance(fixture_name, str) or not fixture_name:
             raise ReleaseValidationError(f"Upgrade matrix entry for {release} has no fixture")
         if not isinstance(raw_versions, list):
@@ -79,12 +82,25 @@ def _validate_upgrade_matrix(root: Path) -> None:
             raise ReleaseValidationError(f"Migration fixture {fixture_name} has invalid format")
         if fixture.get("release") != release:
             raise ReleaseValidationError(f"Migration fixture {fixture_name} has the wrong release")
+        if fixture.get("schema") != schema:
+            raise ReleaseValidationError(f"Migration fixture {fixture_name} has the wrong schema")
+        if fixture.get("format_version") != 1:
+            raise ReleaseValidationError(f"Migration fixture {fixture_name} has the wrong format")
         entry = fixture.get("entry")
         if not isinstance(entry, dict):
             raise ReleaseValidationError(f"Migration fixture {fixture_name} has no entry")
         data = entry.get("data")
         if not isinstance(data, dict):
             raise ReleaseValidationError(f"Migration fixture {fixture_name} has no data")
+        entry_version = entry.get("version"), entry.get("minor_version")
+        if entry_version not in {
+            (raw_version[0], raw_version[1])
+            for raw_version in raw_versions
+            if isinstance(raw_version, list) and len(raw_version) == 2
+        }:
+            raise ReleaseValidationError(
+                f"Migration fixture {fixture_name} declares an uncovered entry version"
+            )
         topology = data.get("topology")
         if not isinstance(topology, dict):
             raise ReleaseValidationError(f"Migration fixture {fixture_name} has no topology")
@@ -109,11 +125,39 @@ def _validate_upgrade_matrix(root: Path) -> None:
                 raise ReleaseValidationError(f"Invalid config-entry version in {fixture_name}")
             seen_versions.add((raw_version[0], raw_version[1]))
 
+        entity_ids = {
+            value for value in _walk_values(data) if isinstance(value, str) and "." in value
+        }
+        if not entity_ids or not all(
+            value.startswith(
+                (
+                    "binary_sensor.synthetic_",
+                    "select.synthetic_",
+                    "sensor.synthetic_",
+                    "switch.synthetic_",
+                    "valve.synthetic_",
+                )
+            )
+            for value in entity_ids
+        ):
+            raise ReleaseValidationError(
+                f"Migration fixture {fixture_name} contains a non-synthetic entity id"
+            )
+
     if seen_versions != EXPECTED_ENTRY_VERSIONS:
         raise ReleaseValidationError(
             f"Upgrade matrix versions {sorted(seen_versions)} do not cover "
             f"{sorted(EXPECTED_ENTRY_VERSIONS)}"
         )
+
+
+def _walk_values(value: object) -> list[object]:
+    """Return all nested fixture values for household-binding checks."""
+    if isinstance(value, dict):
+        return [item for child in value.values() for item in _walk_values(child)]
+    if isinstance(value, list):
+        return [item for child in value for item in _walk_values(child)]
+    return [value]
 
 
 def _validate_documentation(root: Path) -> None:

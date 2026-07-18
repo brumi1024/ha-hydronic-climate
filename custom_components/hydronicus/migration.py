@@ -100,8 +100,9 @@ def migrate_entry_data(
         try:
             candidate = step.migrate(deepcopy(migrated))
         except Exception as error:
+            detail = str(error).strip() or error.__class__.__name__
             raise ConfigEntryMigrationError(
-                f"Migration from config-entry version {source_version} failed."
+                f"Migration from config-entry version {source_version} failed: {detail}"
             ) from error
         if not isinstance(candidate, dict):
             raise ConfigEntryMigrationError(
