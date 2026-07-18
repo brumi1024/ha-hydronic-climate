@@ -191,6 +191,98 @@ class ZoneBlockedReasonSensor(SensorEntity):
         return _zone_diagnostic_attributes(self._runtime, self._zone_id)
 
 
+class RecommendedSourceSensor(SensorEntity):
+    """Expose the current deterministic shadow source recommendation."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:fire-circle"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        """Bind the plant-level recommendation to the current runtime."""
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_recommended_source"
+        self._attr_name = "Recommended source"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to atomic runtime evaluations."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        """Return the stable source ID or an explicit no-source sentinel."""
+        recommendation = self._runtime.source_recommendation()
+        return recommendation.source_id if recommendation and recommendation.source_id else "none"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose source names, eligibility, and the human-readable explanation."""
+        recommendation = self._runtime.source_recommendation()
+        if recommendation is None:
+            return {"eligible_source_ids": [], "explanation": "No source configured."}
+        source = self._runtime.plant.sources.get(recommendation.source_id or "")
+        return {
+            "source_name": source.name if source is not None else None,
+            "eligible_source_ids": list(recommendation.eligible_source_ids),
+            "explanation": recommendation.explanation,
+        }
+
+
+class SourceRecommendationExplanationSensor(SensorEntity):
+    """Expose the explanation for the source recommendation."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_icon = "mdi:text-box-check-outline"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        """Bind the explanation to the current runtime."""
+        self._entry = entry
+        runtime = entry.runtime_data
+        self._attr_unique_id = f"{runtime.plant_id}_source_recommendation"
+        self._attr_name = "Source recommendation"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, runtime.plant_id)}, name=runtime.name
+        )
+
+    @property
+    def _runtime(self) -> HydronicRuntime:
+        """Resolve the current runtime after reload."""
+        return cast(HydronicRuntime, self._entry.runtime_data)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to atomic runtime evaluations."""
+        self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> str:
+        """Return the current explanation, bounded for Home Assistant state storage."""
+        recommendation = self._runtime.source_recommendation()
+        if recommendation is None:
+            return "No source configured."
+        return recommendation.explanation[:_MAX_STATE_LENGTH]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the stable recommendation ID and eligible IDs."""
+        recommendation = self._runtime.source_recommendation()
+        if recommendation is None:
+            return {"source_id": None, "eligible_source_ids": []}
+        return {
+            "source_id": recommendation.source_id,
+            "eligible_source_ids": list(recommendation.eligible_source_ids),
+        }
+
+
 def _zone_diagnostic_attributes(runtime: Any, zone_id: str) -> dict[str, object]:
     """Build common structured attributes for all zone explanation entities."""
     aggregation = runtime.zone_aggregation(zone_id)
@@ -227,6 +319,9 @@ async def async_setup_entry(
     """Add read-only explanations for all configured zones."""
     runtime = entry.runtime_data
     parent_entities: list[SensorEntity] = [TopologyPreviewSensor(entry)]
+    parent_entities.extend(
+        [RecommendedSourceSensor(entry), SourceRecommendationExplanationSensor(entry)]
+    )
     subentry_entities: dict[str, list[SensorEntity]] = {}
     for zone in runtime.plant.zones.values():
         entities = [

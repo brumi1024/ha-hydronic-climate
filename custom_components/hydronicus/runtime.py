@@ -28,6 +28,7 @@ from .core.model import (
     PlantSnapshot,
     PumpState,
     RuntimeState,
+    SourceRecommendation,
     TemperatureObservation,
     ValveState,
     ZoneDecision,
@@ -51,6 +52,7 @@ class HydronicRuntime:
     actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     actuator_shadow_modes: Mapping[str, bool] = field(default_factory=dict)
+    source_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
     zone_target_temperatures: dict[str, float] = field(default_factory=dict)
     zone_preset_modes: dict[str, str] = field(default_factory=dict)
@@ -85,6 +87,7 @@ class HydronicRuntime:
             actuator_subentry_ids=effective.actuator_subentry_ids,
             zone_subentry_ids=effective.zone_subentry_ids,
             actuator_shadow_modes=_stored_actuator_shadow_modes(entry),
+            source_subentry_ids=effective.source_subentry_ids,
             zone_target_temperatures={
                 zone.id: zone.target_temperature for zone in plant.zones.values()
             },
@@ -217,6 +220,12 @@ class HydronicRuntime:
             return cast(str, aggregation.explanation)
         return None
 
+    def source_recommendation(self) -> SourceRecommendation | None:
+        """Return the structured shadow source recommendation, when configured."""
+        if self.evaluation is None:
+            return None
+        return self.evaluation.diagnostics.source_recommendation
+
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register an entity update callback."""
         self._listeners.add(listener)
@@ -270,11 +279,22 @@ class HydronicRuntime:
         }
 
     def _observed_entity_ids(self) -> tuple[str, ...]:
-        """Return sensor and actuator entities for one shared state listener."""
+        """Return sensor, source, and actuator entities for one shared listener."""
         return tuple(
             dict.fromkeys(
-                self._temperature_sensor_ids()
-                + tuple(binding.entity_id for binding in self.executor.bindings.values())
+                (
+                    *self._temperature_sensor_ids(),
+                    *(
+                        entity_id
+                        for source in self.plant.sources.values()
+                        for entity_id in (
+                            source.availability_entity_id,
+                            source.temperature_entity_id,
+                        )
+                        if entity_id is not None
+                    ),
+                    *(binding.entity_id for binding in self.executor.bindings.values()),
+                )
             )
         )
 
@@ -336,6 +356,15 @@ class HydronicRuntime:
                     deadline = observation.observed_at + timedelta(seconds=sensor.max_age_seconds)
                     if deadline > now:
                         delays.append((deadline - now).total_seconds())
+            for source in self.plant.sources.values():
+                if source.temperature_entity_id is None:
+                    continue
+                observation = self.snapshot.source_temperatures.get(source.id)
+                if observation is None or observation.observed_at is None:
+                    continue
+                deadline = observation.observed_at + timedelta(seconds=source.maximum_age_seconds)
+                if deadline > now:
+                    delays.append((deadline - now).total_seconds())
 
         return min(delays) if delays else None
 
@@ -368,7 +397,29 @@ class HydronicRuntime:
                 value=value,
                 observed_at=observed_at,
             )
-        self.snapshot = PlantSnapshot(observations)
+        source_temperatures: dict[str, TemperatureObservation] = {}
+        source_availability: dict[str, bool] = {}
+        for source in self.plant.sources.values():
+            if source.temperature_entity_id is not None:
+                state = hass.states.get(source.temperature_entity_id)
+                try:
+                    value = float(state.state) if state is not None else None
+                except (TypeError, ValueError):
+                    value = None
+                observed_at = None
+                if state is not None:
+                    observed_at = getattr(state, "last_reported", None)
+                    if observed_at is None:
+                        observed_at = getattr(state, "last_updated", None)
+                source_temperatures[source.id] = TemperatureObservation(value, observed_at)
+            if source.availability_entity_id is not None:
+                state = hass.states.get(source.availability_entity_id)
+                source_availability[source.id] = _state_is_available(state)
+        self.snapshot = PlantSnapshot(
+            temperatures=observations,
+            source_temperatures=source_temperatures,
+            source_availability=source_availability,
+        )
         now = self._now()
         evaluation_plant = replace(
             self.plant,
@@ -400,6 +451,18 @@ class HydronicRuntime:
 
 
 _PRESET_MODES = {"comfort", "eco", "away"}
+
+
+def _state_is_available(state: Any) -> bool:
+    """Interpret common Home Assistant availability helper states."""
+    if state is None:
+        return False
+    normalized = str(state.state).strip().lower()
+    if normalized in {"on", "true", "1", "yes", "available", "ready", "home"}:
+        return True
+    if normalized in {"off", "false", "0", "no", "unavailable", "unknown", "away"}:
+        return False
+    return False
 
 
 def _validate_target_temperature(temperature: float) -> float:

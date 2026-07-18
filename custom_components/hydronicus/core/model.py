@@ -84,6 +84,14 @@ class PresetMode(StrEnum):
     AWAY = "away"
 
 
+class SourceKind(StrEnum):
+    """Supported source qualification strategies."""
+
+    EXTERNAL = "external"
+    TEMPERATURE_QUALIFIED_BUFFER = "temperature_qualified_buffer"
+    BUFFER = "temperature_qualified_buffer"
+
+
 @dataclass(frozen=True, slots=True)
 class TemperatureSensorMetadata:
     """Immutable configuration for one temperature observation."""
@@ -301,6 +309,82 @@ class SourceRecommendation:
     eligible_source_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class Source:
+    """A configured heat source used only by the shadow recommender."""
+
+    id: str
+    name: str
+    priority: int
+    kind: SourceKind
+    availability_entity_id: str | None
+    temperature_entity_id: str | None
+    minimum_temperature: float | None
+    maximum_age_seconds: float
+    hysteresis: float
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        priority: int = 0,
+        kind: SourceKind | str = SourceKind.EXTERNAL,
+        availability_entity_id: str | None = None,
+        temperature_entity_id: str | None = None,
+        minimum_temperature: float | None = None,
+        maximum_age_seconds: float = 1800.0,
+        hysteresis: float = 0.5,
+        *,
+        source_type: SourceKind | str | None = None,
+        availability_entity: str | None = None,
+        temperature_entity: str | None = None,
+        buffer_minimum_temperature: float | None = None,
+        buffer_maximum_age_seconds: float | None = None,
+        buffer_hysteresis: float | None = None,
+    ) -> None:
+        """Accept descriptive aliases while storing one stable source contract."""
+        if source_type is not None:
+            kind = source_type
+        if availability_entity is not None:
+            availability_entity_id = availability_entity
+        if temperature_entity is not None:
+            temperature_entity_id = temperature_entity
+        if buffer_minimum_temperature is not None:
+            minimum_temperature = buffer_minimum_temperature
+        if buffer_maximum_age_seconds is not None:
+            maximum_age_seconds = buffer_maximum_age_seconds
+        if buffer_hysteresis is not None:
+            hysteresis = buffer_hysteresis
+        normalized_kind_value = str(kind)
+        if normalized_kind_value in {"buffer", "temperature_buffer"}:
+            normalized_kind_value = SourceKind.TEMPERATURE_QUALIFIED_BUFFER.value
+        normalized_kind = SourceKind(normalized_kind_value)
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "priority", priority)
+        object.__setattr__(self, "kind", normalized_kind)
+        object.__setattr__(self, "availability_entity_id", availability_entity_id)
+        object.__setattr__(self, "temperature_entity_id", temperature_entity_id)
+        object.__setattr__(self, "minimum_temperature", minimum_temperature)
+        object.__setattr__(self, "maximum_age_seconds", float(maximum_age_seconds))
+        object.__setattr__(self, "hysteresis", float(hysteresis))
+
+    @property
+    def source_type(self) -> SourceKind:
+        """Return the qualification kind using its configuration-facing name."""
+        return self.kind
+
+    @property
+    def temperature_threshold(self) -> float | None:
+        """Return the buffer qualification threshold."""
+        return self.minimum_temperature
+
+
+HeatSource = Source
+SourceConfig = Source
+HeatSourceKind = SourceKind
+
+
 @dataclass(frozen=True, slots=True)
 class Valve:
     """A topology-owned valve with one Home Assistant entity binding."""
@@ -351,6 +435,7 @@ class PlantConfiguration:
     pumps: tuple[Pump, ...]
     circuits: tuple[Circuit, ...]
     routes: tuple[DeliveryRoute, ...]
+    sources: tuple[Source, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +450,7 @@ class CompiledPlant:
     routes: tuple[DeliveryRoute, ...]
     logic_summary: tuple[str, ...]
     warnings: tuple[TopologyWarning, ...] = ()
+    sources: Mapping[str, Source] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

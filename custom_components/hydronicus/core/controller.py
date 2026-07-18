@@ -22,6 +22,9 @@ from .model import (
     PumpRuntime,
     PumpState,
     RuntimeState,
+    Source,
+    SourceKind,
+    SourceRecommendation,
     TemperatureAggregation,
     TemperatureObservation,
     ValveRuntime,
@@ -300,6 +303,86 @@ def resolve_delivery_routes(
     )
 
 
+def _source_eligibility(
+    source: Source,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+) -> tuple[bool, str]:
+    """Return deterministic eligibility and a diagnostic reason for one source."""
+    availability = snapshot.source_availability.get(source.id)
+    if availability is None and source.availability_entity_id is not None:
+        availability = snapshot.source_availability.get(source.availability_entity_id)
+    if source.availability_entity_id is not None and availability is not True:
+        return False, "availability is false or unavailable"
+    if availability is False:
+        return False, "availability is false"
+    if source.kind is not SourceKind.TEMPERATURE_QUALIFIED_BUFFER:
+        return True, "available"
+
+    observation = snapshot.source_temperatures.get(source.id)
+    if observation is None and source.temperature_entity_id is not None:
+        observation = snapshot.source_temperatures.get(source.temperature_entity_id)
+    usable, reason = _observation_is_usable(
+        observation,
+        max_age_seconds=source.maximum_age_seconds,
+        now=now,
+    )
+    if not usable:
+        return False, f"buffer temperature is {reason}"
+    assert observation is not None
+    assert observation.value is not None
+    assert source.minimum_temperature is not None
+    threshold = source.minimum_temperature - (
+        source.hysteresis if runtime.selected_source_id == source.id else 0.0
+    )
+    if observation.value < threshold:
+        return False, f"buffer temperature {observation.value:.1f} °C is below {threshold:.1f} °C"
+    return True, f"buffer temperature {observation.value:.1f} °C meets {threshold:.1f} °C"
+
+
+def recommend_source(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+    *,
+    active_heating: bool = True,
+) -> SourceRecommendation | None:
+    """Recommend one eligible source without producing a source command.
+
+    Lower numeric priorities win, with source IDs as the stable tie-breaker.
+    A selected buffer source uses the lower hysteresis threshold while a new
+    buffer recommendation uses its configured qualification threshold.
+    """
+    if not plant.sources:
+        return None
+    if not active_heating:
+        return SourceRecommendation(None, "No active heating demand.")
+
+    eligible: list[Source] = []
+    reasons: list[str] = []
+    for source in sorted(plant.sources.values(), key=lambda item: (item.priority, item.id)):
+        is_eligible, reason = _source_eligibility(source, snapshot, runtime, now)
+        if is_eligible:
+            eligible.append(source)
+        else:
+            reasons.append(f"{source.name} ({source.id}): {reason}.")
+    eligible_ids = tuple(source.id for source in eligible)
+    if not eligible:
+        details = " ".join(reasons) if reasons else "No configured source is eligible."
+        return SourceRecommendation(None, f"No eligible heat source. {details}", eligible_ids)
+
+    selected = eligible[0]
+    explanation = (
+        f"Recommended source: {selected.name} ({selected.id}), priority {selected.priority}. "
+        f"Eligible sources: {', '.join(eligible_ids)}."
+    )
+    if reasons:
+        explanation += " Ineligible sources: " + " ".join(reasons)
+    return SourceRecommendation(selected.id, explanation, eligible_ids)
+
+
 def evaluate(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -488,6 +571,16 @@ def evaluate(
         )
         for circuit_id in sorted(plant.circuits)
     }
+    source_recommendation = recommend_source(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        active_heating=any(zone_demands.values()),
+    )
+    selected_source_id = (
+        source_recommendation.source_id if source_recommendation is not None else None
+    )
     return Evaluation(
         next_runtime=RuntimeState(
             zone_demands=zone_demands,
@@ -495,6 +588,7 @@ def evaluate(
             valves=valves,
             pumps=pumps,
             plant_mode=PlantMode.HEATING if any(zone_demands.values()) else PlantMode.IDLE,
+            selected_source_id=selected_source_id,
         ),
         control_plan=ControlPlan(
             commands=tuple(commands),
@@ -503,11 +597,13 @@ def evaluate(
             },
             pump_consumers={key: frozenset(value) for key, value in sorted(pump_consumers.items())},
             plant_mode=PlantMode.HEATING if any(zone_demands.values()) else PlantMode.IDLE,
+            source_recommendation=source_recommendation,
         ),
         diagnostics=ControllerDiagnostics(
             zone_reasons=zone_reasons,
             circuit_reasons=circuit_reasons,
             actuator_reasons=actuator_reasons,
             zone_decisions=zone_decisions,
+            source_recommendation=source_recommendation,
         ),
     )
