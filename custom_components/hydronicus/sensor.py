@@ -313,7 +313,8 @@ class ZoneCoolingBlockedReasonSensor(SensorEntity):
     @property
     def native_value(self) -> str:
         """Return a stable sentinel when cooling is not blocked."""
-        return (self._runtime.cooling_zone_blocked_reason(self._zone_id) or "none")[:_MAX_STATE_LENGTH]
+        reason = self._runtime.cooling_zone_blocked_reason(self._zone_id) or "none"
+        return reason[:_MAX_STATE_LENGTH]
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:

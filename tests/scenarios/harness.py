@@ -109,7 +109,7 @@ def run_scenario(
             assert recommendation is not None
             assert recommendation.source_id == step.source_id
             if step.source_explanation is not None:
-            assert step.source_explanation in recommendation.explanation
+                assert step.source_explanation in recommendation.explanation
         if step.cooling_zone_demands:
             assert {
                 zone_id: result.next_runtime.cooling_zone_demands[zone_id]
