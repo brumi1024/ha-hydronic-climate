@@ -779,10 +779,6 @@ def _zone_schema(
             CONF_HUMIDITY_SENSORS,
             default=defaults.get(CONF_HUMIDITY_SENSORS, []),
         ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
-        vol.Optional(
-            CONF_HUMIDITY_SENSOR_METADATA,
-            default=defaults.get(CONF_HUMIDITY_SENSOR_METADATA, []),
-        ): list,
         vol.Required(
             CONF_TEMPERATURE_AGGREGATION,
             default=_zone_temperature_aggregation_default(defaults),
@@ -1267,20 +1263,18 @@ def _source_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
             vol.Optional(
                 CONF_SOURCE_AVAILABILITY_ENTITY,
                 default=defaults.get(CONF_SOURCE_AVAILABILITY_ENTITY),
-            ): vol.Any(
+            ): vol.Maybe(
                 selector.EntitySelector(
                     selector.EntitySelectorConfig(
                         domain=["binary_sensor", "input_boolean", "sensor"]
                     )
-                ),
-                None,
+                )
             ),
             vol.Optional(
                 CONF_SOURCE_TEMPERATURE_ENTITY,
                 default=defaults.get(CONF_SOURCE_TEMPERATURE_ENTITY),
-            ): vol.Any(
+            ): vol.Maybe(
                 selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-                None,
             ),
             vol.Required(
                 CONF_SOURCE_MINIMUM_TEMPERATURE,
@@ -1537,7 +1531,6 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(CONF_HUMIDITY_SENSORS, default=[]): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor", multiple=True)
                     ),
-                    vol.Optional(CONF_HUMIDITY_SENSOR_METADATA, default=[]): list,
                     vol.Required(
                         CONF_TEMPERATURE_AGGREGATION,
                         default=DEFAULT_TEMPERATURE_AGGREGATION,

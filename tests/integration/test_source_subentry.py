@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import voluptuous_serialize
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import config_validation as cv
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
@@ -81,6 +83,7 @@ async def _add_buffer_source(hass, entry):
         context={"source": config_entries.SOURCE_USER},
     )
     assert result["type"] == FlowResultType.FORM
+    voluptuous_serialize.convert(result["data_schema"], custom_serializer=cv.custom_serializer)
     return await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         user_input={
