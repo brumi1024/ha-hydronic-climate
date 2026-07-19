@@ -2828,6 +2828,141 @@ def _coordinate_source(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ValvePlan:
+    """Valve planning output and the readiness it exposes to pumps."""
+
+    consumers: dict[str, set[str]]
+    cooling_consumers: dict[str, set[str]]
+    feedback_expected: dict[str, str]
+    feedback_diagnostics: dict[str, ActuatorDiagnostic]
+    blocked_valves: set[str]
+    valves: dict[str, ValveRuntime]
+    ready_circuits: set[str]
+    commands: tuple[ActuatorCommand, ...]
+    actuator_reasons: dict[str, str]
+
+
+def _plan_valves(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+    requested_circuits: set[str],
+    cooling_routes: tuple[DeliveryRoute, ...],
+    cooling: _CoolingEvaluation,
+) -> _ValvePlan:
+    """Plan valve transitions before any dependent pump can start."""
+    consumers: dict[str, set[str]] = defaultdict(set)
+    for circuit_id in sorted(requested_circuits):
+        circuit = plant.circuits[circuit_id]
+        for valve_id in circuit.valve_ids:
+            consumers[valve_id].add(circuit_id)
+
+    cooling_consumers: dict[str, set[str]] = defaultdict(set)
+    for route in cooling_routes:
+        circuit = plant.circuits[route.circuit_id]
+        cooling.circuit_reasons[circuit.id] = (
+            f"Cooling route {route.id} requested circuit {circuit.name}."
+        )
+        for valve_id in circuit.valve_ids:
+            cooling_consumers[valve_id].add(circuit.id)
+
+    feedback_expected = {
+        valve_id: "open" if consumers.get(valve_id) else "closed"
+        for valve_id in plant.valves
+    }
+    feedback_diagnostics = _feedback_diagnostics(
+        plant,
+        snapshot,
+        now,
+        feedback_expected,
+    )
+    blocked_valves = {
+        actuator_id
+        for actuator_id, diagnostic in feedback_diagnostics.items()
+        if actuator_id in plant.valves and diagnostic.blocked
+    }
+
+    valves: dict[str, ValveRuntime] = {}
+    valve_ready: set[str] = set()
+    commands: list[ActuatorCommand] = []
+    actuator_reasons: dict[str, str] = {}
+    for valve_id in sorted(plant.valves):
+        valve = plant.valves[valve_id]
+        valve_consumers = consumers.get(valve.id, set())
+        previous = runtime.valves.get(valve.id, ValveRuntime())
+        if valve.entity_id in snapshot.unavailable_entity_ids:
+            current = ValveRuntime(ValveState.CLOSED, now, False)
+            actuator_reasons[valve.id] = (
+                "Blocked: the configured valve actuator binding is unresolved."
+            )
+        elif valve_consumers:
+            position_feedback = feedback_diagnostics[valve.id]
+            observed_open = position_feedback.observed == "open"
+            if valve.position_entity_id is not None and observed_open:
+                current = ValveRuntime(ValveState.OPEN, now, True)
+                actuator_reasons[valve.id] = (
+                    "Position feedback confirms the valve is open for active circuit consumers."
+                )
+            elif previous.state is ValveState.CLOSED:
+                current = ValveRuntime(ValveState.OPENING, now, False)
+                commands.append(
+                    ActuatorCommand(
+                        valve.id,
+                        ActuatorAction.OPEN,
+                        "A requesting circuit needs this valve.",
+                    )
+                )
+                actuator_reasons[valve.id] = "Opening for active circuit consumers."
+            elif previous.state is ValveState.OPENING and (
+                previous.is_ready
+                or _elapsed(now, previous.changed_at)
+                >= timedelta(seconds=valve.opening_time_seconds)
+            ):
+                current = ValveRuntime(ValveState.OPEN, previous.changed_at, True)
+                actuator_reasons[valve.id] = "Open-delay elapsed; valve is virtually ready."
+            elif previous.state is ValveState.OPEN and not previous.is_ready:
+                if _elapsed(now, previous.changed_at) >= timedelta(
+                    seconds=valve.opening_time_seconds
+                ):
+                    current = ValveRuntime(ValveState.OPEN, previous.changed_at, True)
+                    actuator_reasons[valve.id] = "Configured valve readiness time elapsed."
+                else:
+                    current = ValveRuntime(
+                        ValveState.OPENING,
+                        previous.changed_at or now,
+                        False,
+                    )
+                    actuator_reasons[valve.id] = "Waiting for valve readiness feedback or timer."
+            else:
+                current = previous
+                actuator_reasons[valve.id] = "Held open for active circuit consumers."
+        else:
+            current = previous
+            actuator_reasons[valve.id] = "Idle because its consumer set is empty."
+        valves[valve.id] = current
+        if current.state is ValveState.OPEN and valve.id not in blocked_valves:
+            valve_ready.add(valve.id)
+
+    ready_circuits = {
+        circuit_id
+        for circuit_id in sorted(requested_circuits)
+        if all(valve_id in valve_ready for valve_id in plant.circuits[circuit_id].valve_ids)
+    }
+    return _ValvePlan(
+        consumers=consumers,
+        cooling_consumers=cooling_consumers,
+        feedback_expected=feedback_expected,
+        feedback_diagnostics=feedback_diagnostics,
+        blocked_valves=blocked_valves,
+        valves=valves,
+        ready_circuits=ready_circuits,
+        commands=tuple(commands),
+        actuator_reasons=actuator_reasons,
+    )
+
+
 def evaluate(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -2883,98 +3018,24 @@ def evaluate(
         cooling_routes,
     )
 
-    valve_consumers: dict[str, set[str]] = defaultdict(set)
-    for circuit_id in sorted(requested_circuits):
-        circuit = plant.circuits[circuit_id]
-        for valve_id in circuit.valve_ids:
-            valve_consumers[valve_id].add(circuit_id)
-
-    cooling_valve_consumers: dict[str, set[str]] = defaultdict(set)
-    for route in cooling_routes:
-        circuit = plant.circuits[route.circuit_id]
-        cooling_circuit_reasons[circuit.id] = (
-            f"Cooling route {route.id} requested circuit {circuit.name}."
-        )
-        for valve_id in circuit.valve_ids:
-            cooling_valve_consumers[valve_id].add(circuit.id)
-
-    feedback_expected: dict[str, str] = {
-        valve_id: "open" if valve_consumers.get(valve_id) else "closed"
-        for valve_id in plant.valves
-    }
-    feedback_diagnostics = _feedback_diagnostics(plant, snapshot, now, feedback_expected)
-    blocked_valves = {
-        actuator_id
-        for actuator_id, diagnostic in feedback_diagnostics.items()
-        if actuator_id in plant.valves and diagnostic.blocked
-    }
-
-    valves: dict[str, ValveRuntime] = {}
-    valve_ready: set[str] = set()
-    commands: list[ActuatorCommand] = []
-    actuator_reasons: dict[str, str] = {}
-    for valve_id in sorted(plant.valves):
-        valve = plant.valves[valve_id]
-        consumers = valve_consumers.get(valve.id, set())
-        previous = runtime.valves.get(valve.id, ValveRuntime())
-        if valve.entity_id in snapshot.unavailable_entity_ids:
-            current = ValveRuntime(ValveState.CLOSED, now, False)
-            actuator_reasons[valve.id] = (
-                "Blocked: the configured valve actuator binding is unresolved."
-            )
-        elif consumers:
-            position_feedback = feedback_diagnostics[valve.id]
-            observed_open = position_feedback.observed == "open"
-            if valve.position_entity_id is not None and observed_open:
-                current = ValveRuntime(ValveState.OPEN, now, True)
-                actuator_reasons[valve.id] = (
-                    "Position feedback confirms the valve is open for active circuit consumers."
-                )
-            elif previous.state is ValveState.CLOSED:
-                current = ValveRuntime(ValveState.OPENING, now, False)
-                commands.append(
-                    ActuatorCommand(
-                        valve.id,
-                        ActuatorAction.OPEN,
-                        "A requesting circuit needs this valve.",
-                    )
-                )
-                actuator_reasons[valve.id] = "Opening for active circuit consumers."
-            elif previous.state is ValveState.OPENING and (
-                previous.is_ready
-                or _elapsed(now, previous.changed_at)
-                >= timedelta(seconds=valve.opening_time_seconds)
-            ):
-                current = ValveRuntime(ValveState.OPEN, previous.changed_at, True)
-                actuator_reasons[valve.id] = "Open-delay elapsed; valve is virtually ready."
-            elif previous.state is ValveState.OPEN and not previous.is_ready:
-                if _elapsed(now, previous.changed_at) >= timedelta(
-                    seconds=valve.opening_time_seconds
-                ):
-                    current = ValveRuntime(ValveState.OPEN, previous.changed_at, True)
-                    actuator_reasons[valve.id] = "Configured valve readiness time elapsed."
-                else:
-                    current = ValveRuntime(
-                        ValveState.OPENING,
-                        previous.changed_at or now,
-                        False,
-                    )
-                    actuator_reasons[valve.id] = "Waiting for valve readiness feedback or timer."
-            else:
-                current = previous
-                actuator_reasons[valve.id] = "Held open for active circuit consumers."
-        else:
-            current = previous
-            actuator_reasons[valve.id] = "Idle because its consumer set is empty."
-        valves[valve.id] = current
-        if current.state is ValveState.OPEN and valve.id not in blocked_valves:
-            valve_ready.add(valve.id)
-
-    ready_circuits = {
-        circuit_id
-        for circuit_id in sorted(requested_circuits)
-        if all(valve_id in valve_ready for valve_id in plant.circuits[circuit_id].valve_ids)
-    }
+    valve_plan = _plan_valves(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        requested_circuits,
+        cooling_routes,
+        cooling,
+    )
+    valve_consumers = valve_plan.consumers
+    cooling_valve_consumers = valve_plan.cooling_consumers
+    feedback_expected = valve_plan.feedback_expected
+    feedback_diagnostics = valve_plan.feedback_diagnostics
+    blocked_valves = valve_plan.blocked_valves
+    valves = valve_plan.valves
+    ready_circuits = valve_plan.ready_circuits
+    commands = list(valve_plan.commands)
+    actuator_reasons = valve_plan.actuator_reasons
     pump_consumers: dict[str, set[str]] = defaultdict(set)
     for circuit_id in sorted(ready_circuits):
         pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
