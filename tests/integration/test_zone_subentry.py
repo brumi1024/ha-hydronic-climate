@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
-from types import MappingProxyType
 from uuid import UUID
 
 import pytest
@@ -17,7 +16,6 @@ from custom_components.hydronicus.const import (
     CONF_CIRCUIT_IDS,
     CONF_NAME,
     CONF_TARGET_TEMPERATURE,
-    CONF_TEMPERATURE_SENSOR,
     CONF_TEMPERATURE_SENSOR_METADATA,
     CONF_TEMPERATURE_SENSORS,
     DOMAIN,
@@ -32,8 +30,6 @@ CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
 BASE_ROUTE_ID = "00000000-0000-4000-8000-000000000006"
 SECOND_CIRCUIT_ID = "00000000-0000-4000-8000-000000000007"
 SECOND_ROUTE_ID = "00000000-0000-4000-8000-000000000008"
-LEGACY_ZONE_ID = "00000000-0000-4000-8000-000000000009"
-LEGACY_ROUTE_ID = "00000000-0000-4000-8000-000000000010"
 
 
 async def _confirm_warning_review(hass, result):
@@ -317,82 +313,6 @@ async def test_add_zone_subentry_aggregates_multiple_battery_sensors(hass) -> No
 
     assert hass.states.get("binary_sensor.hydronic_plant_office_demand").state == "off"
     assert hass.states.get("sensor.hydronic_plant_office_explanation").state.startswith("Blocked:")
-
-
-async def test_reconfigure_migrates_legacy_single_sensor_subentry(hass) -> None:
-    """A milestone 2 zone should load and migrate without changing its UUID."""
-    hass.states.async_set("sensor.legacy_office_temperature", "18.0")
-    hass.states.async_set("sensor.office_backup_temperature", "20.0")
-    entry = _plant_entry()
-    entry.add_to_hass(hass)
-    legacy_subentry = config_entries.ConfigSubentry(
-        data=MappingProxyType(
-            {
-                "id": LEGACY_ZONE_ID,
-                CONF_NAME: "Legacy office",
-                CONF_TARGET_TEMPERATURE: 20.0,
-                CONF_TEMPERATURE_SENSOR: "sensor.legacy_office_temperature",
-                CONF_CIRCUIT_IDS: [CIRCUIT_ID],
-                "routes": [
-                    {
-                        "id": LEGACY_ROUTE_ID,
-                        "circuit_id": CIRCUIT_ID,
-                    }
-                ],
-            }
-        ),
-        subentry_type=SUBENTRY_TYPE_ZONE,
-        title="Legacy office",
-        unique_id=LEGACY_ZONE_ID,
-    )
-    assert hass.config_entries.async_add_subentry(entry, legacy_subentry)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    assert entry.runtime_data.plant.zones[LEGACY_ZONE_ID].temperature_sensors == (
-        "sensor.legacy_office_temperature",
-    )
-
-    result = await entry.start_subentry_reconfigure_flow(hass, legacy_subentry.subentry_id)
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={
-            CONF_NAME: "Legacy office",
-            CONF_TARGET_TEMPERATURE: 20.0,
-            CONF_TEMPERATURE_SENSORS: [
-                "sensor.legacy_office_temperature",
-                "sensor.office_backup_temperature",
-            ],
-            CONF_CIRCUIT_IDS: [CIRCUIT_ID],
-        },
-    )
-    await hass.async_block_till_done()
-    result = await _confirm_warning_review(hass, result)
-
-    assert result["type"] == FlowResultType.ABORT
-    assert legacy_subentry.data["id"] == LEGACY_ZONE_ID
-    assert CONF_TEMPERATURE_SENSOR not in legacy_subentry.data
-    assert CONF_TEMPERATURE_SENSORS not in legacy_subentry.data
-    assert legacy_subentry.data[CONF_TEMPERATURE_SENSOR_METADATA] == [
-        {
-            "entity_id": "sensor.legacy_office_temperature",
-            "required": True,
-            "weight": 1.0,
-            "calibration_offset": 0.0,
-            "max_age_seconds": 1800.0,
-            "designated_reference": False,
-        },
-        {
-            "entity_id": "sensor.office_backup_temperature",
-            "required": True,
-            "weight": 1.0,
-            "calibration_offset": 0.0,
-            "max_age_seconds": 1800.0,
-            "designated_reference": False,
-        },
-    ]
-    assert entry.runtime_data.plant.zones[LEGACY_ZONE_ID].temperature_sensors == (
-        "sensor.legacy_office_temperature",
-        "sensor.office_backup_temperature",
-    )
 
 
 async def test_reconfigure_zone_preserves_zone_and_retained_route_uuids(hass) -> None:

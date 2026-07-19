@@ -71,7 +71,6 @@ from .const import (
     CONF_SURFACE_TEMPERATURE_SENSOR,
     CONF_TARGET_TEMPERATURE,
     CONF_TEMPERATURE_AGGREGATION,
-    CONF_TEMPERATURE_SENSOR,
     CONF_TEMPERATURE_SENSOR_METADATA,
     CONF_TEMPERATURE_SENSORS,
     CONF_TOPOLOGY,
@@ -726,7 +725,7 @@ def _zone_advanced_fields(defaults: Mapping[str, Any] | None = None) -> dict[Any
 
 
 def _zone_temperature_sensor_defaults(defaults: Mapping[str, Any]) -> Any:
-    """Return new-list defaults for current and milestone 1 subentries."""
+    """Return list-form defaults from canonical metadata or the current form input."""
     metadata = defaults.get(CONF_TEMPERATURE_SENSOR_METADATA)
     if isinstance(metadata, list):
         return [
@@ -736,8 +735,6 @@ def _zone_temperature_sensor_defaults(defaults: Mapping[str, Any]) -> Any:
         ]
     if CONF_TEMPERATURE_SENSORS in defaults:
         return defaults[CONF_TEMPERATURE_SENSORS]
-    if CONF_TEMPERATURE_SENSOR in defaults:
-        return [defaults[CONF_TEMPERATURE_SENSOR]]
     return vol.UNDEFINED
 
 
