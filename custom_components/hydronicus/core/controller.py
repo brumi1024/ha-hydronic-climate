@@ -1393,141 +1393,99 @@ def _advance_selecting_source_selection(
     )
 
 
-def _advance_source_selection(
+def _advance_unselected_source(
     plant: CompiledPlant,
-    snapshot: PlantSnapshot,
-    runtime: RuntimeState,
+    selection: SourceSelectionRuntime,
     now: datetime,
-    recommendation: SourceRecommendation | None,
+    recommended_source_id: str | None,
     *,
     hydraulic_safe: bool,
     hydraulic_reason: str,
     demand_permitted: bool,
     demand_reason: str,
-) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic | None]:
-    """Advance source selection through a one-hot, break-before-make sequence."""
+) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic]:
+    """Advance idle and hydraulic-waiting phases toward explicit selection."""
     selector = plant.source_selector
-    has_demand_actuator = any(
-        source.demand_entity_id is not None for source in plant.sources.values()
-    )
-    if selector is None and not has_demand_actuator:
-        return (
-            runtime.source_selection,
-            (),
-            SourceSelectionDiagnostic(
-                SourceSelectionPhase.IDLE,
-                runtime.selected_source_id,
-                recommendation.source_id if recommendation is not None else None,
-                recommendation.source_id if recommendation is not None else None,
-                hydraulic_safe,
-                "Source execution is disabled; the shadow recommendation remains available.",
-            )
-            if recommendation is not None
-            else None,
-        )
-
-    recommended_source_id = recommendation.source_id if recommendation is not None else None
-    reconciliation = _reconcile_source_observations(
-        plant, snapshot, runtime, now, recommended_source_id
-    )
-    if reconciliation.blocked_diagnostic is not None:
-        return reconciliation.selection, (), reconciliation.blocked_diagnostic
-    selection = reconciliation.selection
-    active_source_id = reconciliation.active_source_id
-    observed_source = reconciliation.observed_source_id
-
-    if selection.phase is SourceSelectionPhase.BREAKING:
-        return _advance_breaking_source_selection(
-            plant,
-            snapshot,
-            selection,
-            now,
+    if recommended_source_id is None:
+        next_selection = SourceSelectionRuntime(SourceSelectionPhase.IDLE)
+        explanation = "No eligible source is available for the active plant demand."
+        phase = SourceSelectionPhase.IDLE
+    elif not hydraulic_safe:
+        next_selection = SourceSelectionRuntime(
+            SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
+            None,
             recommended_source_id,
-            observed_source,
-            hydraulic_safe=hydraulic_safe,
-            hydraulic_reason=hydraulic_reason,
-            demand_permitted=demand_permitted,
-            demand_reason=demand_reason,
+            selection.transition_started_at,
+            selection.last_selected_at,
         )
-
-    if selection.phase is SourceSelectionPhase.SELECTING:
-        return _advance_selecting_source_selection(
-            plant,
-            snapshot,
-            selection,
-            now,
+        explanation = hydraulic_reason
+        phase = SourceSelectionPhase.WAITING_FOR_HYDRAULICS
+    elif not demand_permitted:
+        next_selection = SourceSelectionRuntime(
+            SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
+            None,
             recommended_source_id,
-            observed_source,
-            hydraulic_safe=hydraulic_safe,
+            selection.transition_started_at,
+            selection.last_selected_at,
         )
-
-    if active_source_id is None:
-        if recommended_source_id is None:
-            next_selection = SourceSelectionRuntime(SourceSelectionPhase.IDLE)
-            explanation = "No eligible source is available for the active plant demand."
-            phase = SourceSelectionPhase.IDLE
-        elif not hydraulic_safe:
-            next_selection = SourceSelectionRuntime(
-                SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
-                None,
-                recommended_source_id,
-                selection.transition_started_at,
-                selection.last_selected_at,
-            )
-            explanation = hydraulic_reason
-            phase = SourceSelectionPhase.WAITING_FOR_HYDRAULICS
-        elif not demand_permitted:
-            next_selection = SourceSelectionRuntime(
-                SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
-                None,
-                recommended_source_id,
-                selection.transition_started_at,
-                selection.last_selected_at,
-            )
-            explanation = demand_reason
-            phase = SourceSelectionPhase.WAITING_FOR_HYDRAULICS
-        else:
-            target_source = plant.sources[recommended_source_id]
-            command = _source_selection_command(
-                selector,
-                target_source,
-                action=ActuatorAction.TURN_ON,
-                reason="Select the recommended source after hydraulic stabilization.",
-            )
-            next_selection = SourceSelectionRuntime(
-                SourceSelectionPhase.SELECTING,
-                None,
-                recommended_source_id,
-                now,
-                selection.last_selected_at,
-            )
-            explanation = "Hydraulics are stable; selecting the recommended source."
-            phase = SourceSelectionPhase.SELECTING
-            return (
-                next_selection,
-                (command,) if command is not None else (),
-                SourceSelectionDiagnostic(
-                    phase,
-                    None,
-                    recommended_source_id,
-                    recommended_source_id,
-                    True,
-                    explanation,
-                ),
-            )
+        explanation = demand_reason
+        phase = SourceSelectionPhase.WAITING_FOR_HYDRAULICS
+    else:
+        target_source = plant.sources[recommended_source_id]
+        command = _source_selection_command(
+            selector,
+            target_source,
+            action=ActuatorAction.TURN_ON,
+            reason="Select the recommended source after hydraulic stabilization.",
+        )
+        next_selection = SourceSelectionRuntime(
+            SourceSelectionPhase.SELECTING,
+            None,
+            recommended_source_id,
+            now,
+            selection.last_selected_at,
+        )
+        explanation = "Hydraulics are stable; selecting the recommended source."
+        phase = SourceSelectionPhase.SELECTING
         return (
             next_selection,
-            (),
+            (command,) if command is not None else (),
             SourceSelectionDiagnostic(
                 phase,
                 None,
                 recommended_source_id,
                 recommended_source_id,
-                hydraulic_safe,
+                True,
                 explanation,
             ),
         )
+    return (
+        next_selection,
+        (),
+        SourceSelectionDiagnostic(
+            phase,
+            None,
+            recommended_source_id,
+            recommended_source_id,
+            hydraulic_safe,
+            explanation,
+        ),
+    )
 
+
+def _advance_active_source(
+    plant: CompiledPlant,
+    selection: SourceSelectionRuntime,
+    now: datetime,
+    recommendation: SourceRecommendation | None,
+    active_source_id: str,
+    *,
+    hydraulic_safe: bool,
+    hydraulic_reason: str,
+) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic]:
+    """Advance active, dwell, waiting, and release-first changeover phases."""
+    selector = plant.source_selector
+    recommended_source_id = recommendation.source_id if recommendation is not None else None
     active_source = plant.sources.get(active_source_id)
     if active_source is None:
         next_selection = SourceSelectionRuntime(SourceSelectionPhase.IDLE)
@@ -1699,6 +1657,97 @@ def _advance_source_selection(
             True,
             "Old source released; observing break-before-make interval.",
         ),
+    )
+
+
+def _advance_source_selection(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+    recommendation: SourceRecommendation | None,
+    *,
+    hydraulic_safe: bool,
+    hydraulic_reason: str,
+    demand_permitted: bool,
+    demand_reason: str,
+) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic | None]:
+    """Advance source selection through a one-hot, break-before-make sequence."""
+    selector = plant.source_selector
+    has_demand_actuator = any(
+        source.demand_entity_id is not None for source in plant.sources.values()
+    )
+    if selector is None and not has_demand_actuator:
+        return (
+            runtime.source_selection,
+            (),
+            SourceSelectionDiagnostic(
+                SourceSelectionPhase.IDLE,
+                runtime.selected_source_id,
+                recommendation.source_id if recommendation is not None else None,
+                recommendation.source_id if recommendation is not None else None,
+                hydraulic_safe,
+                "Source execution is disabled; the shadow recommendation remains available.",
+            )
+            if recommendation is not None
+            else None,
+        )
+
+    recommended_source_id = recommendation.source_id if recommendation is not None else None
+    reconciliation = _reconcile_source_observations(
+        plant, snapshot, runtime, now, recommended_source_id
+    )
+    if reconciliation.blocked_diagnostic is not None:
+        return reconciliation.selection, (), reconciliation.blocked_diagnostic
+    selection = reconciliation.selection
+    active_source_id = reconciliation.active_source_id
+    observed_source = reconciliation.observed_source_id
+
+    if selection.phase is SourceSelectionPhase.BREAKING:
+        return _advance_breaking_source_selection(
+            plant,
+            snapshot,
+            selection,
+            now,
+            recommended_source_id,
+            observed_source,
+            hydraulic_safe=hydraulic_safe,
+            hydraulic_reason=hydraulic_reason,
+            demand_permitted=demand_permitted,
+            demand_reason=demand_reason,
+        )
+
+    if selection.phase is SourceSelectionPhase.SELECTING:
+        return _advance_selecting_source_selection(
+            plant,
+            snapshot,
+            selection,
+            now,
+            recommended_source_id,
+            observed_source,
+            hydraulic_safe=hydraulic_safe,
+        )
+
+    if active_source_id is None:
+        return _advance_unselected_source(
+            plant,
+            selection,
+            now,
+            recommended_source_id,
+            hydraulic_safe=hydraulic_safe,
+            hydraulic_reason=hydraulic_reason,
+            demand_permitted=demand_permitted,
+            demand_reason=demand_reason,
+        )
+
+    return _advance_active_source(
+        plant,
+        selection,
+        now,
+        recommendation,
+        active_source_id,
+        hydraulic_safe=hydraulic_safe,
+        hydraulic_reason=hydraulic_reason,
     )
 
 
