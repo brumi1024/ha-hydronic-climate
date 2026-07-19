@@ -2665,6 +2665,169 @@ def _index_requested_routes(
     return requested_circuits, route_ids_by_circuit
 
 
+@dataclass(frozen=True, slots=True)
+class _SourceCoordination:
+    """Source recommendation, transition commands, and diagnostics."""
+
+    recommendation: SourceRecommendation | None
+    selection_runtime: SourceSelectionRuntime
+    commands: tuple[ActuatorCommand, ...]
+    selection: SourceSelectionDiagnostic | None
+    selected_source_id: str | None
+    diagnostics: dict[str, SourceDiagnostic]
+    actuator_ids: frozenset[str]
+
+
+def _coordinate_source(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+    *,
+    active_mode: PlantMode,
+    heating_demand: bool,
+    cooling_demand: bool,
+    heating_routes: tuple[DeliveryRoute, ...],
+    ready_circuits: set[str],
+    pump_consumers: Mapping[str, set[str]],
+    valves: Mapping[str, ValveRuntime],
+    pumps: Mapping[str, PumpRuntime],
+    prior_commands: tuple[ActuatorCommand, ...],
+) -> _SourceCoordination:
+    """Coordinate source recommendation and safe selection transitions."""
+    recommendation = recommend_source(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        active_heating=active_mode is PlantMode.HEATING,
+    )
+    next_plant_mode = (
+        PlantMode.HEATING
+        if heating_demand
+        else PlantMode.COOLING
+        if cooling_demand
+        else PlantMode.IDLE
+    )
+    hydraulic_safe, hydraulic_reason = _source_hydraulic_safety(
+        plant,
+        runtime,
+        valves,
+        pumps,
+        prior_commands,
+        next_plant_mode,
+    )
+    heating_ready_circuits = {
+        route.circuit_id for route in heating_routes if route.circuit_id in ready_circuits
+    }
+    demand_permitted, demand_reason = _source_demand_permit(
+        plant,
+        heating_ready_circuits,
+        pump_consumers,
+        pumps,
+        next_plant_mode,
+    )
+    selection_runtime, commands, selection = _advance_source_selection(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        recommendation,
+        hydraulic_safe=hydraulic_safe,
+        hydraulic_reason=hydraulic_reason,
+        demand_permitted=demand_permitted,
+        demand_reason=demand_reason,
+    )
+    selector_execution_configured = plant.source_selector is not None or any(
+        source.demand_entity_id is not None for source in plant.sources.values()
+    )
+    selected_source_id = (
+        selection_runtime.active_source_id
+        if selector_execution_configured
+        else recommendation.source_id
+        if recommendation is not None
+        else None
+    )
+    direct_source_demand_ids = frozenset(
+        command.actuator_id.removeprefix("source:")
+        for command in commands
+        if command.actuator_id.startswith("source:")
+        and command.action is ActuatorAction.TURN_ON
+    )
+    reported_active_source_id = selection_runtime.active_source_id or next(
+        iter(sorted(direct_source_demand_ids)), None
+    )
+    if selector_execution_configured and direct_source_demand_ids:
+        selected_source_id = reported_active_source_id
+    if selection is not None:
+        dwell_remaining = 0.0
+        if (
+            plant.source_selector is not None
+            and selection.phase is SourceSelectionPhase.MINIMUM_DWELL
+            and selection_runtime.last_selected_at is not None
+        ):
+            dwell_remaining = max(
+                0.0,
+                plant.source_selector.minimum_dwell_seconds
+                - _elapsed(now, selection_runtime.last_selected_at).total_seconds(),
+            )
+        selection = replace(selection, dwell_remaining_seconds=dwell_remaining)
+
+    diagnostics: dict[str, SourceDiagnostic] = {}
+    for source_id, source in sorted(plant.sources.items()):
+        source_available: bool | None = True
+        if source.availability_entity_id is not None:
+            source_available = snapshot.source_availability.get(source.id)
+            if source_available is None:
+                source_available = snapshot.source_availability.get(source.availability_entity_id)
+        eligible, eligibility_reason = _source_eligibility(source, snapshot, runtime, now)
+        recommended = recommendation is not None and recommendation.source_id == source_id
+        active = reported_active_source_id == source_id
+        demand_requested = bool(
+            source.demand_entity_id is not None
+            and (
+                source_id in direct_source_demand_ids
+                or (active and recommended and demand_permitted)
+            )
+        )
+        source_permitted = bool(
+            source.demand_entity_id is not None
+            and recommended
+            and eligible
+            and demand_permitted
+            and (active or source_id in direct_source_demand_ids)
+        )
+        if source.demand_entity_id is None:
+            reason = "No heat-pump demand output is configured for this source."
+        elif not eligible:
+            reason = f"Blocked: {eligibility_reason}."
+        elif not recommended:
+            reason = "Blocked: this source is not the deterministic active recommendation."
+        else:
+            reason = demand_reason
+        diagnostics[source_id] = SourceDiagnostic(
+            source_id=source_id,
+            available=source_available,
+            eligible=eligible,
+            recommended=recommended,
+            active=active,
+            demand_requested=demand_requested,
+            demand_permitted=source_permitted,
+            blocked=source.demand_entity_id is not None and not demand_requested,
+            reason=reason,
+        )
+
+    return _SourceCoordination(
+        recommendation=recommendation,
+        selection_runtime=selection_runtime,
+        commands=commands,
+        selection=selection,
+        selected_source_id=selected_source_id,
+        diagnostics=diagnostics,
+        actuator_ids=frozenset(command.actuator_id for command in commands),
+    )
+
+
 def evaluate(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -3035,140 +3198,29 @@ def evaluate(
         )
         for circuit_id in sorted(plant.circuits)
     }
-    source_recommendation = recommend_source(
+    source_coordination = _coordinate_source(
         plant,
         snapshot,
         runtime,
         now,
-        active_heating=active_mode is PlantMode.HEATING,
+        active_mode=active_mode,
+        heating_demand=any(zone_demands.values()),
+        cooling_demand=any(cooling_zone_demands.values()),
+        heating_routes=eligible_routes,
+        ready_circuits=ready_circuits,
+        pump_consumers=pump_consumers,
+        valves=valves,
+        pumps=pumps,
+        prior_commands=tuple(commands),
     )
-    next_plant_mode = (
-        PlantMode.HEATING
-        if any(zone_demands.values())
-        else PlantMode.COOLING
-        if any(cooling_zone_demands.values())
-        else PlantMode.IDLE
-    )
-    hydraulic_safe, hydraulic_reason = _source_hydraulic_safety(
-        plant,
-        runtime,
-        valves,
-        pumps,
-        tuple(commands),
-        next_plant_mode,
-    )
-    heating_ready_circuits = {
-        route.circuit_id for route in eligible_routes if route.circuit_id in ready_circuits
-    }
-    demand_permitted, demand_reason = _source_demand_permit(
-        plant,
-        heating_ready_circuits,
-        pump_consumers,
-        pumps,
-        next_plant_mode,
-    )
-    source_selection_runtime, source_selection_commands, source_selection = (
-        _advance_source_selection(
-            plant,
-            snapshot,
-            runtime,
-            now,
-            source_recommendation,
-            hydraulic_safe=hydraulic_safe,
-            hydraulic_reason=hydraulic_reason,
-            demand_permitted=demand_permitted,
-            demand_reason=demand_reason,
-        )
-    )
+    source_recommendation = source_coordination.recommendation
+    source_selection_runtime = source_coordination.selection_runtime
+    source_selection_commands = source_coordination.commands
+    source_selection = source_coordination.selection
+    selected_source_id = source_coordination.selected_source_id
+    source_diagnostics = source_coordination.diagnostics
+    source_selection_actuator_ids = source_coordination.actuator_ids
     commands.extend(source_selection_commands)
-    selector_execution_configured = plant.source_selector is not None or any(
-        source.demand_entity_id is not None for source in plant.sources.values()
-    )
-    selected_source_id = (
-        source_selection_runtime.active_source_id
-        if selector_execution_configured
-        else source_recommendation.source_id
-        if source_recommendation is not None
-        else None
-    )
-    direct_source_demand_ids = frozenset(
-        command.actuator_id.removeprefix("source:")
-        for command in source_selection_commands
-        if command.actuator_id.startswith("source:")
-        and command.action is ActuatorAction.TURN_ON
-    )
-    reported_active_source_id = (
-        source_selection_runtime.active_source_id
-        or next(iter(sorted(direct_source_demand_ids)), None)
-    )
-    if selector_execution_configured and direct_source_demand_ids:
-        selected_source_id = reported_active_source_id
-    if source_selection is not None:
-        dwell_remaining = 0.0
-        if (
-            plant.source_selector is not None
-            and source_selection.phase is SourceSelectionPhase.MINIMUM_DWELL
-            and source_selection_runtime.last_selected_at is not None
-        ):
-            dwell_remaining = max(
-                0.0,
-                plant.source_selector.minimum_dwell_seconds
-                - _elapsed(now, source_selection_runtime.last_selected_at).total_seconds(),
-            )
-        source_selection = replace(
-            source_selection,
-            dwell_remaining_seconds=dwell_remaining,
-        )
-    source_diagnostics: dict[str, SourceDiagnostic] = {}
-    for source_id, source in sorted(plant.sources.items()):
-        source_available: bool | None = True
-        if source.availability_entity_id is not None:
-            source_available = snapshot.source_availability.get(source.id)
-            if source_available is None:
-                source_available = snapshot.source_availability.get(source.availability_entity_id)
-        eligible, eligibility_reason = _source_eligibility(source, snapshot, runtime, now)
-        recommended = source_recommendation is not None and (
-            source_recommendation.source_id == source_id
-        )
-        active = reported_active_source_id == source_id
-        demand_requested = bool(
-            source.demand_entity_id is not None
-            and (
-                source_id in direct_source_demand_ids
-                or (active and recommended and demand_permitted)
-            )
-        )
-        source_permitted = bool(
-            source.demand_entity_id is not None
-            and recommended
-            and eligible
-            and demand_permitted
-            and (active or source_id in direct_source_demand_ids)
-        )
-        if source.demand_entity_id is None:
-            reason = "No heat-pump demand output is configured for this source."
-        elif not eligible:
-            reason = f"Blocked: {eligibility_reason}."
-        elif not recommended:
-            reason = "Blocked: this source is not the deterministic active recommendation."
-        elif demand_requested:
-            reason = demand_reason
-        else:
-            reason = demand_reason
-        source_diagnostics[source_id] = SourceDiagnostic(
-            source_id=source_id,
-            available=source_available,
-            eligible=eligible,
-            recommended=recommended,
-            active=active,
-            demand_requested=demand_requested,
-            demand_permitted=source_permitted,
-            blocked=source.demand_entity_id is not None and not demand_requested,
-            reason=reason,
-        )
-    source_selection_actuator_ids = frozenset(
-        command.actuator_id for command in source_selection_commands
-    )
     return Evaluation(
         next_runtime=RuntimeState(
             cooling_zone_demands=cooling_zone_demands,
