@@ -220,18 +220,9 @@ def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> S
 
 
 def _source_selector_from_mapping(
-    topology: Mapping[str, Any], *, require_uuid: bool
-) -> SourceSelectionActuator | None:
-    """Decode the optional generic selector, defaulting it to synthetic-only."""
-    if "source_selection_actuator" in topology:
-        raise StoredTopologyError(
-            "Stored topology uses unsupported source selector field source_selection_actuator."
-        )
-    raw = topology.get("source_selector")
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise StoredTopologyError("Stored source selector must be an object.")
+    raw: Mapping[str, Any], *, require_uuid: bool
+) -> SourceSelectionActuator:
+    """Decode one canonical source selector object."""
     _reject_unsupported_fields(
         raw,
         {
@@ -427,172 +418,180 @@ def _route_enabled(mapping: Mapping[str, Any]) -> bool:
     return enabled
 
 
+def _zone_from_mapping(item: Mapping[str, Any]) -> Zone:
+    """Decode one canonical zone object."""
+    metadata = temperature_sensor_metadata_from_mapping(item)
+    humidity_metadata = humidity_sensor_metadata_from_mapping(item)
+    aggregation = _temperature_aggregation(item)
+    metadata = _validate_reference_policy(aggregation, metadata)
+    (
+        start_delta,
+        stop_delta,
+        cooling_start_delta,
+        cooling_stop_delta,
+        active_duration,
+        idle_duration,
+    ) = _zone_timing(item)
+    return Zone(
+        id=_id(item, "id", require_uuid=True),
+        name=str(_required(item, "name")),
+        target_temperature=_required_number(item, "target_temperature"),
+        temperature_sensor_metadata=metadata,
+        aggregation=aggregation,
+        heating_start_delta=start_delta,
+        heating_stop_delta=stop_delta,
+        cooling_start_delta=cooling_start_delta,
+        cooling_stop_delta=cooling_stop_delta,
+        minimum_active_duration_seconds=active_duration,
+        minimum_idle_duration_seconds=idle_duration,
+        preset_targets=_preset_targets(item),
+        humidity_sensor_metadata=humidity_metadata,
+    )
+
+
+def _valve_from_mapping(item: Mapping[str, Any]) -> Valve:
+    """Decode one canonical valve object."""
+    _reject_unsupported_fields(
+        item,
+        {
+            "readiness_entity",
+            "feedback_entity_id",
+            "position_feedback_entity_id",
+            "position_entity",
+            "feedback_max_age_seconds",
+            "valve_opening_time_seconds",
+        },
+        "valve",
+    )
+    return Valve(
+        id=_id(item, "id", require_uuid=True),
+        name=str(_required(item, "name")),
+        entity_id=str(_required(item, "entity_id")),
+        opening_time_seconds=_number(item, "opening_time_seconds", 30.0, non_negative=True),
+        readiness_entity_id=_optional_entity_id(item, "readiness_entity_id"),
+        position_entity_id=_optional_entity_id(item, "position_feedback_entity"),
+        position_max_age_seconds=_number(
+            item,
+            "position_feedback_max_age_seconds",
+            _LEGACY_MAX_AGE_SECONDS,
+            positive=True,
+        ),
+    )
+
+
+def _pump_from_mapping(item: Mapping[str, Any]) -> Pump:
+    """Decode one canonical pump object."""
+    _reject_unsupported_fields(
+        item,
+        {
+            "power_feedback_entity_id",
+            "power_entity",
+            "flow_feedback_entity_id",
+            "flow_entity",
+            "fault_feedback_entity_id",
+            "fault_entity",
+            "feedback_max_age_seconds",
+            "pump_overrun_seconds",
+        },
+        "pump",
+    )
+    return Pump(
+        id=_id(item, "id", require_uuid=True),
+        name=str(_required(item, "name")),
+        entity_id=str(_required(item, "entity_id")),
+        overrun_seconds=_number(item, "overrun_seconds", 120.0, non_negative=True),
+        power_entity_id=_optional_entity_id(item, "power_feedback_entity"),
+        flow_entity_id=_optional_entity_id(item, "flow_feedback_entity"),
+        fault_entity_id=_optional_entity_id(item, "fault_feedback_entity"),
+        power_max_age_seconds=_number(
+            item,
+            "power_feedback_max_age_seconds",
+            _LEGACY_MAX_AGE_SECONDS,
+            positive=True,
+        ),
+        flow_max_age_seconds=_number(
+            item,
+            "flow_feedback_max_age_seconds",
+            _LEGACY_MAX_AGE_SECONDS,
+            positive=True,
+        ),
+        fault_max_age_seconds=_number(
+            item,
+            "fault_feedback_max_age_seconds",
+            _LEGACY_MAX_AGE_SECONDS,
+            positive=True,
+        ),
+    )
+
+
+def _circuit_from_mapping(item: Mapping[str, Any]) -> Circuit:
+    """Decode one canonical circuit object."""
+    _reject_unsupported_fields(
+        item,
+        {"valve_id", "valve_opening_time_seconds", "pump_overrun_seconds"},
+        "circuit",
+    )
+    return Circuit(
+        id=_id(item, "id", require_uuid=True),
+        name=str(_required(item, "name")),
+        valve_ids=_string_list(item, "valve_ids", require_uuid=True),
+        pump_id=_id(item, "pump_id", require_uuid=True),
+        cooling_enabled=_boolean(item, "cooling_enabled", False),
+        supply_temperature_sensor=item.get("supply_temperature_sensor"),
+        surface_temperature_sensor=item.get("surface_temperature_sensor"),
+        condensation_margin=_number(item, "condensation_margin", 2.0, non_negative=True),
+        supply_temperature_max_age_seconds=_number(
+            item,
+            "supply_temperature_max_age_seconds",
+            _LEGACY_MAX_AGE_SECONDS,
+            positive=True,
+        ),
+        surface_temperature_max_age_seconds=_number(
+            item,
+            "surface_temperature_max_age_seconds",
+            _LEGACY_MAX_AGE_SECONDS,
+            positive=True,
+        ),
+    )
+
+
+def _route_from_mapping(item: Mapping[str, Any]) -> DeliveryRoute:
+    """Decode one canonical delivery route object."""
+    return DeliveryRoute(
+        id=_id(item, "id", require_uuid=True),
+        zone_id=_id(item, "zone_id", require_uuid=True),
+        circuit_id=_id(item, "circuit_id", require_uuid=True),
+        enabled=_route_enabled(item),
+    )
+
+
 def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfiguration:
     """Build a generic plant configuration from one config entry's persisted data."""
     raw_topology = data.get("topology", {})
     if not isinstance(raw_topology, Mapping):
         raise StoredTopologyError("Stored topology must be an object.")
 
-    raw_circuits = _objects(raw_topology, "circuits")
-    raw_valves = _objects(raw_topology, "valves")
-    raw_pumps = _objects(raw_topology, "pumps")
-    raw_sources = _objects(raw_topology, "sources")
-    for item in raw_circuits:
-        _reject_unsupported_fields(
-            item,
-            {"valve_id", "valve_opening_time_seconds", "pump_overrun_seconds"},
-            "circuit",
+    if "source_selection_actuator" in raw_topology:
+        raise StoredTopologyError(
+            "Stored topology uses unsupported source selector field source_selection_actuator."
         )
-    for item in raw_valves:
-        _reject_unsupported_fields(
-            item,
-            {
-                "readiness_entity",
-                "feedback_entity_id",
-                "position_feedback_entity_id",
-                "position_entity",
-                "feedback_max_age_seconds",
-                "valve_opening_time_seconds",
-            },
-            "valve",
-        )
-    for item in raw_pumps:
-        _reject_unsupported_fields(
-            item,
-            {
-                "power_feedback_entity_id",
-                "power_entity",
-                "flow_feedback_entity_id",
-                "flow_entity",
-                "fault_feedback_entity_id",
-                "fault_entity",
-                "feedback_max_age_seconds",
-                "pump_overrun_seconds",
-            },
-            "pump",
-        )
-    plant_id = _id(data, "plant_id", require_uuid=True)
-    zones = []
-    for item in _objects(raw_topology, "zones"):
-        metadata = temperature_sensor_metadata_from_mapping(item)
-        humidity_metadata = humidity_sensor_metadata_from_mapping(item)
-        aggregation = _temperature_aggregation(item)
-        metadata = _validate_reference_policy(aggregation, metadata)
-        (
-            start_delta,
-            stop_delta,
-            cooling_start_delta,
-            cooling_stop_delta,
-            active_duration,
-            idle_duration,
-        ) = _zone_timing(item)
-        zones.append(
-            Zone(
-                id=_id(item, "id", require_uuid=True),
-                name=str(_required(item, "name")),
-                target_temperature=_required_number(item, "target_temperature"),
-                temperature_sensor_metadata=metadata,
-                aggregation=aggregation,
-                heating_start_delta=start_delta,
-                heating_stop_delta=stop_delta,
-                cooling_start_delta=cooling_start_delta,
-                cooling_stop_delta=cooling_stop_delta,
-                minimum_active_duration_seconds=active_duration,
-                minimum_idle_duration_seconds=idle_duration,
-                preset_targets=_preset_targets(item),
-                humidity_sensor_metadata=humidity_metadata,
-            )
-        )
-    valves = tuple(
-        Valve(
-            id=_id(item, "id", require_uuid=True),
-            name=str(_required(item, "name")),
-            entity_id=str(_required(item, "entity_id")),
-            opening_time_seconds=_number(item, "opening_time_seconds", 30.0, non_negative=True),
-            readiness_entity_id=_optional_entity_id(item, "readiness_entity_id"),
-            position_entity_id=_optional_entity_id(item, "position_feedback_entity"),
-            position_max_age_seconds=_number(
-                item,
-                "position_feedback_max_age_seconds",
-                _LEGACY_MAX_AGE_SECONDS,
-                positive=True,
-            ),
-        )
-        for item in raw_valves
-    )
-    pumps = tuple(
-        Pump(
-            id=_id(item, "id", require_uuid=True),
-            name=str(_required(item, "name")),
-            entity_id=str(_required(item, "entity_id")),
-            overrun_seconds=_number(item, "overrun_seconds", 120.0, non_negative=True),
-            power_entity_id=_optional_entity_id(item, "power_feedback_entity"),
-            flow_entity_id=_optional_entity_id(item, "flow_feedback_entity"),
-            fault_entity_id=_optional_entity_id(item, "fault_feedback_entity"),
-            power_max_age_seconds=_number(
-                item,
-                "power_feedback_max_age_seconds",
-                _LEGACY_MAX_AGE_SECONDS,
-                positive=True,
-            ),
-            flow_max_age_seconds=_number(
-                item,
-                "flow_feedback_max_age_seconds",
-                _LEGACY_MAX_AGE_SECONDS,
-                positive=True,
-            ),
-            fault_max_age_seconds=_number(
-                item,
-                "fault_feedback_max_age_seconds",
-                _LEGACY_MAX_AGE_SECONDS,
-                positive=True,
-            ),
-        )
-        for item in raw_pumps
-    )
-    circuits = [
-        Circuit(
-            id=_id(item, "id", require_uuid=True),
-            name=str(_required(item, "name")),
-            valve_ids=_string_list(item, "valve_ids", require_uuid=True),
-            pump_id=_id(item, "pump_id", require_uuid=True),
-            cooling_enabled=_boolean(item, "cooling_enabled", False),
-            supply_temperature_sensor=item.get("supply_temperature_sensor"),
-            surface_temperature_sensor=item.get("surface_temperature_sensor"),
-            condensation_margin=_number(item, "condensation_margin", 2.0, non_negative=True),
-            supply_temperature_max_age_seconds=_number(
-                item,
-                "supply_temperature_max_age_seconds",
-                _LEGACY_MAX_AGE_SECONDS,
-                positive=True,
-            ),
-            surface_temperature_max_age_seconds=_number(
-                item,
-                "surface_temperature_max_age_seconds",
-                _LEGACY_MAX_AGE_SECONDS,
-                positive=True,
-            ),
-        )
-        for item in raw_circuits
-    ]
-    sources = tuple(_source_from_mapping(item, require_uuid=True) for item in raw_sources)
-    source_selector = _source_selector_from_mapping(raw_topology, require_uuid=True)
-    routes = tuple(
-        DeliveryRoute(
-            id=_id(item, "id", require_uuid=True),
-            zone_id=_id(item, "zone_id", require_uuid=True),
-            circuit_id=_id(item, "circuit_id", require_uuid=True),
-            enabled=_route_enabled(item),
-        )
-        for item in _objects(raw_topology, "routes")
-    )
+    raw_selector = raw_topology.get("source_selector")
+    if raw_selector is not None and not isinstance(raw_selector, Mapping):
+        raise StoredTopologyError("Stored source selector must be an object.")
     return PlantConfiguration(
-        id=plant_id,
-        zones=tuple(zones),
-        valves=valves,
-        pumps=pumps,
-        circuits=tuple(circuits),
-        routes=routes,
-        sources=sources,
-        source_selector=source_selector,
+        id=_id(data, "plant_id", require_uuid=True),
+        zones=tuple(_zone_from_mapping(item) for item in _objects(raw_topology, "zones")),
+        valves=tuple(_valve_from_mapping(item) for item in _objects(raw_topology, "valves")),
+        pumps=tuple(_pump_from_mapping(item) for item in _objects(raw_topology, "pumps")),
+        circuits=tuple(_circuit_from_mapping(item) for item in _objects(raw_topology, "circuits")),
+        routes=tuple(_route_from_mapping(item) for item in _objects(raw_topology, "routes")),
+        sources=tuple(
+            _source_from_mapping(item, require_uuid=True)
+            for item in _objects(raw_topology, "sources")
+        ),
+        source_selector=(
+            _source_selector_from_mapping(raw_selector, require_uuid=True)
+            if raw_selector is not None
+            else None
+        ),
     )
