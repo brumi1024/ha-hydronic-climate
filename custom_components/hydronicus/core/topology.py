@@ -11,6 +11,7 @@ from .model import (
     MIN_ZONE_TARGET_TEMPERATURE,
     Circuit,
     CompiledPlant,
+    DeliveryRoute,
     EquipmentKind,
     PlantConfiguration,
     Pump,
@@ -338,55 +339,17 @@ def _index_topology(configuration: PlantConfiguration) -> _TopologyIndex:
     )
 
 
-def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
-    """Validate and compile a plant configuration without reading runtime state."""
-    if not configuration.id:
-        raise TopologyValidationError("Plant id must not be empty.")
-
-    index = _index_topology(configuration)
-    zone_ids = list(index.zones)
-    valve_ids = list(index.valves)
-    pump_ids = list(index.pumps)
-    circuit_ids = list(index.circuits)
-    source_ids = list(index.sources)
-
-    for zone in configuration.zones:
-        _validate_zone(zone)
-    for valve in configuration.valves:
-        if not _finite_non_negative(valve.opening_time_seconds):
-            raise TopologyValidationError(
-                f"Valve {valve.id} opening time must be finite and non-negative."
-            )
-        if valve.readiness_entity_id is not None and (
-            not isinstance(valve.readiness_entity_id, str)
-            or not valve.readiness_entity_id.strip()
-        ):
-            raise TopologyValidationError(
-                f"Valve {valve.id} readiness feedback entity must be non-empty."
-            )
-        _validate_feedback_binding(
-            f"Valve {valve.id}",
-            "position feedback",
-            valve.position_entity_id,
-            valve.position_max_age_seconds,
-        )
-    for pump in configuration.pumps:
-        if not _finite_non_negative(pump.overrun_seconds):
-            raise TopologyValidationError(
-                f"Pump {pump.id} overrun must be finite and non-negative."
-            )
-        for field_name, entity_id, max_age in (
-            ("power feedback", pump.power_entity_id, pump.power_max_age_seconds),
-            ("flow feedback", pump.flow_entity_id, pump.flow_max_age_seconds),
-            ("fault feedback", pump.fault_entity_id, pump.fault_max_age_seconds),
-        ):
-            _validate_feedback_binding(f"Pump {pump.id}", field_name, entity_id, max_age)
-    for source in configuration.sources:
-        _validate_source(source)
-    source_selector = configuration.source_selector
-    if source_selector is not None:
-        _validate_source_selector(source_selector)
-
+def _validate_relationships(
+    configuration: PlantConfiguration,
+    index: _TopologyIndex,
+    source_selector: SourceSelectionActuator | None,
+) -> tuple[DeliveryRoute, ...]:
+    """Validate bindings, dependencies, routes, cooling paths, and orphan ownership."""
+    zones = index.zones
+    valves = index.valves
+    pumps = index.pumps
+    circuits = index.circuits
+    sources = index.sources
     actuator_entity_ids = [
         *(valve.entity_id for valve in configuration.valves),
         *(pump.entity_id for pump in configuration.pumps),
@@ -409,18 +372,13 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             f"Source selector entity binding is already used by another actuator: "
             f"{source_selector.entity_id}."
         )
-    object_ids = {*zone_ids, *valve_ids, *pump_ids, *circuit_ids, *source_ids}
-    source_actuator_ids = {f"source:{source_id}" for source_id in source_ids}
+    object_ids = {*zones, *valves, *pumps, *circuits, *sources}
+    source_actuator_ids = {f"source:{source_id}" for source_id in sources}
     if source_selector is not None and source_selector.id in object_ids | source_actuator_ids:
         raise TopologyValidationError(
             f"Source selector id {source_selector.id!r} is already used by another object."
         )
 
-    zones = index.zones
-    valves = index.valves
-    pumps = index.pumps
-    circuits = index.circuits
-    sources = index.sources
     referenced_valves: set[str] = set()
     referenced_pumps: set[str] = set()
     for circuit in configuration.circuits:
@@ -518,12 +476,64 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             details.append(f"orphaned circuits: {', '.join(orphaned_circuits)}")
         raise TopologyValidationError("; ".join(details) + ".")
 
-    enabled_routes = tuple(
+    return tuple(
         sorted(
             (route for route in configuration.routes if route.enabled),
             key=lambda route: (route.zone_id, route.circuit_id, route.id),
         )
     )
+
+
+def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
+    """Validate and compile a plant configuration without reading runtime state."""
+    if not configuration.id:
+        raise TopologyValidationError("Plant id must not be empty.")
+
+    index = _index_topology(configuration)
+    zones = index.zones
+    valves = index.valves
+    pumps = index.pumps
+    circuits = index.circuits
+    sources = index.sources
+
+    for zone in configuration.zones:
+        _validate_zone(zone)
+    for valve in configuration.valves:
+        if not _finite_non_negative(valve.opening_time_seconds):
+            raise TopologyValidationError(
+                f"Valve {valve.id} opening time must be finite and non-negative."
+            )
+        if valve.readiness_entity_id is not None and (
+            not isinstance(valve.readiness_entity_id, str)
+            or not valve.readiness_entity_id.strip()
+        ):
+            raise TopologyValidationError(
+                f"Valve {valve.id} readiness feedback entity must be non-empty."
+            )
+        _validate_feedback_binding(
+            f"Valve {valve.id}",
+            "position feedback",
+            valve.position_entity_id,
+            valve.position_max_age_seconds,
+        )
+    for pump in configuration.pumps:
+        if not _finite_non_negative(pump.overrun_seconds):
+            raise TopologyValidationError(
+                f"Pump {pump.id} overrun must be finite and non-negative."
+            )
+        for field_name, entity_id, max_age in (
+            ("power feedback", pump.power_entity_id, pump.power_max_age_seconds),
+            ("flow feedback", pump.flow_entity_id, pump.flow_max_age_seconds),
+            ("fault feedback", pump.fault_entity_id, pump.fault_max_age_seconds),
+        ):
+            _validate_feedback_binding(f"Pump {pump.id}", field_name, entity_id, max_age)
+    for source in configuration.sources:
+        _validate_source(source)
+    source_selector = configuration.source_selector
+    if source_selector is not None:
+        _validate_source_selector(source_selector)
+
+    enabled_routes = _validate_relationships(configuration, index, source_selector)
     summary_routes = tuple(route for route in configuration.routes if route.enabled)
     summary = [
         (
