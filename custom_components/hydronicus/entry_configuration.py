@@ -206,15 +206,11 @@ def _compose_circuits(
         unknown_valve_ids = sorted(set(valve_ids) - parent_valve_ids)
         if unknown_zone_ids:
             raise StoredTopologyError(
-                "Circuit subentry references unknown zones: "
-                + ", ".join(unknown_zone_ids)
-                + "."
+                "Circuit subentry references unknown zones: " + ", ".join(unknown_zone_ids) + "."
             )
         if unknown_valve_ids:
             raise StoredTopologyError(
-                "Circuit subentry references unknown valves: "
-                + ", ".join(unknown_valve_ids)
-                + "."
+                "Circuit subentry references unknown valves: " + ", ".join(unknown_valve_ids) + "."
             )
         if pump_id not in parent_pump_ids:
             raise StoredTopologyError(f"Circuit subentry references unknown pump {pump_id}.")
@@ -254,9 +250,7 @@ def _compose_zones(
         unknown_circuit_ids = sorted(set(selected_circuit_ids) - parent_circuit_ids)
         if unknown_circuit_ids:
             raise StoredTopologyError(
-                "Zone subentry references unknown circuits: "
-                + ", ".join(unknown_circuit_ids)
-                + "."
+                "Zone subentry references unknown circuits: " + ", ".join(unknown_circuit_ids) + "."
             )
         try:
             target_temperature = float(_required(data, CONF_TARGET_TEMPERATURE))
@@ -314,9 +308,7 @@ def _compose_actuators(
         try:
             opening_time_seconds = float(_required(data, CONF_OPENING_TIME))
         except (TypeError, ValueError) as error:
-            raise StoredTopologyError(
-                "Actuator subentry opening time must be numeric."
-            ) from error
+            raise StoredTopologyError("Actuator subentry opening time must be numeric.") from error
         valves.append(
             Valve(
                 id=actuator_id,
@@ -325,9 +317,7 @@ def _compose_actuators(
                 opening_time_seconds=opening_time_seconds,
                 readiness_entity_id=data.get(CONF_VALVE_READINESS_ENTITY),
                 position_entity_id=data.get(CONF_POSITION_FEEDBACK_ENTITY),
-                position_max_age_seconds=float(
-                    data.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0)
-                ),
+                position_max_age_seconds=float(data.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0)),
             )
         )
         selected = set(selected_circuit_ids)
@@ -405,9 +395,7 @@ def effective_plant_configuration(
     zones, zone_routes, zone_subentry_ids = _compose_zones(base, zone_records)
     circuits, routes = _compose_circuits(base, circuit_records)
     routes = [*routes, *zone_routes]
-    valves, circuits, actuator_subentry_ids = _compose_actuators(
-        base, circuits, actuator_records
-    )
+    valves, circuits, actuator_subentry_ids = _compose_actuators(base, circuits, actuator_records)
     # Keep this tracer deletion-safe by referencing only parent-owned objects.
     # Cross-subentry dependencies need an explicit cascade or repair policy first.
     sources, source_subentry_ids = _compose_sources(base, source_records)

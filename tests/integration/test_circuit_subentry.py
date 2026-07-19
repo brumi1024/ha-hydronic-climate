@@ -70,17 +70,13 @@ def _plant_entry() -> MockConfigEntry:
                         "id": LIVING_ZONE_ID,
                         "name": "Living room",
                         "target_temperature": 21.0,
-                        "temperature_sensor_metadata": [
-                            {"entity_id": "sensor.living_temperature"}
-                        ],
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
                     },
                     {
                         "id": OFFICE_ZONE_ID,
                         "name": "Office",
                         "target_temperature": 20.0,
-                        "temperature_sensor_metadata": [
-                            {"entity_id": "sensor.office_temperature"}
-                        ],
+                        "temperature_sensor_metadata": [{"entity_id": "sensor.office_temperature"}],
                     },
                 ],
                 "valves": [
@@ -396,9 +392,7 @@ async def test_reconfigure_cooling_circuit_preserves_mode_and_route_uuids(hass) 
     assert result["reason"] == "reconfigure_successful"
     assert subentry.data["id"] == circuit_id
     assert subentry.data[CONF_COOLING_ENABLED] is True
-    assert subentry.data["routes"] == [
-        {"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}
-    ]
+    assert subentry.data["routes"] == [{"id": route_ids[OFFICE_ZONE_ID], "zone_id": OFFICE_ZONE_ID}]
     assert entry.runtime_data.plant.circuits[circuit_id].cooling_enabled is True
     assert [
         route.id for route in entry.runtime_data.plant.routes if route.circuit_id == circuit_id

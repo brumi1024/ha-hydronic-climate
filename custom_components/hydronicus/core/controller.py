@@ -736,8 +736,7 @@ def _equipment_requires_safe_idle(
     if runtime.selected_source_id is not None:
         return True
     if any(
-        runtime_state.state is not ValveState.CLOSED
-        for runtime_state in runtime.valves.values()
+        runtime_state.state is not ValveState.CLOSED for runtime_state in runtime.valves.values()
     ):
         return True
     return any(runtime_state.state is not PumpState.OFF for runtime_state in runtime.pumps.values())
@@ -1087,8 +1086,7 @@ def _reconcile_source_observations(
     if (
         selector is not None
         and selector.entity_id is not None
-        and selection.phase
-        not in {SourceSelectionPhase.BREAKING, SourceSelectionPhase.SELECTING}
+        and selection.phase not in {SourceSelectionPhase.BREAKING, SourceSelectionPhase.SELECTING}
         and observed_source != active_source_id
     ):
         active_source_id = observed_source
@@ -1153,8 +1151,7 @@ def _advance_breaking_source_selection(
                     target_source_id,
                     recommended_source_id,
                     False,
-                    "Waiting for the configured break interval before accepting "
-                    "selector feedback.",
+                    "Waiting for the configured break interval before accepting selector feedback.",
                 )
                 return selection, (), diagnostic
             selected_at = selection.last_selected_at or now
@@ -1764,7 +1761,7 @@ def _feedback_is_fresh(
         return False, "missing timestamp"
     try:
         age = now - observation.observed_at
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False, "invalid timestamp"
     if age > timedelta(seconds=max_age_seconds):
         return False, "stale"
@@ -1862,7 +1859,9 @@ def _feedback_diagnostics(
         blocked = expected == "open" and valve_observed != "open"
         diagnostics[actuator_id] = ActuatorDiagnostic(
             actuator_id,
-            ActuatorFeedbackStatus.BLOCKED if blocked else ActuatorFeedbackStatus.MISMATCH
+            ActuatorFeedbackStatus.BLOCKED
+            if blocked
+            else ActuatorFeedbackStatus.MISMATCH
             if mismatch
             else ActuatorFeedbackStatus.HEALTHY,
             mismatch=mismatch,
@@ -2365,12 +2364,8 @@ def _filter_degraded_routes(
     for zone_id, demand in list(heating.zone_demands.items()):
         if not demand:
             continue
-        raw_zone_routes = tuple(
-            route for route in raw_heating_routes if route.zone_id == zone_id
-        )
-        healthy_zone_routes = tuple(
-            route for route in heating_routes if route.zone_id == zone_id
-        )
+        raw_zone_routes = tuple(route for route in raw_heating_routes if route.zone_id == zone_id)
+        healthy_zone_routes = tuple(route for route in heating_routes if route.zone_id == zone_id)
         if raw_zone_routes and not healthy_zone_routes:
             zone = plant.zones[zone_id]
             reason = (
@@ -2401,12 +2396,8 @@ def _filter_degraded_routes(
     for zone_id, demand in list(cooling.zone_demands.items()):
         if not demand:
             continue
-        raw_zone_routes = tuple(
-            route for route in raw_cooling_routes if route.zone_id == zone_id
-        )
-        healthy_zone_routes = tuple(
-            route for route in cooling_routes if route.zone_id == zone_id
-        )
+        raw_zone_routes = tuple(route for route in raw_cooling_routes if route.zone_id == zone_id)
+        healthy_zone_routes = tuple(route for route in cooling_routes if route.zone_id == zone_id)
         if raw_zone_routes and not healthy_zone_routes:
             zone = plant.zones[zone_id]
             reason = (
@@ -2456,9 +2447,7 @@ def _arbitrate_mode_conflicts(
         else ()
     )
     blocked_circuit_ids = frozenset(
-        circuit_id
-        for conflict in mode_conflicts
-        for circuit_id in conflict.cooling_circuit_ids
+        circuit_id for conflict in mode_conflicts for circuit_id in conflict.cooling_circuit_ids
     )
     cooling_routes = resolve_cooling_delivery_routes(
         plant,
@@ -2560,19 +2549,13 @@ def _coordinate_mode_routing(
     changeover_phase = runtime.changeover_phase
     changeover_started_at = runtime.changeover_started_at
     equipment_active = _equipment_requires_safe_idle(plant, runtime)
-    mode_change_requested = (
-        changeover_phase is not ModeChangeoverPhase.IDLE
-        or (
-            target_mode in {PlantMode.HEATING, PlantMode.COOLING}
-            and target_mode != runtime.plant_mode
-            and (
-                runtime.plant_mode in {PlantMode.HEATING, PlantMode.COOLING}
-                or equipment_active
-                and (
-                    target_mode is PlantMode.COOLING
-                    or requested_mode is PlantMode.HEATING
-                )
-            )
+    mode_change_requested = changeover_phase is not ModeChangeoverPhase.IDLE or (
+        target_mode in {PlantMode.HEATING, PlantMode.COOLING}
+        and target_mode != runtime.plant_mode
+        and (
+            runtime.plant_mode in {PlantMode.HEATING, PlantMode.COOLING}
+            or equipment_active
+            and (target_mode is PlantMode.COOLING or requested_mode is PlantMode.HEATING)
         )
     )
     if changeover_phase is ModeChangeoverPhase.IDLE and mode_change_requested:
@@ -2699,9 +2682,7 @@ def _index_requested_routes(
     cooling_routes: tuple[DeliveryRoute, ...],
 ) -> tuple[set[str], dict[str, list[str]]]:
     """Index final route demand by circuit in stable route order."""
-    requested_circuits = {
-        route.circuit_id for route in (*heating_routes, *cooling_routes)
-    }
+    requested_circuits = {route.circuit_id for route in (*heating_routes, *cooling_routes)}
     route_ids_by_circuit: dict[str, list[str]] = defaultdict(list)
     for route in heating_routes:
         route_ids_by_circuit[route.circuit_id].append(route.id)
@@ -2796,8 +2777,7 @@ def _coordinate_source(
     direct_source_demand_ids = frozenset(
         command.actuator_id.removeprefix("source:")
         for command in commands
-        if command.actuator_id.startswith("source:")
-        and command.action is ActuatorAction.TURN_ON
+        if command.actuator_id.startswith("source:") and command.action is ActuatorAction.TURN_ON
     )
     reported_active_source_id = selection_runtime.active_source_id or next(
         iter(sorted(direct_source_demand_ids)), None
@@ -2914,8 +2894,7 @@ def _plan_valves(
             cooling_consumers[valve_id].add(circuit.id)
 
     feedback_expected = {
-        valve_id: "open" if consumers.get(valve_id) else "closed"
-        for valve_id in plant.valves
+        valve_id: "open" if consumers.get(valve_id) else "closed" for valve_id in plant.valves
     }
     feedback_diagnostics = _feedback_diagnostics(
         plant,
@@ -3042,10 +3021,7 @@ def _plan_pumps(
 
     feedback_expected = dict(valve_plan.feedback_expected)
     feedback_expected.update(
-        {
-            pump_id: "on" if pump_consumers.get(pump_id) else "off"
-            for pump_id in plant.pumps
-        }
+        {pump_id: "on" if pump_consumers.get(pump_id) else "off" for pump_id in plant.pumps}
     )
     feedback_diagnostics = _feedback_diagnostics(
         plant,
@@ -3067,9 +3043,7 @@ def _plan_pumps(
         if pump_id in plant.pumps and diagnostic.blocked and pump_dependent_requested[pump_id]
     }
     blocked_circuits = {
-        circuit_id
-        for pump_id in blocked_pumps
-        for circuit_id in pump_dependent_requested[pump_id]
+        circuit_id for pump_id in blocked_pumps for circuit_id in pump_dependent_requested[pump_id]
     }
     for pump_id in blocked_pumps:
         pump_consumers[pump_id].difference_update(blocked_circuits)
@@ -3077,9 +3051,7 @@ def _plan_pumps(
 
     cooling_consumers: dict[str, set[str]] = defaultdict(set)
     ready_cooling_circuits = {
-        route.circuit_id
-        for route in cooling_routes
-        if route.circuit_id in ready_circuits
+        route.circuit_id for route in cooling_routes if route.circuit_id in ready_circuits
     }
     for circuit_id in sorted(ready_cooling_circuits):
         cooling_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
@@ -3209,9 +3181,7 @@ def _assemble_evaluation(
     commands = [*valve_plan.commands, *pump_plan.commands]
     actuator_reasons = pump_plan.actuator_reasons
 
-    overrun_pumps = {
-        pump_id for pump_id, pump in pumps.items() if pump.state is PumpState.OVERRUN
-    }
+    overrun_pumps = {pump_id for pump_id, pump in pumps.items() if pump.state is PumpState.OVERRUN}
     for valve_id in sorted(plant.valves):
         valve = valves[valve_id]
         protected_by_overrun = any(
@@ -3225,10 +3195,7 @@ def _assemble_evaluation(
         if (
             valve_plan.consumers.get(valve_id)
             or protected_by_overrun
-            or (
-                mode_routing.changeover_phase is not ModeChangeoverPhase.IDLE
-                and pumps_were_active
-            )
+            or (mode_routing.changeover_phase is not ModeChangeoverPhase.IDLE and pumps_were_active)
         ):
             continue
         if valve.state is not ValveState.CLOSED:
@@ -3277,14 +3244,8 @@ def _assemble_evaluation(
         mode_routing.target_mode
         if next_changeover_phase is ModeChangeoverPhase.IDLE
         and (
-            (
-                mode_routing.target_mode is PlantMode.HEATING
-                and bool(mode_routing.heating_routes)
-            )
-            or (
-                mode_routing.target_mode is PlantMode.COOLING
-                and bool(mode_routing.cooling_routes)
-            )
+            (mode_routing.target_mode is PlantMode.HEATING and bool(mode_routing.heating_routes))
+            or (mode_routing.target_mode is PlantMode.COOLING and bool(mode_routing.cooling_routes))
         )
         else PlantMode.IDLE
     )
@@ -3334,9 +3295,7 @@ def _assemble_evaluation(
     )
     commands.extend(source.commands)
     changeover_target_mode = (
-        mode_routing.target_mode
-        if next_changeover_phase is not ModeChangeoverPhase.IDLE
-        else None
+        mode_routing.target_mode if next_changeover_phase is not ModeChangeoverPhase.IDLE else None
     )
     return Evaluation(
         next_runtime=RuntimeState(
@@ -3363,8 +3322,7 @@ def _assemble_evaluation(
         control_plan=ControlPlan(
             commands=tuple(commands),
             valve_consumers={
-                key: frozenset(value)
-                for key, value in sorted(valve_plan.consumers.items())
+                key: frozenset(value) for key, value in sorted(valve_plan.consumers.items())
             },
             pump_consumers={
                 key: frozenset(value) for key, value in sorted(pump_plan.consumers.items())
@@ -3378,12 +3336,10 @@ def _assemble_evaluation(
             source_recommendation=source.recommendation,
             cooling_zone_demands=cooling.zone_demands,
             cooling_valve_consumers={
-                key: frozenset(value)
-                for key, value in sorted(valve_plan.cooling_consumers.items())
+                key: frozenset(value) for key, value in sorted(valve_plan.cooling_consumers.items())
             },
             cooling_pump_consumers={
-                key: frozenset(value)
-                for key, value in sorted(pump_plan.cooling_consumers.items())
+                key: frozenset(value) for key, value in sorted(pump_plan.cooling_consumers.items())
             },
             cooling_actuator_ids=frozenset(sorted(pump_plan.cooling_actuator_ids)),
             mode_conflicts=mode_conflicts,

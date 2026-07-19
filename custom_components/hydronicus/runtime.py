@@ -149,9 +149,7 @@ class HydronicRuntime:
             _entry=entry,
         )
 
-    async def async_set_dry_run(
-        self, dry_run: bool, *, hass: HomeAssistant | None = None
-    ) -> bool:
+    async def async_set_dry_run(self, dry_run: bool, *, hass: HomeAssistant | None = None) -> bool:
         """Apply Plant Dry run, safely releasing active heating before suppression."""
         requested = bool(dry_run)
         if requested == self.dry_run:
@@ -763,11 +761,7 @@ class HydronicRuntime:
                     valves[actuator_id] = current
                 else:
                     valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
-            elif (
-                self.dry_run
-                and current is not None
-                and current.state is ValveState.OPENING
-            ):
+            elif self.dry_run and current is not None and current.state is ValveState.OPENING:
                 # Shadow execution does not change the physical entity.  Keep
                 # the virtual opening transition stable across identical reads.
                 valves[actuator_id] = current
@@ -940,7 +934,7 @@ class HydronicRuntime:
                 operation.service,
                 {"entity_id": operation.entity_id},
                 blocking=True,
-            )
+            ),
         )
         try:
             await asyncio.wait_for(asyncio.shield(service_task), ACTUATOR_COMMAND_TIMEOUT_SECONDS)
@@ -965,9 +959,7 @@ class HydronicRuntime:
                 and valve.state is ValveState.OPENING
                 and valve.changed_at is not None
             ):
-                deadline = valve.changed_at + timedelta(
-                    seconds=valve_node.opening_time_seconds
-                )
+                deadline = valve.changed_at + timedelta(seconds=valve_node.opening_time_seconds)
                 delays.append(max(0.0, (deadline - now).total_seconds()))
         for pump_node in self.plant.pumps.values():
             pump = self.runtime_state.pumps.get(pump_node.id)
@@ -1075,9 +1067,7 @@ class HydronicRuntime:
             observation = self.snapshot.actuator_feedback.get(valve.id)
             reading = observation.position if observation is not None else None
             if reading is not None and reading.observed_at is not None:
-                deadline = reading.observed_at + timedelta(
-                    seconds=valve.position_max_age_seconds
-                )
+                deadline = reading.observed_at + timedelta(seconds=valve.position_max_age_seconds)
                 if deadline > now:
                     delays.append((deadline - now).total_seconds())
         for pump in self.plant.pumps.values():
@@ -1446,8 +1436,7 @@ class HydronicRuntime:
         ):
             pumps[operation.actuator_id] = PumpRuntime(
                 PumpState.OFF
-                if self.executor.actuator_state(operation.actuator_id)
-                is ActuatorObservedState.OFF
+                if self.executor.actuator_state(operation.actuator_id) is ActuatorObservedState.OFF
                 else PumpState.RUNNING,
                 now,
             )

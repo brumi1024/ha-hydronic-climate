@@ -274,8 +274,8 @@ def _effective_topology_is_valid(
             entry,
             proposed_actuators=proposed_actuators,
             proposed_circuits=proposed_circuits,
-        proposed_zones=proposed_zones,
-        proposed_sources=proposed_sources,
+            proposed_zones=proposed_zones,
+            proposed_sources=proposed_sources,
             excluded_subentry_id=excluded_subentry_id,
         )
         is not None
@@ -1113,9 +1113,7 @@ def _valve_actuator_schema(
             ),
             vol.Optional(
                 CONF_POSITION_FEEDBACK_ENTITY,
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
+            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
             vol.Optional(
                 CONF_POSITION_FEEDBACK_MAX_AGE,
                 default=defaults.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0),
@@ -1284,9 +1282,7 @@ def _source_data(user_input: Mapping[str, Any], source_id: str) -> dict[str, Any
         CONF_SOURCE_MAXIMUM_AGE: user_input.get(
             CONF_SOURCE_MAXIMUM_AGE, DEFAULT_SOURCE_MAXIMUM_AGE
         ),
-        CONF_SOURCE_HYSTERESIS: user_input.get(
-            CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS
-        ),
+        CONF_SOURCE_HYSTERESIS: user_input.get(CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS),
     }
 
 
@@ -1336,9 +1332,7 @@ def _source_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
                 CONF_SOURCE_DEMAND_ENTITY,
                 default=defaults.get(CONF_SOURCE_DEMAND_ENTITY),
             ): vol.Maybe(
-                selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=["switch", "valve"])
-                ),
+                selector.EntitySelector(selector.EntitySelectorConfig(domain=["switch", "valve"])),
             ),
             vol.Required(
                 CONF_SOURCE_MINIMUM_TEMPERATURE,
@@ -1548,8 +1542,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if name:
                 sensor_ids = [str(sensor_id) for sensor_id in user_input[CONF_TEMPERATURE_SENSORS]]
                 humidity_ids = [
-                    str(sensor_id)
-                    for sensor_id in user_input.get(CONF_HUMIDITY_SENSORS, [])
+                    str(sensor_id) for sensor_id in user_input.get(CONF_HUMIDITY_SENSORS, [])
                 ]
                 self._zone_draft = {
                     "id": str(uuid4()),
@@ -1756,9 +1749,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_FLOW_FEEDBACK_MAX_AGE: user_input.get(
                             CONF_FLOW_FEEDBACK_MAX_AGE, 1800.0
                         ),
-                        CONF_FAULT_FEEDBACK_ENTITY: user_input.get(
-                            CONF_FAULT_FEEDBACK_ENTITY
-                        ),
+                        CONF_FAULT_FEEDBACK_ENTITY: user_input.get(CONF_FAULT_FEEDBACK_ENTITY),
                         CONF_FAULT_FEEDBACK_MAX_AGE: user_input.get(
                             CONF_FAULT_FEEDBACK_MAX_AGE, 1800.0
                         ),
@@ -1770,9 +1761,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_NAME: name,
                         CONF_VALVE_IDS: [valve_id],
                         "pump_id": pump_id,
-                        CONF_COOLING_ENABLED: bool(
-                            user_input.get(CONF_COOLING_ENABLED, False)
-                        ),
+                        CONF_COOLING_ENABLED: bool(user_input.get(CONF_COOLING_ENABLED, False)),
                         CONF_SUPPLY_TEMPERATURE_SENSOR: user_input.get(
                             CONF_SUPPLY_TEMPERATURE_SENSOR
                         ),
@@ -1819,27 +1808,27 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(CONF_POSITION_FEEDBACK_ENTITY): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor")
                     ),
-                    vol.Optional(
-                        CONF_POSITION_FEEDBACK_MAX_AGE, default=1800.0
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+                    vol.Optional(CONF_POSITION_FEEDBACK_MAX_AGE, default=1800.0): vol.All(
+                        vol.Coerce(float), vol.Range(min=0, min_included=False)
+                    ),
                     vol.Optional(CONF_POWER_FEEDBACK_ENTITY): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor")
                     ),
-                    vol.Optional(
-                        CONF_POWER_FEEDBACK_MAX_AGE, default=1800.0
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+                    vol.Optional(CONF_POWER_FEEDBACK_MAX_AGE, default=1800.0): vol.All(
+                        vol.Coerce(float), vol.Range(min=0, min_included=False)
+                    ),
                     vol.Optional(CONF_FLOW_FEEDBACK_ENTITY): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor")
                     ),
-                    vol.Optional(
-                        CONF_FLOW_FEEDBACK_MAX_AGE, default=1800.0
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+                    vol.Optional(CONF_FLOW_FEEDBACK_MAX_AGE, default=1800.0): vol.All(
+                        vol.Coerce(float), vol.Range(min=0, min_included=False)
+                    ),
                     vol.Optional(CONF_FAULT_FEEDBACK_ENTITY): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain=["binary_sensor", "sensor"])
                     ),
-                    vol.Optional(
-                        CONF_FAULT_FEEDBACK_MAX_AGE, default=1800.0
-                    ): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
+                    vol.Optional(CONF_FAULT_FEEDBACK_MAX_AGE, default=1800.0): vol.All(
+                        vol.Coerce(float), vol.Range(min=0, min_included=False)
+                    ),
                     vol.Optional(CONF_COOLING_ENABLED, default=False): selector.BooleanSelector(),
                     vol.Optional(CONF_SUPPLY_TEMPERATURE_SENSOR): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor")
@@ -1891,8 +1880,6 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="review",
-            data_schema=(
-                _dry_run_confirmation_schema() if not self._draft[CONF_DRY_RUN] else None
-            ),
+            data_schema=(_dry_run_confirmation_schema() if not self._draft[CONF_DRY_RUN] else None),
             description_placeholders=_initial_review_placeholders(topology, plant),
         )
