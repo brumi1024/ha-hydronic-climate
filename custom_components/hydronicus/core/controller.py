@@ -2295,69 +2295,72 @@ def _evaluate_cooling_zones(
     )
 
 
-def evaluate(
+@dataclass(frozen=True, slots=True)
+class _RouteEligibility:
+    """Healthy heating and cooling routes after binding checks."""
+
+    degraded_circuit_ids: frozenset[str]
+    heating_routes: tuple[DeliveryRoute, ...]
+    cooling_routes: tuple[DeliveryRoute, ...]
+
+
+def _filter_degraded_routes(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
-    runtime: RuntimeState,
     now: datetime,
-) -> Evaluation:
-    """Return the next deterministic shadow runtime and virtual control plan."""
-    heating = _evaluate_heating_zones(plant, snapshot, runtime, now)
-    zone_demands = heating.zone_demands
-    zone_runtime = heating.zone_runtime
-    zone_reasons = heating.zone_reasons
-    zone_decisions = heating.zone_decisions
-
-    cooling = _evaluate_cooling_zones(plant, snapshot, runtime, now, zone_decisions)
-    cooling_zone_demands = cooling.zone_demands
-    cooling_zone_reasons = cooling.zone_reasons
-    cooling_zone_decisions = cooling.zone_decisions
-    cooling_interlocks = cooling.interlocks
-    cooling_circuit_reasons = cooling.circuit_reasons
-
+    heating: _HeatingEvaluation,
+    cooling: _CoolingEvaluation,
+) -> _RouteEligibility:
+    """Remove routes whose configured actuator path is unresolved."""
     degraded_circuits = degraded_circuit_ids(plant, snapshot.unavailable_entity_ids)
-    raw_eligible_routes = resolve_delivery_routes(plant, zone_demands)
-    eligible_routes = tuple(
-        route for route in raw_eligible_routes if route.circuit_id not in degraded_circuits
+    raw_heating_routes = resolve_delivery_routes(plant, heating.zone_demands)
+    heating_routes = tuple(
+        route for route in raw_heating_routes if route.circuit_id not in degraded_circuits
     )
-    for zone_id, demand in list(zone_demands.items()):
+    for zone_id, demand in list(heating.zone_demands.items()):
         if not demand:
             continue
-        raw_zone_routes = tuple(route for route in raw_eligible_routes if route.zone_id == zone_id)
-        healthy_zone_routes = tuple(route for route in eligible_routes if route.zone_id == zone_id)
+        raw_zone_routes = tuple(
+            route for route in raw_heating_routes if route.zone_id == zone_id
+        )
+        healthy_zone_routes = tuple(
+            route for route in heating_routes if route.zone_id == zone_id
+        )
         if raw_zone_routes and not healthy_zone_routes:
             zone = plant.zones[zone_id]
             reason = (
                 f"Blocked: every delivery route for zone {zone.name} uses an unresolved "
                 "actuator or feedback binding."
             )
-            prior = zone_decisions[zone_id]
-            previous = zone_runtime[zone_id]
-            zone_demands[zone_id] = False
-            zone_runtime[zone_id] = ZoneRuntime(
+            prior = heating.zone_decisions[zone_id]
+            previous = heating.zone_runtime[zone_id]
+            heating.zone_demands[zone_id] = False
+            heating.zone_runtime[zone_id] = ZoneRuntime(
                 False,
                 now
                 if previous.demand or previous.last_demand_transition_at is None
                 else previous.last_demand_transition_at,
             )
-            zone_reasons[zone_id] = reason
-            zone_decisions[zone_id] = ZoneDecision(
+            heating.zone_reasons[zone_id] = reason
+            heating.zone_decisions[zone_id] = ZoneDecision(
                 status=ZoneDecisionStatus.SENSOR_BLOCKED,
                 demand=False,
                 aggregation=prior.aggregation,
                 explanation=reason,
             )
 
-    raw_cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
-    requested_cooling_routes = tuple(
+    raw_cooling_routes = resolve_cooling_delivery_routes(plant, cooling.zone_demands)
+    cooling_routes = tuple(
         route for route in raw_cooling_routes if route.circuit_id not in degraded_circuits
     )
-    for zone_id, demand in list(cooling_zone_demands.items()):
+    for zone_id, demand in list(cooling.zone_demands.items()):
         if not demand:
             continue
-        raw_zone_routes = tuple(route for route in raw_cooling_routes if route.zone_id == zone_id)
+        raw_zone_routes = tuple(
+            route for route in raw_cooling_routes if route.zone_id == zone_id
+        )
         healthy_zone_routes = tuple(
-            route for route in requested_cooling_routes if route.zone_id == zone_id
+            route for route in cooling_routes if route.zone_id == zone_id
         )
         if raw_zone_routes and not healthy_zone_routes:
             zone = plant.zones[zone_id]
@@ -2365,10 +2368,10 @@ def evaluate(
                 f"Blocked: every cooling delivery route for zone {zone.name} uses an "
                 "unresolved actuator or feedback binding."
             )
-            prior = cooling_zone_decisions[zone_id]
-            cooling_zone_demands[zone_id] = False
-            cooling_zone_reasons[zone_id] = reason
-            cooling_zone_decisions[zone_id] = ZoneDecision(
+            prior = cooling.zone_decisions[zone_id]
+            cooling.zone_demands[zone_id] = False
+            cooling.zone_reasons[zone_id] = reason
+            cooling.zone_decisions[zone_id] = ZoneDecision(
                 status=ZoneDecisionStatus.SENSOR_BLOCKED,
                 demand=False,
                 aggregation=prior.aggregation,
@@ -2378,9 +2381,32 @@ def evaluate(
                 condensation_margin=prior.condensation_margin,
                 interlocks=prior.interlocks,
             )
-    requested_mode = runtime.requested_mode
+
+    return _RouteEligibility(
+        degraded_circuit_ids=degraded_circuits,
+        heating_routes=heating_routes,
+        cooling_routes=cooling_routes,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ConflictArbitration:
+    """Cooling routes remaining after shared-path arbitration."""
+
+    mode_conflicts: tuple[ModeConflict, ...]
+    cooling_routes: tuple[DeliveryRoute, ...]
+
+
+def _arbitrate_mode_conflicts(
+    plant: CompiledPlant,
+    requested_mode: PlantMode,
+    heating_routes: tuple[DeliveryRoute, ...],
+    requested_cooling_routes: tuple[DeliveryRoute, ...],
+    cooling: _CoolingEvaluation,
+) -> _ConflictArbitration:
+    """Block cooling routes that conflict with heating on shared equipment."""
     mode_conflicts = (
-        resolve_mode_conflicts(plant, eligible_routes, requested_cooling_routes)
+        resolve_mode_conflicts(plant, heating_routes, requested_cooling_routes)
         if requested_mode is PlantMode.AUTO
         else ()
     )
@@ -2391,7 +2417,7 @@ def evaluate(
     )
     cooling_routes = resolve_cooling_delivery_routes(
         plant,
-        cooling_zone_demands,
+        cooling.zone_demands,
         blocked_circuit_ids=blocked_circuit_ids,
     )
     cooling_routes_by_zone: dict[str, tuple[DeliveryRoute, ...]] = defaultdict(tuple)
@@ -2406,34 +2432,32 @@ def evaluate(
         )
         for conflict in mode_conflicts
     }
-    cooling_interlocks.update(conflict_interlocks)
+    cooling.interlocks.update(conflict_interlocks)
     for conflict in mode_conflicts:
         for circuit_id in conflict.cooling_circuit_ids:
-            prior_reason = cooling_circuit_reasons.get(circuit_id)
-            cooling_circuit_reasons[circuit_id] = (
+            prior_reason = cooling.circuit_reasons.get(circuit_id)
+            cooling.circuit_reasons[circuit_id] = (
                 f"{prior_reason} {conflict.message}" if prior_reason else conflict.message
             )
-    for zone_id, prior in list(cooling_zone_decisions.items()):
+    for zone_id, prior in list(cooling.zone_decisions.items()):
         if not prior.demand:
             continue
         affected = tuple(
-            conflict
-            for conflict in mode_conflicts
-            if zone_id in conflict.cooling_zone_ids
+            conflict for conflict in mode_conflicts if zone_id in conflict.cooling_zone_ids
         )
         if not affected:
             continue
         conflict_reasons = " ".join(conflict.message for conflict in affected)
         if cooling_routes_by_zone.get(zone_id):
-            cooling_zone_reasons[zone_id] = (
+            cooling.zone_reasons[zone_id] = (
                 f"{prior.explanation} {conflict_reasons} "
                 "Cooling remains eligible through an independent delivery route."
             )
-            cooling_zone_decisions[zone_id] = ZoneDecision(
+            cooling.zone_decisions[zone_id] = ZoneDecision(
                 status=ZoneDecisionStatus.REQUESTED,
                 demand=True,
                 aggregation=prior.aggregation,
-                explanation=cooling_zone_reasons[zone_id],
+                explanation=cooling.zone_reasons[zone_id],
                 humidity_aggregation=prior.humidity_aggregation,
                 dew_point=prior.dew_point,
                 condensation_margin=prior.condensation_margin,
@@ -2443,9 +2467,9 @@ def evaluate(
                 ),
             )
             continue
-        cooling_zone_demands[zone_id] = False
-        cooling_zone_reasons[zone_id] = conflict_reasons
-        cooling_zone_decisions[zone_id] = ZoneDecision(
+        cooling.zone_demands[zone_id] = False
+        cooling.zone_reasons[zone_id] = conflict_reasons
+        cooling.zone_decisions[zone_id] = ZoneDecision(
             status=ZoneDecisionStatus.SENSOR_BLOCKED,
             demand=False,
             aggregation=prior.aggregation,
@@ -2459,10 +2483,34 @@ def evaluate(
             ),
         )
 
+    return _ConflictArbitration(mode_conflicts, cooling_routes)
+
+
+@dataclass(frozen=True, slots=True)
+class _ModeRouting:
+    """Routes and transition state after shared plant mode gating."""
+
+    target_mode: PlantMode
+    changeover_phase: ModeChangeoverPhase
+    changeover_started_at: datetime | None
+    heating_routes: tuple[DeliveryRoute, ...]
+    cooling_routes: tuple[DeliveryRoute, ...]
+
+
+def _coordinate_mode_routing(
+    plant: CompiledPlant,
+    runtime: RuntimeState,
+    now: datetime,
+    heating: _HeatingEvaluation,
+    cooling: _CoolingEvaluation,
+    mode_conflicts: tuple[ModeConflict, ...],
+) -> _ModeRouting:
+    """Apply requested mode and safe changeover constraints to route demand."""
+    requested_mode = runtime.requested_mode
     target_mode = _target_mode(
         requested_mode,
-        heating_demand=any(zone_demands.values()),
-        cooling_demand=any(cooling_zone_demands.values()),
+        heating_demand=any(heating.zone_demands.values()),
+        cooling_demand=any(cooling.zone_demands.values()),
     )
     changeover_phase = runtime.changeover_phase
     changeover_started_at = runtime.changeover_started_at
@@ -2492,8 +2540,8 @@ def evaluate(
 
     independent_dual_mode = (
         requested_mode is PlantMode.AUTO
-        and any(zone_demands.values())
-        and any(cooling_zone_demands.values())
+        and any(heating.zone_demands.values())
+        and any(cooling.zone_demands.values())
         and not mode_conflicts
     )
     if changeover_phase is not ModeChangeoverPhase.IDLE:
@@ -2501,110 +2549,176 @@ def evaluate(
             f"Mode change to {target_mode.value} is locked until the shared plant is safely "
             f"idle ({changeover_phase.value})."
         )
-        for zone_id, prior in list(zone_decisions.items()):
+        for zone_id, prior in list(heating.zone_decisions.items()):
             if not prior.demand:
                 continue
-            zone_demands[zone_id] = False
-            previous = zone_runtime[zone_id]
-            zone_runtime[zone_id] = ZoneRuntime(
+            heating.zone_demands[zone_id] = False
+            previous = heating.zone_runtime[zone_id]
+            heating.zone_runtime[zone_id] = ZoneRuntime(
                 False,
                 now
                 if previous.demand or previous.last_demand_transition_at is None
                 else previous.last_demand_transition_at,
             )
-            zone_reasons[zone_id] = f"Heating blocked: {transition_reason}"
-            zone_decisions[zone_id] = ZoneDecision(
+            heating.zone_reasons[zone_id] = f"Heating blocked: {transition_reason}"
+            heating.zone_decisions[zone_id] = ZoneDecision(
                 status=ZoneDecisionStatus.MODE_BLOCKED,
                 demand=False,
                 aggregation=prior.aggregation,
-                explanation=zone_reasons[zone_id],
+                explanation=heating.zone_reasons[zone_id],
                 deadline=prior.deadline,
             )
-        for zone_id, prior in list(cooling_zone_decisions.items()):
+        for zone_id, prior in list(cooling.zone_decisions.items()):
             if not prior.demand:
                 continue
-            cooling_zone_demands[zone_id] = False
-            cooling_zone_reasons[zone_id] = f"Cooling blocked: {transition_reason}"
-            cooling_zone_decisions[zone_id] = ZoneDecision(
+            cooling.zone_demands[zone_id] = False
+            cooling.zone_reasons[zone_id] = f"Cooling blocked: {transition_reason}"
+            cooling.zone_decisions[zone_id] = ZoneDecision(
                 status=ZoneDecisionStatus.MODE_BLOCKED,
                 demand=False,
                 aggregation=prior.aggregation,
-                explanation=cooling_zone_reasons[zone_id],
+                explanation=cooling.zone_reasons[zone_id],
                 humidity_aggregation=prior.humidity_aggregation,
                 dew_point=prior.dew_point,
                 condensation_margin=prior.condensation_margin,
                 interlocks=prior.interlocks,
             )
     elif target_mode is PlantMode.HEATING and not independent_dual_mode:
-        for zone_id, prior in list(cooling_zone_decisions.items()):
+        for zone_id, prior in list(cooling.zone_decisions.items()):
             if not prior.demand:
                 continue
-            cooling_zone_demands[zone_id] = False
-            cooling_zone_reasons[zone_id] = (
+            cooling.zone_demands[zone_id] = False
+            cooling.zone_reasons[zone_id] = (
                 f"Cooling blocked: the plant is operating in {PlantMode.HEATING.value} mode."
             )
-            cooling_zone_decisions[zone_id] = ZoneDecision(
+            cooling.zone_decisions[zone_id] = ZoneDecision(
                 status=ZoneDecisionStatus.MODE_BLOCKED,
                 demand=False,
                 aggregation=prior.aggregation,
-                explanation=cooling_zone_reasons[zone_id],
+                explanation=cooling.zone_reasons[zone_id],
                 humidity_aggregation=prior.humidity_aggregation,
                 dew_point=prior.dew_point,
                 condensation_margin=prior.condensation_margin,
                 interlocks=prior.interlocks,
             )
     elif target_mode is PlantMode.COOLING:
-        for zone_id, prior in list(zone_decisions.items()):
+        for zone_id, prior in list(heating.zone_decisions.items()):
             if not prior.demand:
                 continue
-            zone_demands[zone_id] = False
-            previous = zone_runtime[zone_id]
-            zone_runtime[zone_id] = ZoneRuntime(
+            heating.zone_demands[zone_id] = False
+            previous = heating.zone_runtime[zone_id]
+            heating.zone_runtime[zone_id] = ZoneRuntime(
                 False,
                 now
                 if previous.demand or previous.last_demand_transition_at is None
                 else previous.last_demand_transition_at,
             )
-            zone_reasons[zone_id] = (
+            heating.zone_reasons[zone_id] = (
                 f"Heating blocked: the plant is operating in {PlantMode.COOLING.value} mode."
             )
-            zone_decisions[zone_id] = ZoneDecision(
+            heating.zone_decisions[zone_id] = ZoneDecision(
                 status=ZoneDecisionStatus.MODE_BLOCKED,
                 demand=False,
                 aggregation=prior.aggregation,
-                explanation=zone_reasons[zone_id],
+                explanation=heating.zone_reasons[zone_id],
                 deadline=prior.deadline,
             )
 
     if changeover_phase is not ModeChangeoverPhase.IDLE:
-        eligible_routes = ()
-        cooling_routes = ()
+        heating_routes: tuple[DeliveryRoute, ...] = ()
+        cooling_routes: tuple[DeliveryRoute, ...] = ()
     elif independent_dual_mode:
-        eligible_routes = resolve_delivery_routes(plant, zone_demands)
-        cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+        heating_routes = resolve_delivery_routes(plant, heating.zone_demands)
+        cooling_routes = resolve_cooling_delivery_routes(plant, cooling.zone_demands)
     elif target_mode is PlantMode.HEATING:
-        eligible_routes = resolve_delivery_routes(plant, zone_demands)
+        heating_routes = resolve_delivery_routes(plant, heating.zone_demands)
         cooling_routes = ()
     elif target_mode is PlantMode.COOLING:
-        eligible_routes = ()
-        cooling_routes = resolve_cooling_delivery_routes(plant, cooling_zone_demands)
+        heating_routes = ()
+        cooling_routes = resolve_cooling_delivery_routes(plant, cooling.zone_demands)
     else:
-        eligible_routes = ()
+        heating_routes = ()
         cooling_routes = ()
 
-    cooling_routes_by_zone = defaultdict(tuple)
+    return _ModeRouting(
+        target_mode,
+        changeover_phase,
+        changeover_started_at,
+        heating_routes,
+        cooling_routes,
+    )
+
+
+def _index_requested_routes(
+    heating_routes: tuple[DeliveryRoute, ...],
+    cooling_routes: tuple[DeliveryRoute, ...],
+) -> tuple[set[str], dict[str, list[str]]]:
+    """Index final route demand by circuit in stable route order."""
+    requested_circuits = {
+        route.circuit_id for route in (*heating_routes, *cooling_routes)
+    }
+    route_ids_by_circuit: dict[str, list[str]] = defaultdict(list)
+    for route in heating_routes:
+        route_ids_by_circuit[route.circuit_id].append(route.id)
     for route in cooling_routes:
-        cooling_routes_by_zone[route.zone_id] = (*cooling_routes_by_zone[route.zone_id], route)
+        route_ids_by_circuit[route.circuit_id].append(route.id)
+    return requested_circuits, route_ids_by_circuit
+
+
+def evaluate(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+) -> Evaluation:
+    """Return the next deterministic shadow runtime and virtual control plan."""
+    heating = _evaluate_heating_zones(plant, snapshot, runtime, now)
+    zone_demands = heating.zone_demands
+    zone_runtime = heating.zone_runtime
+    zone_reasons = heating.zone_reasons
+    zone_decisions = heating.zone_decisions
+
+    cooling = _evaluate_cooling_zones(plant, snapshot, runtime, now, zone_decisions)
+    cooling_zone_demands = cooling.zone_demands
+    cooling_zone_reasons = cooling.zone_reasons
+    cooling_zone_decisions = cooling.zone_decisions
+    cooling_interlocks = cooling.interlocks
+    cooling_circuit_reasons = cooling.circuit_reasons
+
+    route_eligibility = _filter_degraded_routes(plant, snapshot, now, heating, cooling)
+    degraded_circuits = route_eligibility.degraded_circuit_ids
+    eligible_routes = route_eligibility.heating_routes
+    requested_cooling_routes = route_eligibility.cooling_routes
+    requested_mode = runtime.requested_mode
+    conflict_arbitration = _arbitrate_mode_conflicts(
+        plant,
+        requested_mode,
+        eligible_routes,
+        requested_cooling_routes,
+        cooling,
+    )
+    mode_conflicts = conflict_arbitration.mode_conflicts
+    mode_routing = _coordinate_mode_routing(
+        plant,
+        runtime,
+        now,
+        heating,
+        cooling,
+        mode_conflicts,
+    )
+    target_mode = mode_routing.target_mode
+    changeover_phase = mode_routing.changeover_phase
+    changeover_started_at = mode_routing.changeover_started_at
+    eligible_routes = mode_routing.heating_routes
+    cooling_routes = mode_routing.cooling_routes
 
     # A conflict can remove the last cooling route for a zone.  The public
     # zone demand map is updated above while the filtered route set remains the
     # single source of truth for actuator consumers.
-    requested_circuits = {route.circuit_id for route in (*eligible_routes, *cooling_routes)}
-    route_ids_by_circuit: dict[str, list[str]] = defaultdict(list)
-    for route in eligible_routes:
-        route_ids_by_circuit[route.circuit_id].append(route.id)
-    for route in cooling_routes:
-        route_ids_by_circuit[route.circuit_id].append(route.id)
+    requested_circuits, route_ids_by_circuit = _index_requested_routes(
+        eligible_routes,
+        cooling_routes,
+    )
 
     valve_consumers: dict[str, set[str]] = defaultdict(set)
     for circuit_id in sorted(requested_circuits):
