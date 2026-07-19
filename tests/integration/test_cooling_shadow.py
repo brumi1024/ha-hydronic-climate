@@ -357,7 +357,17 @@ async def test_initial_flow_persists_cooling_fields_and_reloads(hass) -> None:
     result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input={})
     assert result["type"] == FlowResultType.CREATE_ENTRY
     topology = result["data"]["topology"]
-    assert topology["zones"][0][CONF_HUMIDITY_SENSORS] == ["sensor.living_humidity"]
+    assert CONF_HUMIDITY_SENSORS not in topology["zones"][0]
+    assert topology["zones"][0]["humidity_sensor_metadata"] == [
+        {
+            "entity_id": "sensor.living_humidity",
+            "required": True,
+            "weight": 1.0,
+            "calibration_offset": 0.0,
+            "max_age_seconds": 1800.0,
+            "designated_reference": False,
+        }
+    ]
     assert topology["zones"][0][CONF_COOLING_START_DELTA] == 0.5
     assert topology["circuits"][0][CONF_COOLING_ENABLED] is True
     assert topology["circuits"][0][CONF_SUPPLY_TEMPERATURE_SENSOR] == "sensor.cooling_supply"

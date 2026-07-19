@@ -370,9 +370,24 @@ async def test_reconfigure_migrates_legacy_single_sensor_subentry(hass) -> None:
     assert result["type"] == FlowResultType.ABORT
     assert legacy_subentry.data["id"] == LEGACY_ZONE_ID
     assert CONF_TEMPERATURE_SENSOR not in legacy_subentry.data
-    assert legacy_subentry.data[CONF_TEMPERATURE_SENSORS] == [
-        "sensor.legacy_office_temperature",
-        "sensor.office_backup_temperature",
+    assert CONF_TEMPERATURE_SENSORS not in legacy_subentry.data
+    assert legacy_subentry.data[CONF_TEMPERATURE_SENSOR_METADATA] == [
+        {
+            "entity_id": "sensor.legacy_office_temperature",
+            "required": True,
+            "weight": 1.0,
+            "calibration_offset": 0.0,
+            "max_age_seconds": 1800.0,
+            "designated_reference": False,
+        },
+        {
+            "entity_id": "sensor.office_backup_temperature",
+            "required": True,
+            "weight": 1.0,
+            "calibration_offset": 0.0,
+            "max_age_seconds": 1800.0,
+            "designated_reference": False,
+        },
     ]
     assert entry.runtime_data.plant.zones[LEGACY_ZONE_ID].temperature_sensors == (
         "sensor.legacy_office_temperature",
@@ -520,7 +535,7 @@ async def test_reconfigure_zone_preserves_retained_route_enablement(hass) -> Non
         user_input={
             CONF_NAME: subentry.data[CONF_NAME],
             CONF_TARGET_TEMPERATURE: subentry.data[CONF_TARGET_TEMPERATURE],
-            CONF_TEMPERATURE_SENSORS: subentry.data[CONF_TEMPERATURE_SENSORS],
+            CONF_TEMPERATURE_SENSORS: ["sensor.office_temperature"],
             CONF_CIRCUIT_IDS: [CIRCUIT_ID, SECOND_CIRCUIT_ID],
         },
     )

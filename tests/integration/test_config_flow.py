@@ -86,7 +86,17 @@ async def test_user_config_flow_creates_entry(hass) -> None:
     assert result["data"]["dry_run"] is True
     topology = result["data"]["topology"]
     assert topology["zones"][0]["name"] == "Living room"
-    assert topology["zones"][0]["temperature_sensors"] == ["sensor.living_temperature"]
+    assert "temperature_sensors" not in topology["zones"][0]
+    assert topology["zones"][0]["temperature_sensor_metadata"] == [
+        {
+            "entity_id": "sensor.living_temperature",
+            "required": True,
+            "weight": 1.0,
+            "calibration_offset": 0.0,
+            "max_age_seconds": 1800.0,
+            "designated_reference": False,
+        }
+    ]
     assert topology["zones"][0][CONF_TEMPERATURE_AGGREGATION] == "median"
     assert topology["valves"][0]["entity_id"] == "switch.floor_valve"
     assert topology["pumps"][0]["entity_id"] == "switch.floor_pump"

@@ -590,9 +590,7 @@ def _zone_data(
         "id": zone_id,
         CONF_NAME: str(user_input[CONF_NAME]).strip(),
         CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
-        CONF_TEMPERATURE_SENSORS: sensor_ids,
         CONF_TEMPERATURE_SENSOR_METADATA: metadata,
-        CONF_HUMIDITY_SENSORS: humidity_sensor_ids,
         CONF_HUMIDITY_SENSOR_METADATA: humidity_metadata,
         CONF_TEMPERATURE_AGGREGATION: user_input.get(
             CONF_TEMPERATURE_AGGREGATION, DEFAULT_TEMPERATURE_AGGREGATION
@@ -729,11 +727,30 @@ def _zone_advanced_fields(defaults: Mapping[str, Any] | None = None) -> dict[Any
 
 def _zone_temperature_sensor_defaults(defaults: Mapping[str, Any]) -> Any:
     """Return new-list defaults for current and milestone 1 subentries."""
+    metadata = defaults.get(CONF_TEMPERATURE_SENSOR_METADATA)
+    if isinstance(metadata, list):
+        return [
+            str(record["entity_id"])
+            for record in metadata
+            if isinstance(record, Mapping) and record.get("entity_id")
+        ]
     if CONF_TEMPERATURE_SENSORS in defaults:
         return defaults[CONF_TEMPERATURE_SENSORS]
     if CONF_TEMPERATURE_SENSOR in defaults:
         return [defaults[CONF_TEMPERATURE_SENSOR]]
     return vol.UNDEFINED
+
+
+def _zone_humidity_sensor_defaults(defaults: Mapping[str, Any]) -> list[str]:
+    """Return list-form defaults derived from canonical humidity metadata."""
+    metadata = defaults.get(CONF_HUMIDITY_SENSOR_METADATA)
+    if isinstance(metadata, list):
+        return [
+            str(record["entity_id"])
+            for record in metadata
+            if isinstance(record, Mapping) and record.get("entity_id")
+        ]
+    return [str(sensor_id) for sensor_id in defaults.get(CONF_HUMIDITY_SENSORS, [])]
 
 
 def _zone_temperature_aggregation_default(defaults: Mapping[str, Any]) -> str:
@@ -800,7 +817,7 @@ def _zone_schema(
         ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
         vol.Optional(
             CONF_HUMIDITY_SENSORS,
-            default=defaults.get(CONF_HUMIDITY_SENSORS, []),
+            default=_zone_humidity_sensor_defaults(defaults),
         ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", multiple=True)),
         vol.Required(
             CONF_TEMPERATURE_AGGREGATION,
@@ -903,7 +920,7 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
         """Edit one sensor at a time so weights and safety metadata stay typed."""
-        sensor_ids = list(self._zone_draft[CONF_TEMPERATURE_SENSORS])
+        sensor_ids = _zone_temperature_sensor_defaults(self._zone_draft)
         if user_input is not None:
             self._metadata_records.append(_sensor_metadata_record(user_input))
             self._metadata_index += 1
@@ -923,8 +940,6 @@ class ZoneSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                 description_placeholders={"sensor": sensor_id},
             )
         if self._metadata_records:
-            sensor_ids = [record["entity_id"] for record in self._metadata_records]
-            self._zone_draft[CONF_TEMPERATURE_SENSORS] = sensor_ids
             self._zone_draft[CONF_TEMPERATURE_SENSOR_METADATA] = self._metadata_records
         return await self.async_step_sensor_policy()
 
@@ -1543,7 +1558,6 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "id": str(uuid4()),
                     CONF_NAME: name,
                     CONF_TARGET_TEMPERATURE: user_input[CONF_TARGET_TEMPERATURE],
-                    CONF_TEMPERATURE_SENSORS: sensor_ids,
                     CONF_TEMPERATURE_SENSOR_METADATA: [
                         {
                             "entity_id": sensor_id,
@@ -1555,7 +1569,6 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         }
                         for sensor_id in sensor_ids
                     ],
-                    CONF_HUMIDITY_SENSORS: humidity_ids,
                     CONF_HUMIDITY_SENSOR_METADATA: [
                         {
                             "entity_id": sensor_id,
@@ -1605,11 +1618,6 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if user_input.get(CONF_HUMIDITY_SENSOR_METADATA):
                     self._zone_draft[CONF_HUMIDITY_SENSOR_METADATA] = user_input[
                         CONF_HUMIDITY_SENSOR_METADATA
-                    ]
-                    self._zone_draft[CONF_HUMIDITY_SENSORS] = [
-                        str(record["entity_id"])
-                        for record in user_input[CONF_HUMIDITY_SENSOR_METADATA]
-                        if isinstance(record, Mapping) and record.get("entity_id")
                     ]
                 if user_input.get(CONF_CONFIGURE_SENSOR_METADATA):
                     self._metadata_records = []
@@ -1663,7 +1671,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
         """Edit initial sensor metadata through typed one-sensor forms."""
-        sensor_ids = list(self._zone_draft[CONF_TEMPERATURE_SENSORS])
+        sensor_ids = _zone_temperature_sensor_defaults(self._zone_draft)
         if user_input is not None:
             self._metadata_records.append(_sensor_metadata_record(user_input))
             self._metadata_index += 1
@@ -1683,9 +1691,6 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 description_placeholders={"sensor": sensor_id},
             )
         if self._metadata_records:
-            self._zone_draft[CONF_TEMPERATURE_SENSORS] = [
-                record["entity_id"] for record in self._metadata_records
-            ]
             self._zone_draft[CONF_TEMPERATURE_SENSOR_METADATA] = self._metadata_records
         return await self.async_step_sensor_policy()
 
