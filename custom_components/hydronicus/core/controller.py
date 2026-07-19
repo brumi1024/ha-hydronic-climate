@@ -2186,28 +2186,34 @@ def _evaluate_heating_zones(
     )
 
 
-def evaluate(
+@dataclass(frozen=True, slots=True)
+class _CoolingEvaluation:
+    """Pure cooling-demand and safety-interlock phase output."""
+
+    zone_demands: dict[str, bool]
+    zone_reasons: dict[str, str]
+    zone_decisions: dict[str, ZoneDecision]
+    interlocks: dict[str, SafetyInterlockResult]
+    circuit_reasons: dict[str, str]
+
+
+def _evaluate_cooling_zones(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
     runtime: RuntimeState,
     now: datetime,
-) -> Evaluation:
-    """Return the next deterministic shadow runtime and virtual control plan."""
-    heating = _evaluate_heating_zones(plant, snapshot, runtime, now)
-    zone_demands = heating.zone_demands
-    zone_runtime = heating.zone_runtime
-    zone_reasons = heating.zone_reasons
-    zone_decisions = heating.zone_decisions
+    heating_decisions: Mapping[str, ZoneDecision],
+) -> _CoolingEvaluation:
+    """Evaluate cooling demand and condensation safety for every zone."""
+    zone_demands: dict[str, bool] = {}
+    zone_reasons: dict[str, str] = {}
+    zone_decisions: dict[str, ZoneDecision] = {}
+    interlocks_by_id: dict[str, SafetyInterlockResult] = {}
 
-    cooling_zone_demands: dict[str, bool] = {}
-    cooling_zone_reasons: dict[str, str] = {}
-    cooling_zone_decisions: dict[str, ZoneDecision] = {}
-    cooling_interlocks: dict[str, SafetyInterlockResult] = {}
-    cooling_circuit_reasons: dict[str, str] = {}
     for zone_id in sorted(plant.zones):
         zone = plant.zones[zone_id]
         previous_cooling = runtime.cooling_zone_demands.get(zone.id, False)
-        temperature_aggregation = zone_decisions[zone.id].aggregation
+        temperature_aggregation = heating_decisions[zone.id].aggregation
         temperature = temperature_aggregation.value if temperature_aggregation else None
         humidity_aggregation = aggregate_zone_humidity_result(zone, snapshot, now=now)
         humidity = humidity_aggregation.value
@@ -2227,7 +2233,7 @@ def evaluate(
             now,
         )
         for interlock in interlocks:
-            cooling_interlocks[interlock.interlock_id] = interlock
+            interlocks_by_id[interlock.interlock_id] = interlock
         cooling_enabled_route_exists = any(
             route.enabled
             and route.zone_id == zone.id
@@ -2267,9 +2273,9 @@ def evaluate(
             elif humidity_aggregation.excluded_optional_sensor_ids:
                 reason = f"{reason} {humidity_aggregation.explanation}"
 
-        cooling_zone_demands[zone.id] = demand
-        cooling_zone_reasons[zone.id] = reason
-        cooling_zone_decisions[zone.id] = ZoneDecision(
+        zone_demands[zone.id] = demand
+        zone_reasons[zone.id] = reason
+        zone_decisions[zone.id] = ZoneDecision(
             status=status,
             demand=demand,
             aggregation=temperature_aggregation,
@@ -2279,6 +2285,35 @@ def evaluate(
             condensation_margin=margin,
             interlocks=interlocks,
         )
+
+    return _CoolingEvaluation(
+        zone_demands=zone_demands,
+        zone_reasons=zone_reasons,
+        zone_decisions=zone_decisions,
+        interlocks=interlocks_by_id,
+        circuit_reasons={},
+    )
+
+
+def evaluate(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+) -> Evaluation:
+    """Return the next deterministic shadow runtime and virtual control plan."""
+    heating = _evaluate_heating_zones(plant, snapshot, runtime, now)
+    zone_demands = heating.zone_demands
+    zone_runtime = heating.zone_runtime
+    zone_reasons = heating.zone_reasons
+    zone_decisions = heating.zone_decisions
+
+    cooling = _evaluate_cooling_zones(plant, snapshot, runtime, now, zone_decisions)
+    cooling_zone_demands = cooling.zone_demands
+    cooling_zone_reasons = cooling.zone_reasons
+    cooling_zone_decisions = cooling.zone_decisions
+    cooling_interlocks = cooling.interlocks
+    cooling_circuit_reasons = cooling.circuit_reasons
 
     degraded_circuits = degraded_circuit_ids(plant, snapshot.unavailable_entity_ids)
     raw_eligible_routes = resolve_delivery_routes(plant, zone_demands)
