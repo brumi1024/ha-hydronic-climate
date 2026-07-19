@@ -69,6 +69,7 @@ from .entry_configuration import (
     effective_plant_configuration,
     zone_target_temperature_update,
 )
+from .presentation import build_plant_presentation, presentation_entity_ids, serialize_presentation
 from .repairs import async_sync_repairs
 
 
@@ -431,6 +432,37 @@ class HydronicRuntime:
             "suppressed": operations(report.suppressed),
             "failures": [failure.explanation for failure in report.failures],
         }
+
+    def presentation_snapshot(self, hass: HomeAssistant | None = None) -> dict[str, object]:
+        """Return the versioned, redacted Plant presentation contract."""
+        active_hass = hass or self._hass
+        entities = (
+            presentation_entity_ids(
+                active_hass,
+                self._entry.entry_id if self._entry is not None else "",
+                self.plant_id,
+                tuple(self.plant.zones),
+            )
+            if active_hass is not None
+            else {}
+        )
+        return build_plant_presentation(self, control_entities=entities)
+
+    def serialized_presentation(self, hass: HomeAssistant | None = None) -> str:
+        """Return deterministic JSON for a presentation snapshot."""
+        return serialize_presentation(self.presentation_snapshot(hass))
+
+    def presentation_entity_ids(self, hass: HomeAssistant | None = None) -> tuple[str, ...]:
+        """Return only Hydronicus-owned entities used for permission filtering."""
+        if hass is None:
+            return ()
+        entities = presentation_entity_ids(
+            hass,
+            self._entry.entry_id if self._entry is not None else "",
+            self.plant_id,
+            tuple(self.plant.zones),
+        )
+        return tuple(sorted(set(entities.values())))
 
     async def async_safe_shutdown(
         self,
@@ -1305,6 +1337,7 @@ class HydronicRuntime:
                 self.last_reconciliation_changed_actuator_count,
                 self._evaluation_publication_signature(),
                 tuple(sorted(self.executor.failure_states.items())),
+                self._execution_publication_signature(),
                 tuple(sorted(self.executor.reconciliations.items()))
                 if self.diagnostics_include_actuator_details
                 else (),
@@ -1378,6 +1411,36 @@ class HydronicRuntime:
             )
             if self.diagnostics_include_actuator_details
             else (),
+        )
+
+    def _execution_publication_signature(self) -> object:
+        """Return stable operation outcomes that must trigger subscribers."""
+        report = self.last_execution
+        if report is None:
+            return None
+
+        def operation_signature(operation: ActuatorOperation) -> tuple[object, ...]:
+            return (
+                operation.actuator_id,
+                operation.domain,
+                operation.service,
+                operation.target_state,
+                operation.target_value,
+                operation.reason,
+            )
+
+        return (
+            tuple(operation_signature(operation) for operation in report.proposed),
+            tuple(operation_signature(operation) for operation in report.executed),
+            tuple(operation_signature(operation) for operation in report.suppressed),
+            tuple(
+                (
+                    operation_signature(failure.operation),
+                    failure.kind,
+                    failure.explanation,
+                )
+                for failure in report.failures
+            ),
         )
 
     def _now(self) -> datetime:
