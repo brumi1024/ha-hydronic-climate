@@ -52,7 +52,7 @@ def test_valve_readiness_aliases_and_legacy_open_state_are_safe() -> None:
         feedback_entity_id="binary_sensor.valve_ready",
     )
     assert valve.readiness_entity_id == "binary_sensor.valve_ready"
-    assert valve.feedback_entity_id == valve.readiness_entity_id
+    assert valve.readiness_entity_id == "binary_sensor.valve_ready"
     assert ValveRuntime(ValveState.OPEN, datetime(2026, 7, 17, tzinfo=UTC)).is_ready is True
     assert ValveRuntime(ValveState.OPEN, None, False).is_ready is False
 

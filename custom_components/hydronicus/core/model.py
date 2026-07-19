@@ -117,21 +117,11 @@ class ZoneDecisionStatus(StrEnum):
     MODE_BLOCKED = "mode_blocked"
 
 
-class PresetMode(StrEnum):
-    """Supported standard Home Assistant heating preset names."""
-
-    NONE = "none"
-    COMFORT = "comfort"
-    ECO = "eco"
-    AWAY = "away"
-
-
 class SourceKind(StrEnum):
     """Supported source qualification strategies."""
 
     EXTERNAL = "external"
     TEMPERATURE_QUALIFIED_BUFFER = "temperature_qualified_buffer"
-    BUFFER = "temperature_qualified_buffer"
 
 
 class SourceSelectionPhase(StrEnum):
@@ -146,9 +136,6 @@ class SourceSelectionPhase(StrEnum):
     ACTIVE = "active"
 
 
-SourceSelectionState = SourceSelectionPhase
-
-
 @dataclass(frozen=True, slots=True)
 class TemperatureSensorMetadata:
     """Immutable configuration for one temperature observation."""
@@ -159,24 +146,6 @@ class TemperatureSensorMetadata:
     calibration_offset: float = 0.0
     max_age_seconds: float = 1800.0
     designated_reference: bool = False
-
-    @property
-    def maximum_age_seconds(self) -> float:
-        """Return the configured freshness limit using the long-form name."""
-        return self.max_age_seconds
-
-    @property
-    def is_designated_reference(self) -> bool:
-        """Return whether this sensor is the designated reference."""
-        return self.designated_reference
-
-
-# These aliases keep the contract discoverable under the names used by callers
-# that describe the value as a sensor configuration or sensor record.
-TemperatureSensorConfig = TemperatureSensorMetadata
-TemperatureSensor = TemperatureSensorMetadata
-HumiditySensorMetadata = TemperatureSensorMetadata
-ObservationMetadata = TemperatureSensorMetadata
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -268,19 +237,9 @@ class Zone:
         return self.temperature_sensor_metadata
 
     @property
-    def temperature_sensor_weights(self) -> Mapping[str, float]:
-        """Return a read-only compatibility view of configured weights."""
-        return {sensor.entity_id: sensor.weight for sensor in self.temperature_sensor_metadata}
-
-    @property
     def humidity_sensors(self) -> tuple[str, ...]:
         """Return configured humidity entity IDs."""
         return tuple(sensor.entity_id for sensor in self.humidity_sensor_metadata)
-
-    @property
-    def humidity_sensor_weights(self) -> Mapping[str, float]:
-        """Return a read-only view of configured humidity weights."""
-        return {sensor.entity_id: sensor.weight for sensor in self.humidity_sensor_metadata}
 
 
 def _sensor_metadata_records(
@@ -323,9 +282,6 @@ class ZoneRuntime:
         return self.demand
 
 
-ZoneRuntimeState = ZoneRuntime
-
-
 @dataclass(frozen=True, slots=True)
 class AggregationResult:
     """Structured aggregate and sensor-health result for one zone."""
@@ -335,11 +291,6 @@ class AggregationResult:
     excluded_optional_sensor_ids: tuple[str, ...] = ()
     blocking_required_sensor_ids: tuple[str, ...] = ()
     explanation: str = ""
-
-    @property
-    def aggregate_temperature(self) -> float | None:
-        """Return the aggregate under its domain-facing name."""
-        return self.value
 
     @property
     def is_blocked(self) -> bool:
@@ -361,11 +312,6 @@ class ZoneDecision:
     condensation_margin: float | None = None
     interlocks: tuple[SafetyInterlockResult, ...] = ()
 
-    @property
-    def decision(self) -> ZoneDecisionStatus:
-        """Return the status using the alternate contract terminology."""
-        return self.status
-
 
 @dataclass(frozen=True, slots=True)
 class TopologyWarning:
@@ -378,11 +324,6 @@ class TopologyWarning:
     zone_ids: tuple[str, ...] = ()
     equipment_kind: str = EquipmentKind.VALVE
     equipment_id: str | None = None
-
-    @property
-    def affected_valve_id(self) -> str:
-        """Return the valve involved in this warning."""
-        return self.valve_id
 
     @property
     def affected_equipment_id(self) -> str:
@@ -513,21 +454,6 @@ class Source:
         object.__setattr__(self, "hysteresis", float(hysteresis))
         object.__setattr__(self, "demand_entity_id", demand_entity_id)
 
-    @property
-    def source_type(self) -> SourceKind:
-        """Return the qualification kind using its configuration-facing name."""
-        return self.kind
-
-    @property
-    def temperature_threshold(self) -> float | None:
-        """Return the buffer qualification threshold."""
-        return self.minimum_temperature
-
-    @property
-    def source_demand_entity_id(self) -> str | None:
-        """Return the optional explicit source-demand binding."""
-        return self.demand_entity_id
-
 
 @dataclass(frozen=True, slots=True, init=False)
 class SourceSelectionActuator:
@@ -576,25 +502,6 @@ class SourceSelectionActuator:
         object.__setattr__(self, "release_option", release_option)
         object.__setattr__(self, "shadow_only", bool(shadow_only))
 
-    @property
-    def selector_entity_id(self) -> str | None:
-        """Return the optional Home Assistant select binding."""
-        return self.entity_id
-
-    @property
-    def break_before_make_seconds(self) -> float:
-        """Return the configured old-source release interval."""
-        return self.break_interval_seconds
-
-    @property
-    def minimum_source_dwell_seconds(self) -> float:
-        """Return the configured minimum time between source selections."""
-        return self.minimum_dwell_seconds
-
-
-SourceSelector = SourceSelectionActuator
-SourceSelectionConfig = SourceSelectionActuator
-
 
 @dataclass(frozen=True, slots=True)
 class SourceSelectionRuntime:
@@ -606,14 +513,6 @@ class SourceSelectionRuntime:
     transition_started_at: datetime | None = None
     last_selected_at: datetime | None = None
     released_source_id: str | None = None
-
-    @property
-    def selected_source_id(self) -> str | None:
-        """Return the source believed to be selected after a completed transition."""
-        return self.active_source_id
-
-
-SourceSelectorRuntime = SourceSelectionRuntime
 
 
 @dataclass(frozen=True, slots=True)
@@ -627,11 +526,6 @@ class SourceSelectionDiagnostic:
     hydraulically_safe: bool
     explanation: str
     dwell_remaining_seconds: float = 0.0
-
-
-HeatSource = Source
-SourceConfig = Source
-HeatSourceKind = SourceKind
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -682,26 +576,6 @@ class Valve:
         )
         object.__setattr__(self, "position_entity_id", position_entity_id)
         object.__setattr__(self, "position_max_age_seconds", float(position_max_age_seconds))
-
-    @property
-    def feedback_entity_id(self) -> str | None:
-        """Return the optional configured end-switch or readiness entity."""
-        return self.readiness_entity_id
-
-    @property
-    def position_feedback_entity_id(self) -> str | None:
-        """Return the configured position feedback entity."""
-        return self.position_entity_id
-
-    @property
-    def position_feedback_max_age_seconds(self) -> float:
-        """Return the configured position feedback freshness limit."""
-        return self.position_max_age_seconds
-
-    @property
-    def feedback_max_age_seconds(self) -> float:
-        """Return the configured position feedback freshness limit."""
-        return self.position_max_age_seconds
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -759,45 +633,6 @@ class Pump:
         object.__setattr__(self, "flow_max_age_seconds", float(flow_max_age_seconds))
         object.__setattr__(self, "fault_max_age_seconds", float(fault_max_age_seconds))
 
-    @property
-    def power_feedback_entity_id(self) -> str | None:
-        """Return the optional electrical power feedback entity."""
-        return self.power_entity_id
-
-    @property
-    def power_feedback_max_age_seconds(self) -> float:
-        """Return the configured power feedback freshness limit."""
-        return self.power_max_age_seconds
-
-    @property
-    def flow_feedback_entity_id(self) -> str | None:
-        """Return the optional flow feedback entity."""
-        return self.flow_entity_id
-
-    @property
-    def flow_feedback_max_age_seconds(self) -> float:
-        """Return the configured flow feedback freshness limit."""
-        return self.flow_max_age_seconds
-
-    @property
-    def fault_feedback_entity_id(self) -> str | None:
-        """Return the optional fault feedback entity."""
-        return self.fault_entity_id
-
-    @property
-    def fault_feedback_max_age_seconds(self) -> float:
-        """Return the configured fault feedback freshness limit."""
-        return self.fault_max_age_seconds
-
-    @property
-    def feedback_max_age_seconds(self) -> float:
-        """Return the configured common feedback freshness limit."""
-        return min(
-            self.power_max_age_seconds,
-            self.flow_max_age_seconds,
-            self.fault_max_age_seconds,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class Circuit:
@@ -813,21 +648,6 @@ class Circuit:
     condensation_margin: float = 2.0
     supply_temperature_max_age_seconds: float = 1800.0
     surface_temperature_max_age_seconds: float = 1800.0
-
-    @property
-    def supply_temperature_entity_id(self) -> str | None:
-        """Return the configured supply reference using an entity-oriented name."""
-        return self.supply_temperature_sensor
-
-    @property
-    def surface_temperature_entity_id(self) -> str | None:
-        """Return the configured surface reference using an entity-oriented name."""
-        return self.surface_temperature_sensor
-
-    @property
-    def cooling_condensation_margin(self) -> float:
-        """Return the configured cooling safety margin in degrees Celsius."""
-        return self.condensation_margin
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,9 +704,6 @@ class FeedbackObservation:
 
     value: float | bool | str | None
     observed_at: datetime | None
-
-
-ActuatorObservation = FeedbackObservation
 
 
 @dataclass(frozen=True, slots=True)
@@ -993,11 +810,6 @@ class RuntimeState:
     safe_shutdown_phase: SafeShutdownPhase = SafeShutdownPhase.IDLE
     safe_shutdown_started_at: datetime | None = None
 
-    @property
-    def zone_states(self) -> Mapping[str, ZoneRuntime]:
-        """Return zone timing state using the public state-oriented name."""
-        return self.zone_runtime
-
 
 @dataclass(frozen=True, slots=True)
 class ActuatorCommand:
@@ -1011,11 +823,6 @@ class ActuatorCommand:
     def __post_init__(self) -> None:
         """Normalize legacy string construction while rejecting unknown actions."""
         object.__setattr__(self, "action", ActuatorAction(self.action))
-
-    @property
-    def target_source_id(self) -> str | None:
-        """Return the source option for a selector command, when present."""
-        return self.target
 
 
 @dataclass(frozen=True, slots=True)
@@ -1040,11 +847,6 @@ class ControlPlan:
     changeover_target_mode: PlantMode | None = None
     changeover_deadline: datetime | None = None
     mode_explanation: str = ""
-
-    @property
-    def conflicts(self) -> tuple[ModeConflict, ...]:
-        """Return structured heating/cooling conflicts."""
-        return self.mode_conflicts
 
 
 @dataclass(frozen=True, slots=True)
@@ -1094,16 +896,6 @@ class ControllerDiagnostics:
             for actuator_id, diagnostic in self.actuator_diagnostics.items()
             if diagnostic.mismatch
         }
-
-    @property
-    def zone_diagnostics(self) -> Mapping[str, ZoneDecision]:
-        """Return structured decisions without requiring prose parsing."""
-        return self.zone_decisions
-
-    @property
-    def conflicts(self) -> tuple[ModeConflict, ...]:
-        """Return structured heating/cooling conflicts."""
-        return self.mode_conflicts
 
 
 @dataclass(frozen=True, slots=True)

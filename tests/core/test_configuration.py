@@ -213,7 +213,9 @@ def test_decodes_zone_temperature_aggregation_from_config_entry_data() -> None:
     )
 
     assert plant.zones[0].aggregation is TemperatureAggregation.WEIGHTED_MEAN
-    assert plant.zones[0].temperature_sensor_weights == {
+    assert {
+        sensor.entity_id: sensor.weight for sensor in plant.zones[0].temperature_sensor_metadata
+    } == {
         "sensor.living_temperature": 1.0,
         "sensor.living_temperature_backup": 3.0,
     }
@@ -471,7 +473,7 @@ def test_canonical_sensor_metadata_gets_safe_defaults() -> None:
     assert sensor.required is True
     assert sensor.weight == 1.0
     assert sensor.calibration_offset == 0.0
-    assert sensor.maximum_age_seconds == 1800.0
+    assert sensor.max_age_seconds == 1800.0
     assert sensor.designated_reference is False
 
 
@@ -519,7 +521,7 @@ def test_decodes_sensor_metadata_and_zone_policy_fields() -> None:
 
     zone = plant.zones[0]
     assert zone.aggregation is TemperatureAggregation.DESIGNATED_REFERENCE
-    assert zone.sensor_metadata[0].maximum_age_seconds == 300
+    assert zone.sensor_metadata[0].max_age_seconds == 300
     assert zone.sensor_metadata[1].required is False
     assert zone.heating_start_delta == 0.4
     assert zone.heating_stop_delta == 0.15

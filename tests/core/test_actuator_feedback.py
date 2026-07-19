@@ -114,15 +114,14 @@ def test_optional_feedback_is_independently_decoded() -> None:
             routes=(DeliveryRoute("route", "zone", "circuit"),),
         )
     )
-    assert plant.valves["valve"].position_feedback_entity_id == "sensor.position"
-    assert plant.valves["valve"].position_feedback_max_age_seconds == 1800.0
-    assert plant.valves["valve"].feedback_max_age_seconds == 1800.0
-    assert plant.pumps["pump"].power_feedback_entity_id == "sensor.power"
-    assert plant.pumps["pump"].power_feedback_max_age_seconds == 1800.0
-    assert plant.pumps["pump"].flow_feedback_entity_id == "sensor.flow"
-    assert plant.pumps["pump"].flow_feedback_max_age_seconds == 1800.0
-    assert plant.pumps["pump"].fault_feedback_entity_id == "binary_sensor.fault"
-    assert plant.pumps["pump"].fault_feedback_max_age_seconds == 1800.0
+    assert plant.valves["valve"].position_entity_id == "sensor.position"
+    assert plant.valves["valve"].position_max_age_seconds == 1800.0
+    assert plant.pumps["pump"].power_entity_id == "sensor.power"
+    assert plant.pumps["pump"].power_max_age_seconds == 1800.0
+    assert plant.pumps["pump"].flow_entity_id == "sensor.flow"
+    assert plant.pumps["pump"].flow_max_age_seconds == 1800.0
+    assert plant.pumps["pump"].fault_entity_id == "binary_sensor.fault"
+    assert plant.pumps["pump"].fault_max_age_seconds == 1800.0
 
 
 @pytest.mark.parametrize(
