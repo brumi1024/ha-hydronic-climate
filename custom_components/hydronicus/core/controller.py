@@ -1292,6 +1292,107 @@ def _advance_breaking_source_selection(
     )
 
 
+def _advance_selecting_source_selection(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    selection: SourceSelectionRuntime,
+    now: datetime,
+    recommended_source_id: str | None,
+    observed_source: str | None,
+    *,
+    hydraulic_safe: bool,
+) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic]:
+    """Advance explicit selection until one-hot feedback confirms the target."""
+    selector = plant.source_selector
+    target_source_id = selection.target_source_id
+    if target_source_id is not None and recommended_source_id is None:
+        target_source = plant.sources.get(target_source_id)
+        release_command = (
+            _source_release_command(
+                selector,
+                target_source,
+                reason="Release source demand before heating demand becomes unsafe.",
+            )
+            if target_source is not None
+            else None
+        )
+        next_selection = SourceSelectionRuntime(
+            SourceSelectionPhase.BREAKING,
+            target_source_id,
+            None,
+            now,
+            selection.last_selected_at,
+            target_source_id,
+        )
+        return (
+            next_selection,
+            (release_command,) if release_command is not None else (),
+            SourceSelectionDiagnostic(
+                SourceSelectionPhase.BREAKING,
+                target_source_id,
+                None,
+                None,
+                True,
+                "Source demand released because no eligible heating source remains.",
+            ),
+        )
+    if selector is not None and selector.entity_id is not None:
+        if observed_source == target_source_id:
+            selected_at = selection.transition_started_at or now
+            phase = (
+                SourceSelectionPhase.MINIMUM_DWELL
+                if selector.minimum_dwell_seconds > 0
+                else SourceSelectionPhase.ACTIVE
+            )
+            next_selection = SourceSelectionRuntime(
+                phase,
+                target_source_id,
+                target_source_id,
+                selected_at,
+                selected_at,
+            )
+        else:
+            next_selection = selection
+    else:
+        source_demand_observed = (
+            target_source_id is not None
+            and snapshot.source_demand_states.get(target_source_id) is True
+            and all(
+                source_id == target_source_id
+                or snapshot.source_demand_states.get(source_id) is not True
+                for source_id in plant.sources
+            )
+        )
+        if source_demand_observed:
+            selected_at = selection.transition_started_at or now
+            phase = (
+                SourceSelectionPhase.MINIMUM_DWELL
+                if selector is not None and selector.minimum_dwell_seconds > 0
+                else SourceSelectionPhase.ACTIVE
+            )
+            next_selection = SourceSelectionRuntime(
+                phase,
+                target_source_id,
+                target_source_id,
+                selected_at,
+                selected_at,
+            )
+        else:
+            next_selection = selection
+    return (
+        next_selection,
+        (),
+        SourceSelectionDiagnostic(
+            SourceSelectionPhase.SELECTING,
+            next_selection.active_source_id,
+            target_source_id,
+            recommended_source_id,
+            hydraulic_safe,
+            "Waiting for selector feedback after the explicit selection command.",
+        ),
+    )
+
+
 def _advance_source_selection(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -1350,92 +1451,14 @@ def _advance_source_selection(
         )
 
     if selection.phase is SourceSelectionPhase.SELECTING:
-        target_source_id = selection.target_source_id
-        if target_source_id is not None and recommended_source_id is None:
-            target_source = plant.sources.get(target_source_id)
-            release_command = (
-                _source_release_command(
-                    selector,
-                    target_source,
-                    reason="Release source demand before heating demand becomes unsafe.",
-                )
-                if target_source is not None
-                else None
-            )
-            next_selection = SourceSelectionRuntime(
-                SourceSelectionPhase.BREAKING,
-                target_source_id,
-                None,
-                now,
-                selection.last_selected_at,
-                target_source_id,
-            )
-            return (
-                next_selection,
-                (release_command,) if release_command is not None else (),
-                SourceSelectionDiagnostic(
-                    SourceSelectionPhase.BREAKING,
-                    target_source_id,
-                    None,
-                    None,
-                    True,
-                    "Source demand released because no eligible heating source remains.",
-                ),
-            )
-        if selector is not None and selector.entity_id is not None:
-            if observed_source == target_source_id:
-                selected_at = selection.transition_started_at or now
-                phase = (
-                    SourceSelectionPhase.MINIMUM_DWELL
-                    if selector.minimum_dwell_seconds > 0
-                    else SourceSelectionPhase.ACTIVE
-                )
-                next_selection = SourceSelectionRuntime(
-                    phase,
-                    target_source_id,
-                    target_source_id,
-                    selected_at,
-                    selected_at,
-                )
-            else:
-                next_selection = selection
-        else:
-            source_demand_observed = (
-                target_source_id is not None
-                and snapshot.source_demand_states.get(target_source_id) is True
-                and all(
-                    source_id == target_source_id
-                    or snapshot.source_demand_states.get(source_id) is not True
-                    for source_id in plant.sources
-                )
-            )
-            if source_demand_observed:
-                selected_at = selection.transition_started_at or now
-                phase = (
-                    SourceSelectionPhase.MINIMUM_DWELL
-                    if selector is not None and selector.minimum_dwell_seconds > 0
-                    else SourceSelectionPhase.ACTIVE
-                )
-                next_selection = SourceSelectionRuntime(
-                    phase,
-                    target_source_id,
-                    target_source_id,
-                    selected_at,
-                    selected_at,
-                )
-            else:
-                next_selection = selection
-        return (
-            next_selection,
-            (),
-            SourceSelectionDiagnostic(
-                SourceSelectionPhase.SELECTING,
-                next_selection.active_source_id,
-                target_source_id,
-                recommended_source_id,
-                hydraulic_safe,
-                "Waiting for selector feedback after the explicit selection command.",
-            ),
+        return _advance_selecting_source_selection(
+            plant,
+            snapshot,
+            selection,
+            now,
+            recommended_source_id,
+            observed_source,
+            hydraulic_safe=hydraulic_safe,
         )
 
     if active_source_id is None:
