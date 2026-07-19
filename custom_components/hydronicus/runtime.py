@@ -1101,55 +1101,67 @@ class HydronicRuntime:
             hass, delay, self._async_handle_transition_timer
         )
 
-    async def async_refresh(self, hass: HomeAssistant) -> None:
-        """Read sensor states, evaluate the controller, and notify shadow entities."""
-        if self._stopping:
-            return
-        self._refresh_binding_health(hass)
-        self.refresh_count += 1
-        if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
-            await self.async_safe_shutdown(hass)
-            return
+    def _refresh_actuator_observations(self, hass: HomeAssistant) -> None:
+        """Refresh executor observations and reconcile retained runtime state."""
         self.executor.observe_entities(self._actuator_states(hass))
         self._reconcile_actuator_runtime()
-        observations: dict[str, TemperatureObservation] = {}
-        for sensor_id in self._observation_sensor_ids():
-            state = hass.states.get(sensor_id)
-            value: float | None
-            try:
-                value = float(state.state) if state is not None else None
-            except TypeError, ValueError:
-                value = None
-            if state is None:
-                observed_at = None
-            else:
-                observed_at = getattr(state, "last_reported", None)
-                if observed_at is None:
-                    observed_at = getattr(state, "last_updated", None)
-            observations[sensor_id] = TemperatureObservation(
-                value=value,
-                observed_at=observed_at,
-            )
+
+    @staticmethod
+    def _temperature_observation(hass: HomeAssistant, entity_id: str) -> TemperatureObservation:
+        """Read one numeric observation with its Home Assistant timestamp."""
+        state = hass.states.get(entity_id)
+        try:
+            value = float(state.state) if state is not None else None
+        except TypeError, ValueError:
+            value = None
+        if state is None:
+            observed_at = None
+        else:
+            observed_at = getattr(state, "last_reported", None)
+            if observed_at is None:
+                observed_at = getattr(state, "last_updated", None)
+        return TemperatureObservation(value=value, observed_at=observed_at)
+
+    @staticmethod
+    def _feedback_observation(
+        hass: HomeAssistant,
+        entity_id: str | None,
+    ) -> FeedbackObservation | None:
+        """Read one configured feedback entity without coercing its meaning."""
+        if entity_id is None:
+            return None
+        state = hass.states.get(entity_id)
+        if state is None:
+            return FeedbackObservation(None, None)
+        raw_state = getattr(state, "state", None)
+        value: float | bool | str | None = raw_state
+        with suppress(TypeError, ValueError):
+            value = float(raw_state)
+        observed_at = getattr(state, "last_reported", None)
+        if observed_at is None:
+            observed_at = getattr(state, "last_updated", None)
+        return FeedbackObservation(value, observed_at)
+
+    def _build_snapshot(self, hass: HomeAssistant) -> PlantSnapshot:
+        """Build one immutable controller snapshot from current HA state."""
+        observations = {
+            sensor_id: self._temperature_observation(hass, sensor_id)
+            for sensor_id in self._observation_sensor_ids()
+        }
         source_temperatures: dict[str, TemperatureObservation] = {}
         source_availability: dict[str, bool] = {}
         source_selector_states: dict[str, str | None] = {}
         source_demand_states: dict[str, bool] = {}
         for source in self.plant.sources.values():
             if source.temperature_entity_id is not None:
-                state = hass.states.get(source.temperature_entity_id)
-                try:
-                    value = float(state.state) if state is not None else None
-                except TypeError, ValueError:
-                    value = None
-                observed_at = None
-                if state is not None:
-                    observed_at = getattr(state, "last_reported", None)
-                    if observed_at is None:
-                        observed_at = getattr(state, "last_updated", None)
-                source_temperatures[source.id] = TemperatureObservation(value, observed_at)
+                source_temperatures[source.id] = self._temperature_observation(
+                    hass,
+                    source.temperature_entity_id,
+                )
             if source.availability_entity_id is not None:
-                state = hass.states.get(source.availability_entity_id)
-                source_availability[source.id] = _state_is_available(state)
+                source_availability[source.id] = _state_is_available(
+                    hass.states.get(source.availability_entity_id)
+                )
             if source.demand_entity_id is not None:
                 state = hass.states.get(source.demand_entity_id)
                 if state is not None:
@@ -1162,28 +1174,12 @@ class HydronicRuntime:
             source_selector_states[self.plant.source_selector.id] = (
                 getattr(state, "state", None) if state is not None else None
             )
+
         actuator_feedback: dict[str, ActuatorFeedback] = {}
-
-        def feedback_reading(entity_id: str | None) -> FeedbackObservation | None:
-            """Read one configured feedback entity without coercing its meaning."""
-            if entity_id is None:
-                return None
-            state = hass.states.get(entity_id)
-            if state is None:
-                return FeedbackObservation(None, None)
-            raw_state = getattr(state, "state", None)
-            value: float | bool | str | None = raw_state
-            with suppress(TypeError, ValueError):
-                value = float(raw_state)
-            observed_at = getattr(state, "last_reported", None)
-            if observed_at is None:
-                observed_at = getattr(state, "last_updated", None)
-            return FeedbackObservation(value, observed_at)
-
         for valve in self.plant.valves.values():
             if valve.position_entity_id is not None:
                 actuator_feedback[valve.id] = ActuatorFeedback(
-                    position=feedback_reading(valve.position_entity_id)
+                    position=self._feedback_observation(hass, valve.position_entity_id)
                 )
         for pump in self.plant.pumps.values():
             if any(
@@ -1191,10 +1187,11 @@ class HydronicRuntime:
                 for entity_id in (pump.power_entity_id, pump.flow_entity_id, pump.fault_entity_id)
             ):
                 actuator_feedback[pump.id] = ActuatorFeedback(
-                    power=feedback_reading(pump.power_entity_id),
-                    flow=feedback_reading(pump.flow_entity_id),
-                    fault=feedback_reading(pump.fault_entity_id),
+                    power=self._feedback_observation(hass, pump.power_entity_id),
+                    flow=self._feedback_observation(hass, pump.flow_entity_id),
+                    fault=self._feedback_observation(hass, pump.fault_entity_id),
                 )
+
         temperature_ids = set(self._temperature_sensor_ids())
         humidity_ids = set(self._humidity_sensor_ids())
         supply_ids = {
@@ -1207,7 +1204,7 @@ class HydronicRuntime:
             for circuit in self.plant.circuits.values()
             if circuit.surface_temperature_sensor is not None
         }
-        self.snapshot = PlantSnapshot(
+        return PlantSnapshot(
             temperatures={sensor_id: observations[sensor_id] for sensor_id in temperature_ids},
             humidities={sensor_id: observations[sensor_id] for sensor_id in humidity_ids},
             supply_temperatures={sensor_id: observations[sensor_id] for sensor_id in supply_ids},
@@ -1219,20 +1216,30 @@ class HydronicRuntime:
             actuator_feedback=actuator_feedback,
             unavailable_entity_ids=self.unavailable_entity_ids,
         )
-        now = self._now()
-        evaluation_plant = replace(
+
+    def _evaluation_plant(self) -> CompiledPlant:
+        """Apply runtime-owned setpoints to the immutable compiled topology."""
+        return replace(
             self.plant,
             zones={
                 zone_id: replace(
                     zone,
                     target_temperature=self.zone_target_temperatures.get(
-                        zone_id, zone.target_temperature
+                        zone_id,
+                        zone.target_temperature,
                     ),
                 )
                 for zone_id, zone in self.plant.zones.items()
             },
         )
-        result = evaluate(evaluation_plant, self.snapshot, self.runtime_state, now)
+
+    async def _async_execute_evaluation(
+        self,
+        hass: HomeAssistant,
+        result: Evaluation,
+        now: datetime,
+    ) -> None:
+        """Store and execute one completed pure controller evaluation."""
         self.evaluation_count += 1
         self.runtime_state = result.next_runtime
         self.evaluation = result
@@ -1249,6 +1256,27 @@ class HydronicRuntime:
             ),
         )
         self._apply_execution_contract(self.last_execution, now)
+
+    async def async_refresh(self, hass: HomeAssistant) -> None:
+        """Read sensor states, evaluate the controller, and notify shadow entities."""
+        if self._stopping:
+            return
+        self._refresh_binding_health(hass)
+        self.refresh_count += 1
+        if self.runtime_state.safe_shutdown_phase is not SafeShutdownPhase.IDLE:
+            await self.async_safe_shutdown(hass)
+            return
+
+        self._refresh_actuator_observations(hass)
+        self.snapshot = self._build_snapshot(hass)
+        now = self._now()
+        result = evaluate(
+            self._evaluation_plant(),
+            self.snapshot,
+            self.runtime_state,
+            now,
+        )
+        await self._async_execute_evaluation(hass, result, now)
         if self._entry is not None or self._hass is not None:
             self._schedule_next_transition(hass, now)
         self._notify_listeners_if_changed()
