@@ -15,7 +15,6 @@ from hydronicus_core.controller import (
     condensation_margin,
     dew_point_celsius,
     evaluate,
-    mean_zone_temperature,
     resolve_cooling_delivery_routes,
 )
 from hydronicus_core.model import (
@@ -47,10 +46,14 @@ from hydronicus_core.topology import compile_topology
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 
 
+def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
+    return tuple(TemperatureSensorMetadata(entity_id) for entity_id in entity_ids)
+
+
 def _plant() -> PlantConfiguration:
     return PlantConfiguration(
         id="plant",
-        zones=(Zone("living", "Living", 21.0, ("temperature.living",)),),
+        zones=(Zone("living", "Living", 21.0, _metadata("temperature.living",)),),
         valves=(Valve("valve.floor", "Floor valve", "switch.floor_valve", 30),),
         pumps=(Pump("pump.floor", "Floor pump", "switch.floor_pump", 120),),
         circuits=(
@@ -85,13 +88,12 @@ def test_zone_temperature_aggregation_is_deterministic(aggregation, expected) ->
         "living",
         "Living",
         21.0,
-        ("temperature.living", "temperature.living_backup", "temperature.living_window"),
+        (
+            TemperatureSensorMetadata("temperature.living", weight=1.0),
+            TemperatureSensorMetadata("temperature.living_backup", weight=2.0),
+            TemperatureSensorMetadata("temperature.living_window", weight=1.0),
+        ),
         aggregation=aggregation,
-        temperature_sensor_weights={
-            "temperature.living": 1.0,
-            "temperature.living_backup": 2.0,
-            "temperature.living_window": 1.0,
-        },
     )
     snapshot = PlantSnapshot(
         {
@@ -106,7 +108,7 @@ def test_zone_temperature_aggregation_is_deterministic(aggregation, expected) ->
 
 def test_zone_temperature_aggregation_defaults_legacy_zones_to_mean() -> None:
     """Zones created before aggregation support retain mean semantics."""
-    zone = Zone("living", "Living", 21.0, ("temperature.living", "temperature.backup"))
+    zone = Zone("living", "Living", 21.0, _metadata("temperature.living", "temperature.backup"))
     snapshot = PlantSnapshot(
         {
             "temperature.living": TemperatureObservation(18.0, NOW),
@@ -349,10 +351,9 @@ def test_legacy_aggregation_helpers_preserve_value_only_contract() -> None:
             "temperature.b": TemperatureObservation(21.0, NOW),
         }
     )
-    zone = Zone("living", "Living", 21.0, ("temperature.a", "temperature.b"))
+    zone = Zone("living", "Living", 21.0, _metadata("temperature.a", "temperature.b"))
 
     assert aggregate_zone_temperature(zone, snapshot) == 20.0
-    assert mean_zone_temperature(("temperature.a", "temperature.b"), snapshot) == 20.0
 
 
 def _timed_plant(
@@ -480,7 +481,7 @@ def test_controller_uses_zone_aggregation_policy_for_demand() -> None:
                     "living",
                     "Living",
                     20.0,
-                    ("temperature.living", "temperature.window"),
+                    _metadata("temperature.living", "temperature.window"),
                     aggregation=TemperatureAggregation.MAXIMUM,
                 ),
             ),
@@ -585,7 +586,7 @@ def _mixed_mode_plant(*, shared_valve: bool, shared_pump: bool, source: bool = F
         PlantConfiguration(
             id="mixed-mode-plant",
             zones=(
-                Zone("heating-zone", "Heating zone", 21.0, ("temperature.heating",)),
+                Zone("heating-zone", "Heating zone", 21.0, _metadata("temperature.heating",)),
                 Zone(
                     "cooling-zone",
                     "Cooling zone",
@@ -938,8 +939,8 @@ def test_shared_pump_remains_running_when_one_consumer_releases_demand() -> None
         PlantConfiguration(
             id="plant",
             zones=(
-                Zone("living", "Living", 21.0, ("temperature.living",)),
-                Zone("office", "Office", 21.0, ("temperature.office",)),
+                Zone("living", "Living", 21.0, _metadata("temperature.living",)),
+                Zone("office", "Office", 21.0, _metadata("temperature.office",)),
             ),
             valves=(
                 Valve("valve.floor", "Floor valve", "switch.floor_valve", 1),
@@ -993,8 +994,8 @@ def test_shared_valve_and_pump_remain_active_until_last_consumer_releases() -> N
         PlantConfiguration(
             id="plant",
             zones=(
-                Zone("living", "Living", 21.0, ("temperature.living",)),
-                Zone("office", "Office", 21.0, ("temperature.office",)),
+                Zone("living", "Living", 21.0, _metadata("temperature.living",)),
+                Zone("office", "Office", 21.0, _metadata("temperature.office",)),
             ),
             valves=(Valve("shared", "Shared valve", "switch.shared_valve", 1),),
             pumps=(Pump("pump", "Shared pump", "switch.shared_pump", 10),),
@@ -1051,7 +1052,7 @@ def test_one_zone_requests_every_enabled_delivery_route() -> None:
     plant = compile_topology(
         PlantConfiguration(
             id="plant",
-            zones=(Zone("living", "Living", 21.0, ("temperature.living",)),),
+            zones=(Zone("living", "Living", 21.0, _metadata("temperature.living",)),),
             valves=(
                 Valve("floor-valve", "Floor valve", "switch.floor_valve", 1),
                 Valve("ceiling-valve", "Ceiling valve", "switch.ceiling_valve", 1),
@@ -1098,8 +1099,8 @@ def test_unchanged_running_snapshot_produces_no_new_commands() -> None:
     assert unchanged.control_plan.commands == ()
 
 
-def test_zone_demand_blocks_when_a_legacy_sensor_exceeds_default_maximum_age() -> None:
-    """Legacy sensors use the frozen 1800-second freshness default."""
+def test_zone_demand_blocks_when_a_sensor_exceeds_default_maximum_age() -> None:
+    """Canonical sensor metadata uses the frozen 1800-second freshness default."""
     plant = compile_topology(
         PlantConfiguration(
             id="plant",
@@ -1108,9 +1109,9 @@ def test_zone_demand_blocks_when_a_legacy_sensor_exceeds_default_maximum_age() -
                     "living",
                     "Living",
                     21.0,
-                    temperature_sensors=(
-                        "temperature.living_wall",
-                        "temperature.living_window",
+                    temperature_sensor_metadata=(
+                        TemperatureSensorMetadata("temperature.living_wall"),
+                        TemperatureSensorMetadata("temperature.living_window"),
                     ),
                 ),
             ),
@@ -1147,7 +1148,7 @@ def test_zone_blocks_when_any_required_temperature_sensor_is_unusable(
                     "living",
                     "Living",
                     21.0,
-                    ("temperature.living_wall", "temperature.living_window"),
+                    _metadata("temperature.living_wall", "temperature.living_window"),
                 ),
             ),
             valves=(Valve("valve.floor", "Floor valve", "switch.floor_valve", 30),),
@@ -1174,7 +1175,7 @@ def test_circuit_waits_for_every_series_valve_before_pump_request() -> None:
     plant = compile_topology(
         PlantConfiguration(
             id="plant",
-            zones=(Zone("living", "Living", 21.0, ("temperature.living",)),),
+            zones=(Zone("living", "Living", 21.0, _metadata("temperature.living",)),),
             valves=(
                 Valve("supply", "Supply valve", "switch.supply_valve", 10),
                 Valve("return", "Return valve", "switch.return_valve", 30),

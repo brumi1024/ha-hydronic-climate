@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -148,7 +148,7 @@ class TemperatureSensorMetadata:
     designated_reference: bool = False
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True)
 class Zone:
     """A comfort target whose required sensors contribute to one demand value."""
 
@@ -166,65 +166,9 @@ class Zone:
     cooling_start_delta: float = 0.3
     cooling_stop_delta: float = 0.1
 
-    def __init__(
-        self,
-        id: str,
-        name: str,
-        target_temperature: float,
-        temperature_sensors: Iterable[str | TemperatureSensorMetadata] = (),
-        aggregation: TemperatureAggregation = TemperatureAggregation.MEAN,
-        temperature_sensor_weights: Mapping[str, float] | None = None,
-        heating_start_delta: float = 0.3,
-        heating_stop_delta: float = 0.1,
-        minimum_active_duration_seconds: float = 0.0,
-        minimum_idle_duration_seconds: float = 0.0,
-        preset_targets: Mapping[str, float] | None = None,
-        humidity_sensors: Iterable[str | TemperatureSensorMetadata] = (),
-        humidity_sensor_weights: Mapping[str, float] | None = None,
-        cooling_start_delta: float = 0.3,
-        cooling_stop_delta: float = 0.1,
-        *,
-        sensor_metadata: Iterable[str | TemperatureSensorMetadata] | None = None,
-        temperature_sensor_metadata: Iterable[str | TemperatureSensorMetadata] | None = None,
-        humidity_sensor_metadata: Iterable[str | TemperatureSensorMetadata] | None = None,
-    ) -> None:
-        """Accept the legacy ID tuple while storing one canonical metadata tuple."""
-        if (
-            sensor_metadata is not None
-            and temperature_sensor_metadata is not None
-            and tuple(sensor_metadata) != tuple(temperature_sensor_metadata)
-        ):
-            raise ValueError("Zone sensor metadata was provided more than once.")
-        raw_metadata = (
-            temperature_sensor_metadata
-            if temperature_sensor_metadata is not None
-            else sensor_metadata
-        )
-        raw_items = tuple(temperature_sensors if raw_metadata is None else raw_metadata)
-        legacy_weights = temperature_sensor_weights or {}
-        metadata = _sensor_metadata_records(raw_items, legacy_weights)
-        raw_humidity = tuple(
-            humidity_sensors if humidity_sensor_metadata is None else humidity_sensor_metadata
-        )
-        humidity_metadata = _sensor_metadata_records(raw_humidity, humidity_sensor_weights or {})
-
-        object.__setattr__(self, "id", id)
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "target_temperature", target_temperature)
-        object.__setattr__(self, "temperature_sensor_metadata", tuple(metadata))
-        object.__setattr__(self, "aggregation", aggregation)
-        object.__setattr__(self, "heating_start_delta", heating_start_delta)
-        object.__setattr__(self, "heating_stop_delta", heating_stop_delta)
-        object.__setattr__(self, "minimum_active_duration_seconds", minimum_active_duration_seconds)
-        object.__setattr__(self, "minimum_idle_duration_seconds", minimum_idle_duration_seconds)
-        object.__setattr__(
-            self,
-            "preset_targets",
-            MappingProxyType(dict(preset_targets or {})),
-        )
-        object.__setattr__(self, "humidity_sensor_metadata", humidity_metadata)
-        object.__setattr__(self, "cooling_start_delta", cooling_start_delta)
-        object.__setattr__(self, "cooling_stop_delta", cooling_stop_delta)
+    def __post_init__(self) -> None:
+        """Freeze preset targets at the domain boundary."""
+        object.__setattr__(self, "preset_targets", MappingProxyType(dict(self.preset_targets)))
 
     @property
     def temperature_sensors(self) -> tuple[str, ...]:
@@ -240,33 +184,6 @@ class Zone:
     def humidity_sensors(self) -> tuple[str, ...]:
         """Return configured humidity entity IDs."""
         return tuple(sensor.entity_id for sensor in self.humidity_sensor_metadata)
-
-
-def _sensor_metadata_records(
-    raw_items: Iterable[str | TemperatureSensorMetadata],
-    weights: Mapping[str, float],
-) -> tuple[TemperatureSensorMetadata, ...]:
-    """Normalize legacy entity IDs and immutable observation metadata."""
-    metadata: list[TemperatureSensorMetadata] = []
-    for item in raw_items:
-        if isinstance(item, TemperatureSensorMetadata):
-            sensor = item
-        else:
-            sensor = TemperatureSensorMetadata(
-                entity_id=str(item),
-                weight=float(weights.get(str(item), 1.0)),
-            )
-        if sensor.entity_id in weights and sensor.weight == 1.0:
-            sensor = TemperatureSensorMetadata(
-                entity_id=sensor.entity_id,
-                required=sensor.required,
-                weight=float(weights[sensor.entity_id]),
-                calibration_offset=sensor.calibration_offset,
-                max_age_seconds=sensor.max_age_seconds,
-                designated_reference=sensor.designated_reference,
-            )
-        metadata.append(sensor)
-    return tuple(metadata)
 
 
 @dataclass(frozen=True, slots=True)

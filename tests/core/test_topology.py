@@ -19,6 +19,10 @@ from hydronicus_core.model import (
 from hydronicus_core.topology import TopologyValidationError, compile_topology
 
 
+def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
+    return tuple(TemperatureSensorMetadata(entity_id) for entity_id in entity_ids)
+
+
 def test_compile_topology_produces_summary() -> None:
     """A valid topology should compile into a deterministic summary."""
     plant = PlantConfiguration(
@@ -28,7 +32,7 @@ def test_compile_topology_produces_summary() -> None:
                 id="zone-1",
                 name="Living room",
                 target_temperature=21.5,
-                temperature_sensors=("sensor.living_room_temperature",),
+                temperature_sensor_metadata=_metadata("sensor.living_room_temperature"),
             ),
         ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
@@ -58,8 +62,22 @@ def test_compile_topology_explains_multi_route_and_shared_equipment() -> None:
     plant = PlantConfiguration(
         id="plant-1",
         zones=(
-            Zone("living", "Living room", 21.0, ("sensor.living_temperature",)),
-            Zone("office", "Office", 20.0, ("sensor.office_temperature",)),
+            Zone(
+                "living",
+                "Living room",
+                21.0,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+            Zone(
+                "office",
+                "Office",
+                20.0,
+                _metadata(
+                    "sensor.office_temperature",
+                ),
+            ),
         ),
         valves=(Valve("shared", "Shared valve", "switch.shared_valve"),),
         pumps=(Pump("pump", "Shared pump", "switch.shared_pump"),),
@@ -91,8 +109,22 @@ def test_compile_topology_emits_stable_non_fatal_shared_valve_warning() -> None:
     plant = PlantConfiguration(
         id="plant-1",
         zones=(
-            Zone("living", "Living room", 21.0, ("sensor.living_temperature",)),
-            Zone("office", "Office", 20.0, ("sensor.office_temperature",)),
+            Zone(
+                "living",
+                "Living room",
+                21.0,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+            Zone(
+                "office",
+                "Office",
+                20.0,
+                _metadata(
+                    "sensor.office_temperature",
+                ),
+            ),
         ),
         valves=(Valve("shared", "Shared valve", "switch.shared_valve"),),
         pumps=(
@@ -169,7 +201,16 @@ def test_compile_topology_rejects_duplicate_delivery_route_relationships() -> No
     """A zone-to-circuit relationship must have one stable route identity."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
         pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
         circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
@@ -195,7 +236,7 @@ def test_compile_topology_rejects_orphans() -> None:
                 id="zone-1",
                 name="Living room",
                 target_temperature=21.5,
-                temperature_sensors=("sensor.living_room_temperature",),
+                temperature_sensor_metadata=_metadata("sensor.living_room_temperature"),
             ),
         ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
@@ -219,7 +260,16 @@ def test_compile_topology_rejects_unknown_actuator_relationships() -> None:
     """Circuit relationships must resolve to topology-owned actuator ids."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
         pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
         circuits=(Circuit("circuit-1", "Floor loop", ("missing-valve",), "pump-1"),),
@@ -234,7 +284,16 @@ def test_compile_topology_rejects_unknown_pump_relationship() -> None:
     """A circuit pump relationship must resolve to a topology-owned pump id."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
         pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
         circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "missing-pump"),),
@@ -249,7 +308,16 @@ def test_compile_topology_rejects_orphaned_actuators() -> None:
     """Unused actuator nodes should fail closed instead of silently drifting."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(
             Valve("valve-1", "Floor valve", "switch.floor_valve"),
             Valve("valve-2", "Unused valve", "switch.unused_valve"),
@@ -272,7 +340,16 @@ def test_compile_topology_rejects_duplicate_actuator_ids() -> None:
     """Actuator relationship ids must be globally unambiguous within their type."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(
             Valve("valve-1", "First valve", "switch.first_valve"),
             Valve("valve-1", "Second valve", "switch.second_valve"),
@@ -290,7 +367,16 @@ def test_compile_topology_rejects_duplicate_pump_ids() -> None:
     """Pump relationship ids must be globally unambiguous."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
         pumps=(
             Pump("pump-1", "First pump", "switch.first_pump"),
@@ -308,7 +394,16 @@ def test_compile_topology_rejects_circuit_without_valves() -> None:
     """A circuit without a valve cannot be sequenced safely."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(),
         pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
         circuits=(Circuit("circuit-1", "Floor loop", (), "pump-1"),),
@@ -386,7 +481,7 @@ def test_compile_topology_rejects_duplicate_zone_temperature_sensors() -> None:
                 "zone-1",
                 "Living room",
                 21.5,
-                ("sensor.living_temperature", "sensor.living_temperature"),
+                _metadata("sensor.living_temperature", "sensor.living_temperature"),
             ),
         ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
@@ -406,7 +501,7 @@ def test_compile_topology_rejects_zone_without_temperature_sensors() -> None:
     """Every zone needs at least one observation before demand can be evaluated."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ()),),
+        zones=(Zone("zone-1", "Living room", 21.5, _metadata()),),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
         pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
         circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
@@ -424,7 +519,16 @@ def test_compile_topology_rejects_blank_temperature_sensor_id() -> None:
     """Every configured observation must identify a real Home Assistant entity."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "",
+                ),
+            ),
+        ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
         pumps=(Pump("pump-1", "Floor pump", "switch.floor_pump"),),
         circuits=(Circuit("circuit-1", "Floor loop", ("valve-1",), "pump-1"),),
@@ -443,7 +547,16 @@ def test_compile_topology_rejects_unsafe_valve_timing(opening_time: float) -> No
     """Valve readiness timing must be finite and non-negative."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(
             Valve(
                 "valve-1",
@@ -468,7 +581,16 @@ def test_compile_topology_rejects_unsafe_pump_timing(overrun: float) -> None:
     """Pump overrun timing must be finite and non-negative."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
         pumps=(
             Pump(
@@ -492,7 +614,16 @@ def test_compile_topology_rejects_duplicate_physical_actuator_bindings() -> None
     """One physical HA entity must compile to one actuator state machine."""
     plant = PlantConfiguration(
         id="plant-1",
-        zones=(Zone("zone-1", "Living room", 21.5, ("sensor.living_temperature",)),),
+        zones=(
+            Zone(
+                "zone-1",
+                "Living room",
+                21.5,
+                _metadata(
+                    "sensor.living_temperature",
+                ),
+            ),
+        ),
         valves=(
             Valve("valve-1", "First valve", "switch.shared_valve"),
             Valve("valve-2", "Second valve", "switch.shared_valve"),
@@ -542,8 +673,7 @@ def test_compile_topology_rejects_invalid_temperature_sensor_weights() -> None:
                 "zone-1",
                 "Living room",
                 21.5,
-                ("sensor.living_temperature",),
-                temperature_sensor_weights={"sensor.living_temperature": 0},
+                (TemperatureSensorMetadata("sensor.living_temperature", weight=0),),
             ),
         ),
         valves=(Valve("valve-1", "Floor valve", "switch.floor_valve"),),
@@ -609,7 +739,15 @@ def _metadata_plant(
 def test_compile_topology_rejects_unsafe_zone_metadata(
     zone_kwargs: dict[str, object], message: str
 ) -> None:
-    zone = Zone("zone", "Zone", 21.0, ("sensor",), **zone_kwargs)
+    fields = dict(zone_kwargs)
+    metadata = fields.pop("temperature_sensor_metadata", _metadata("sensor"))
+    zone = Zone(
+        "zone",
+        "Zone",
+        21.0,
+        temperature_sensor_metadata=metadata,
+        **fields,
+    )
 
     with pytest.raises(TopologyValidationError, match=message):
         compile_topology(_metadata_plant(zone))
@@ -641,7 +779,7 @@ def test_compile_topology_requires_reference_for_designated_policy() -> None:
 def test_compile_topology_validates_preset_targets(
     preset_targets: dict[str, float], message: str
 ) -> None:
-    zone = Zone("zone", "Zone", 21.0, ("sensor",), preset_targets=preset_targets)
+    zone = Zone("zone", "Zone", 21.0, _metadata("sensor"), preset_targets=preset_targets)
 
     with pytest.raises(TopologyValidationError, match=message):
         compile_topology(_metadata_plant(zone))
@@ -650,7 +788,16 @@ def test_compile_topology_validates_preset_targets(
 def test_compile_topology_rejects_blank_bindings_and_unknown_routes() -> None:
     blank_binding = PlantConfiguration(
         id="plant",
-        zones=(Zone("zone", "Zone", 21.0, ("sensor",)),),
+        zones=(
+            Zone(
+                "zone",
+                "Zone",
+                21.0,
+                _metadata(
+                    "sensor",
+                ),
+            ),
+        ),
         valves=(Valve("valve", "Valve", " "),),
         pumps=(Pump("pump", "Pump", "switch.pump"),),
         circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
@@ -660,14 +807,28 @@ def test_compile_topology_rejects_blank_bindings_and_unknown_routes() -> None:
         compile_topology(blank_binding)
 
     unknown_zone = _metadata_plant(
-        Zone("zone", "Zone", 21.0, ("sensor",)),
+        Zone(
+            "zone",
+            "Zone",
+            21.0,
+            _metadata(
+                "sensor",
+            ),
+        ),
         routes=(DeliveryRoute("route", "missing", "circuit"),),
     )
     with pytest.raises(TopologyValidationError, match="unknown zone missing"):
         compile_topology(unknown_zone)
 
     unknown_circuit = _metadata_plant(
-        Zone("zone", "Zone", 21.0, ("sensor",)),
+        Zone(
+            "zone",
+            "Zone",
+            21.0,
+            _metadata(
+                "sensor",
+            ),
+        ),
         routes=(DeliveryRoute("route", "zone", "missing"),),
     )
     with pytest.raises(TopologyValidationError, match="unknown circuit missing"):
@@ -678,8 +839,22 @@ def test_compile_topology_accepts_a_disabled_route_when_other_routes_cover_the_g
     plant = PlantConfiguration(
         id="plant",
         zones=(
-            Zone("living", "Living", 21.0, ("sensor.living",)),
-            Zone("office", "Office", 21.0, ("sensor.office",)),
+            Zone(
+                "living",
+                "Living",
+                21.0,
+                _metadata(
+                    "sensor.living",
+                ),
+            ),
+            Zone(
+                "office",
+                "Office",
+                21.0,
+                _metadata(
+                    "sensor.office",
+                ),
+            ),
         ),
         valves=(
             Valve("valve", "Valve", "switch.valve"),
@@ -745,7 +920,14 @@ def test_compile_topology_warns_for_shared_pumps_and_sources() -> None:
     plant = PlantConfiguration(
         id="coupled-modes",
         zones=(
-            Zone("heating-zone", "Heating", 21.0, ("sensor.heating",)),
+            Zone(
+                "heating-zone",
+                "Heating",
+                21.0,
+                _metadata(
+                    "sensor.heating",
+                ),
+            ),
             Zone(
                 "cooling-zone",
                 "Cooling",
@@ -839,7 +1021,14 @@ def test_compile_topology_rejects_unsafe_cooling_circuits(
 def test_compile_topology_rejects_cooling_without_humidity_observation() -> None:
     """A cooling-enabled route cannot run without zone humidity topology."""
     plant = _metadata_plant(
-        Zone("zone", "Zone", 24.0, ("sensor.temperature",)),
+        Zone(
+            "zone",
+            "Zone",
+            24.0,
+            _metadata(
+                "sensor.temperature",
+            ),
+        ),
     )
     plant = PlantConfiguration(
         id=plant.id,
@@ -865,7 +1054,16 @@ def test_compile_topology_rejects_cooling_without_humidity_observation() -> None
 
 def test_compile_topology_rejects_empty_valve_readiness_entity() -> None:
     """A configured feedback binding must remain an explicit non-empty entity ID."""
-    plant = _metadata_plant(Zone("zone", "Zone", 21.0, ("sensor.temperature",)))
+    plant = _metadata_plant(
+        Zone(
+            "zone",
+            "Zone",
+            21.0,
+            _metadata(
+                "sensor.temperature",
+            ),
+        )
+    )
     plant = PlantConfiguration(
         id=plant.id,
         zones=plant.zones,
