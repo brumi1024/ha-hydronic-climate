@@ -40,14 +40,32 @@ from .harness import ScenarioStep, run_scenario
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 
 
+def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
+    return tuple(TemperatureSensorMetadata(entity_id) for entity_id in entity_ids)
+
+
 def test_two_zones_release_shared_pump_independently() -> None:
     """One released route must not stop a pump still serving another route."""
     plant = compile_topology(
         PlantConfiguration(
             id="shared-pump-plant",
             zones=(
-                Zone("living", "Living", 21.0, ("sensor.living_temperature",)),
-                Zone("office", "Office", 21.0, ("sensor.office_temperature",)),
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    _metadata(
+                        "sensor.living_temperature",
+                    ),
+                ),
+                Zone(
+                    "office",
+                    "Office",
+                    21.0,
+                    _metadata(
+                        "sensor.office_temperature",
+                    ),
+                ),
             ),
             valves=(
                 Valve("living-valve", "Living valve", "switch.living_valve", 1),
@@ -100,7 +118,16 @@ def test_series_valves_command_timeline_and_overrun_protection() -> None:
     plant = compile_topology(
         PlantConfiguration(
             id="sequence-plant",
-            zones=(Zone("living", "Living", 21.0, ("sensor.living",)),),
+            zones=(
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    _metadata(
+                        "sensor.living",
+                    ),
+                ),
+            ),
             valves=(
                 Valve("supply", "Supply valve", "switch.supply", 5),
                 Valve("return", "Return valve", "switch.return", 10),
@@ -193,7 +220,7 @@ def test_series_valves_command_timeline_and_overrun_protection() -> None:
 async def test_active_executor_tracer_is_idempotent_at_unchanged_fake_clock() -> None:
     """One demand transition dispatches once and an unchanged reevaluation is quiet."""
     plant = _single_zone_scenario_plant(
-        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
         valve_opening=30,
     )
     snapshot = PlantSnapshot({"sensor.zone": TemperatureObservation(20.0, NOW)})
@@ -221,8 +248,22 @@ def test_coupled_zones_share_one_valve() -> None:
         PlantConfiguration(
             id="shared-valve-plant",
             zones=(
-                Zone("living", "Living", 21.0, ("sensor.living_temperature",)),
-                Zone("office", "Office", 21.0, ("sensor.office_temperature",)),
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    _metadata(
+                        "sensor.living_temperature",
+                    ),
+                ),
+                Zone(
+                    "office",
+                    "Office",
+                    21.0,
+                    _metadata(
+                        "sensor.office_temperature",
+                    ),
+                ),
             ),
             valves=(Valve("valve", "Shared valve", "switch.shared_valve", 1),),
             pumps=(Pump("pump", "Shared pump", "switch.shared_pump", 10),),
@@ -283,7 +324,7 @@ def test_coupled_zones_share_one_valve() -> None:
 
 def _single_zone_scenario_plant(
     *,
-    sensor_metadata: tuple[TemperatureSensorMetadata, ...],
+    temperature_sensor_metadata: tuple[TemperatureSensorMetadata, ...],
     minimum_active: float = 0,
     minimum_idle: float = 0,
     valve_opening: float = 0,
@@ -300,7 +341,7 @@ def _single_zone_scenario_plant(
                     "zone",
                     "Scenario zone",
                     21.0,
-                    temperature_sensor_metadata=sensor_metadata,
+                    temperature_sensor_metadata=temperature_sensor_metadata,
                     minimum_active_duration_seconds=minimum_active,
                     minimum_idle_duration_seconds=minimum_idle,
                 ),
@@ -326,7 +367,7 @@ def _single_zone_scenario_plant(
 def test_source_selection_falls_back_after_source_unavailable() -> None:
     """A synthetic source failure follows release, break, and fallback selection order."""
     plant = _single_zone_scenario_plant(
-        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
         sources=(
             Source(
                 "buffer",
@@ -408,7 +449,7 @@ def test_source_selection_falls_back_after_source_unavailable() -> None:
 def test_buffer_becomes_ineligible_during_active_heating() -> None:
     """A stale buffer falls back while hydraulic demand remains active."""
     plant = _single_zone_scenario_plant(
-        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
         sources=(
             Source(
                 "buffer",
@@ -468,7 +509,7 @@ def test_buffer_becomes_ineligible_during_active_heating() -> None:
 def test_zone_sensor_becomes_stale() -> None:
     """A fake-clock tick blocks stale input even without a new sensor event."""
     plant = _single_zone_scenario_plant(
-        sensor_metadata=(TemperatureSensorMetadata("sensor.zone", max_age_seconds=30),)
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone", max_age_seconds=30),)
     )
 
     run_scenario(
@@ -503,7 +544,7 @@ def test_zone_sensor_becomes_stale() -> None:
 def test_optional_sensor_degradation_preserves_demand() -> None:
     """Losing an optional reading leaves the required heating demand intact."""
     plant = _single_zone_scenario_plant(
-        sensor_metadata=(
+        temperature_sensor_metadata=(
             TemperatureSensorMetadata("sensor.required"),
             TemperatureSensorMetadata("sensor.optional", required=False),
         )
@@ -536,7 +577,7 @@ def test_optional_sensor_degradation_preserves_demand() -> None:
 def test_manual_pump_override_is_detected() -> None:
     """A pump power override is visible as a mismatch while commands stay explicit."""
     plant = _single_zone_scenario_plant(
-        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
         pump_power="sensor.pump_power",
     )
     feedback = {"pump": ActuatorFeedback(power=FeedbackObservation(0.0, NOW))}
@@ -568,7 +609,7 @@ def test_manual_pump_override_is_detected() -> None:
 def test_minimum_active_hold_then_release() -> None:
     """Heating stays active until its minimum-active deadline, then releases."""
     plant = _single_zone_scenario_plant(
-        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
         minimum_active=10,
     )
 
@@ -613,7 +654,7 @@ def test_minimum_active_hold_then_release() -> None:
 def test_minimum_idle_lockout_then_demand() -> None:
     """A new demand waits for the minimum-idle deadline before requesting heat."""
     plant = _single_zone_scenario_plant(
-        sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
+        temperature_sensor_metadata=(TemperatureSensorMetadata("sensor.zone"),),
         minimum_idle=10,
     )
 
@@ -735,7 +776,14 @@ def test_shared_mode_conflict_keeps_cooling_out_of_heating_path() -> None:
         PlantConfiguration(
             id="shared-mode-scenario",
             zones=(
-                Zone("heating", "Heating zone", 21.0, ("sensor.heating",)),
+                Zone(
+                    "heating",
+                    "Heating zone",
+                    21.0,
+                    _metadata(
+                        "sensor.heating",
+                    ),
+                ),
                 Zone(
                     "cooling",
                     "Cooling zone",

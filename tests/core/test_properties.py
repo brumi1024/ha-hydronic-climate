@@ -34,6 +34,10 @@ from hypothesis import strategies as st
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
 
 
+def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
+    return tuple(TemperatureSensorMetadata(entity_id) for entity_id in entity_ids)
+
+
 def _shared_pump_plant(
     zone_count: int,
     *,
@@ -42,7 +46,14 @@ def _shared_pump_plant(
 ) -> PlantConfiguration:
     """Build a valid generated topology with independent valves and one shared pump."""
     zones = tuple(
-        Zone(f"zone-{index}", f"Zone {index}", 21.0, (f"sensor.zone_{index}",))
+        Zone(
+            f"zone-{index}",
+            f"Zone {index}",
+            21.0,
+            _metadata(
+                f"sensor.zone_{index}",
+            ),
+        )
         for index in range(zone_count)
     )
     valves = tuple(
@@ -396,7 +407,14 @@ def test_generated_shared_equipment_conflicts_never_share_mode_consumers(
         PlantConfiguration(
             id="generated-mode-conflict",
             zones=(
-                Zone("heating", "Heating", 21.0, ("sensor.heating",)),
+                Zone(
+                    "heating",
+                    "Heating",
+                    21.0,
+                    _metadata(
+                        "sensor.heating",
+                    ),
+                ),
                 Zone(
                     "cooling",
                     "Cooling",

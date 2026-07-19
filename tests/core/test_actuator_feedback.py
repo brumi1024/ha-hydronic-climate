@@ -28,6 +28,7 @@ from hydronicus_core.model import (
     SafeShutdownPhase,
     Source,
     TemperatureObservation,
+    TemperatureSensorMetadata,
     Valve,
     ValveRuntime,
     ValveState,
@@ -36,6 +37,10 @@ from hydronicus_core.model import (
 from hydronicus_core.topology import compile_topology
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
+
+
+def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
+    return tuple(TemperatureSensorMetadata(entity_id) for entity_id in entity_ids)
 
 
 def _plant(
@@ -50,7 +55,16 @@ def _plant(
     return compile_topology(
         PlantConfiguration(
             id="feedback-plant",
-            zones=(Zone("zone", "Zone", 21.0, ("sensor.zone",)),),
+            zones=(
+                Zone(
+                    "zone",
+                    "Zone",
+                    21.0,
+                    _metadata(
+                        "sensor.zone",
+                    ),
+                ),
+            ),
             valves=(
                 Valve(
                     "valve",
@@ -98,7 +112,16 @@ def test_optional_feedback_is_independently_decoded() -> None:
     plant = compile_topology(
         PlantConfiguration(
             id="configured",
-            zones=(Zone("zone", "Zone", 21.0, ("sensor.zone",)),),
+            zones=(
+                Zone(
+                    "zone",
+                    "Zone",
+                    21.0,
+                    _metadata(
+                        "sensor.zone",
+                    ),
+                ),
+            ),
             valves=(Valve("valve", "Valve", "switch.valve", position_entity_id="sensor.position"),),
             pumps=(
                 Pump(
@@ -324,8 +347,22 @@ def test_faulted_pump_blocks_only_its_dependent_circuit() -> None:
         PlantConfiguration(
             id="two-pump-plant",
             zones=(
-                Zone("one", "One", 21.0, ("sensor.one",)),
-                Zone("two", "Two", 21.0, ("sensor.two",)),
+                Zone(
+                    "one",
+                    "One",
+                    21.0,
+                    _metadata(
+                        "sensor.one",
+                    ),
+                ),
+                Zone(
+                    "two",
+                    "Two",
+                    21.0,
+                    _metadata(
+                        "sensor.two",
+                    ),
+                ),
             ),
             valves=(
                 Valve("valve-one", "Valve one", "switch.valve_one", 0),
@@ -404,7 +441,16 @@ def test_safe_shutdown_releases_source_then_overruns_then_closes() -> None:
     plant = compile_topology(
         PlantConfiguration(
             id="shutdown-plant",
-            zones=(Zone("zone", "Zone", 21.0, ("sensor.zone",)),),
+            zones=(
+                Zone(
+                    "zone",
+                    "Zone",
+                    21.0,
+                    _metadata(
+                        "sensor.zone",
+                    ),
+                ),
+            ),
             valves=(Valve("valve", "Valve", "switch.valve"),),
             pumps=(Pump("pump", "Pump", "switch.pump", 10),),
             circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),

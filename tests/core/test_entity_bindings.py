@@ -20,6 +20,7 @@ from custom_components.hydronicus.core.model import (
     Pump,
     RuntimeState,
     TemperatureObservation,
+    TemperatureSensorMetadata,
     Valve,
     Zone,
 )
@@ -36,13 +37,31 @@ CIRCUIT_A = "circuit-a"
 CIRCUIT_B = "circuit-b"
 
 
+def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
+    return tuple(TemperatureSensorMetadata(entity_id) for entity_id in entity_ids)
+
+
 def _plant():
     return compile_topology(
         PlantConfiguration(
             id="plant",
             zones=(
-                Zone(ZONE_A, "Zone A", 21.0, ("sensor.zone_a",)),
-                Zone(ZONE_B, "Zone B", 21.0, ("sensor.zone_b",)),
+                Zone(
+                    ZONE_A,
+                    "Zone A",
+                    21.0,
+                    _metadata(
+                        "sensor.zone_a",
+                    ),
+                ),
+                Zone(
+                    ZONE_B,
+                    "Zone B",
+                    21.0,
+                    _metadata(
+                        "sensor.zone_b",
+                    ),
+                ),
             ),
             valves=(
                 Valve(VALVE_A, "Valve A", "switch.valve_a"),

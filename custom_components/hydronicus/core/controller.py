@@ -346,13 +346,6 @@ def calculate_condensation_margin(reference_temperature: float, dew_point: float
     return condensation_margin(reference_temperature, dew_point)
 
 
-def mean_zone_temperature(sensor_ids: tuple[str, ...], snapshot: PlantSnapshot) -> float | None:
-    """Average readings for callers using the legacy helper signature."""
-    zone = Zone("legacy", "Legacy", 0.0, sensor_ids)
-    result = aggregate_zone_temperature_result(zone, snapshot)
-    return result.value
-
-
 def _zone_runtime(runtime: RuntimeState, zone_id: str) -> ZoneRuntime:
     """Read new timing state while accepting the old demand-only state."""
     if zone_id in runtime.zone_runtime:

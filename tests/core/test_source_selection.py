@@ -24,6 +24,7 @@ from hydronicus_core.model import (
     SourceSelectionPhase,
     SourceSelectionRuntime,
     TemperatureObservation,
+    TemperatureSensorMetadata,
     Valve,
     ValveRuntime,
     ValveState,
@@ -36,6 +37,10 @@ STORED_PLANT_ID = "00000000-0000-4000-8000-000000000001"
 STORED_SELECTOR_ID = "00000000-0000-4000-8000-000000000002"
 
 
+def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
+    return tuple(TemperatureSensorMetadata(entity_id) for entity_id in entity_ids)
+
+
 def _configuration(
     *,
     selector_entity: str | None = None,
@@ -43,7 +48,16 @@ def _configuration(
 ) -> PlantConfiguration:
     return PlantConfiguration(
         id="source-selection-plant",
-        zones=(Zone("zone", "Zone", 21.0, ("sensor.zone",)),),
+        zones=(
+            Zone(
+                "zone",
+                "Zone",
+                21.0,
+                _metadata(
+                    "sensor.zone",
+                ),
+            ),
+        ),
         valves=(Valve("valve", "Valve", "switch.synthetic_valve", 0),),
         pumps=(Pump("pump", "Pump", "switch.synthetic_pump", 0),),
         circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),

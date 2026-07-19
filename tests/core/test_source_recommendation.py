@@ -20,6 +20,7 @@ from hydronicus_core.model import (
     Source,
     SourceKind,
     TemperatureObservation,
+    TemperatureSensorMetadata,
     Valve,
     Zone,
 )
@@ -31,11 +32,24 @@ STORED_SOURCE_ID = "00000000-0000-4000-8000-000000000002"
 STORED_BUFFER_ID = "00000000-0000-4000-8000-000000000003"
 
 
+def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
+    return tuple(TemperatureSensorMetadata(entity_id) for entity_id in entity_ids)
+
+
 def _plant(*sources: Source):
     return compile_topology(
         PlantConfiguration(
             id="source-plant",
-            zones=(Zone("zone", "Zone", 21.0, ("sensor.zone",)),),
+            zones=(
+                Zone(
+                    "zone",
+                    "Zone",
+                    21.0,
+                    _metadata(
+                        "sensor.zone",
+                    ),
+                ),
+            ),
             valves=(Valve("valve", "Valve", "switch.valve", 0),),
             pumps=(Pump("pump", "Pump", "switch.pump", 0),),
             circuits=(Circuit("circuit", "Circuit", ("valve",), "pump"),),
