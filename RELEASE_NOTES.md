@@ -1,7 +1,7 @@
 # Hydronicus {{VERSION}}
 
-Candidate note: the configurable Plant-level Dry run setting is implemented in the current `v0.1.0` candidate.
-Do not publish these release notes until the control-mode implementation and required staging evidence are complete.
+This is the first installable release candidate for supervised Dry run evaluation.
+Use it in Dry run before considering active heating control.
 
 ## Highlights
 
