@@ -365,11 +365,6 @@ def humidity_sensor_metadata_from_mapping(
     )
 
 
-def _temperature_sensors(mapping: Mapping[str, Any]) -> tuple[str, ...]:
-    """Read sensor IDs while preserving milestone 1 entries."""
-    return tuple(sensor.entity_id for sensor in temperature_sensor_metadata_from_mapping(mapping))
-
-
 def _temperature_aggregation(mapping: Mapping[str, Any]) -> TemperatureAggregation:
     """Read a zone aggregation policy while defaulting legacy data to mean."""
     value = mapping.get("temperature_aggregation", TemperatureAggregation.MEAN.value)
