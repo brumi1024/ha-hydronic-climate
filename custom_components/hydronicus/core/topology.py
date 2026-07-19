@@ -333,8 +333,7 @@ def _index_topology(configuration: PlantConfiguration) -> _TopologyIndex:
             for circuit in sorted(configuration.circuits, key=lambda item: item.id)
         },
         sources={
-            source.id: source
-            for source in sorted(configuration.sources, key=lambda item: item.id)
+            source.id: source for source in sorted(configuration.sources, key=lambda item: item.id)
         },
     )
 
@@ -396,9 +395,7 @@ def _validate_relationships(
             ("supply", circuit.supply_temperature_sensor),
             ("surface", circuit.surface_temperature_sensor),
         ):
-            if reference is not None and (
-                not isinstance(reference, str) or not reference.strip()
-            ):
+            if reference is not None and (not isinstance(reference, str) or not reference.strip()):
                 raise TopologyValidationError(
                     f"Circuit {circuit.id} {reference_name} temperature reference must be "
                     "a non-empty entity id."
@@ -573,11 +570,7 @@ def _build_summary_and_warnings(
         )
         affected_zones = tuple(
             sorted(
-                {
-                    route.zone_id
-                    for route in enabled_routes
-                    if route.circuit_id in shared_circuits
-                }
+                {route.zone_id for route in enabled_routes if route.circuit_id in shared_circuits}
             )
         )
         warnings.append(
@@ -649,8 +642,7 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
                 f"Valve {valve.id} opening time must be finite and non-negative."
             )
         if valve.readiness_entity_id is not None and (
-            not isinstance(valve.readiness_entity_id, str)
-            or not valve.readiness_entity_id.strip()
+            not isinstance(valve.readiness_entity_id, str) or not valve.readiness_entity_id.strip()
         ):
             raise TopologyValidationError(
                 f"Valve {valve.id} readiness feedback entity must be non-empty."

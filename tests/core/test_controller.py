@@ -53,7 +53,16 @@ def _metadata(*entity_ids: str) -> tuple[TemperatureSensorMetadata, ...]:
 def _plant() -> PlantConfiguration:
     return PlantConfiguration(
         id="plant",
-        zones=(Zone("living", "Living", 21.0, _metadata("temperature.living",)),),
+        zones=(
+            Zone(
+                "living",
+                "Living",
+                21.0,
+                _metadata(
+                    "temperature.living",
+                ),
+            ),
+        ),
         valves=(Valve("valve.floor", "Floor valve", "switch.floor_valve", 30),),
         pumps=(Pump("pump.floor", "Floor pump", "switch.floor_pump", 120),),
         circuits=(
@@ -584,14 +593,19 @@ def _mixed_mode_plant(*, shared_valve: bool, shared_pump: bool, source: bool = F
         PlantConfiguration(
             id="mixed-mode-plant",
             zones=(
-                Zone("heating-zone", "Heating zone", 21.0, _metadata("temperature.heating",)),
+                Zone(
+                    "heating-zone",
+                    "Heating zone",
+                    21.0,
+                    _metadata(
+                        "temperature.heating",
+                    ),
+                ),
                 Zone(
                     "cooling-zone",
                     "Cooling zone",
                     24.0,
-                    temperature_sensor_metadata=(
-                        TemperatureSensorMetadata("temperature.cooling"),
-                    ),
+                    temperature_sensor_metadata=(TemperatureSensorMetadata("temperature.cooling"),),
                     humidity_sensor_metadata=(TemperatureSensorMetadata("humidity.cooling"),),
                 ),
             ),
@@ -640,9 +654,7 @@ def _mixed_mode_snapshot() -> PlantSnapshot:
             "temperature.cooling": TemperatureObservation(25.0, NOW),
         },
         humidities={"humidity.cooling": TemperatureObservation(50.0, NOW)},
-        supply_temperatures={
-            "temperature.cooling_supply": TemperatureObservation(18.0, NOW)
-        },
+        supply_temperatures={"temperature.cooling_supply": TemperatureObservation(18.0, NOW)},
     )
 
 
@@ -676,9 +688,7 @@ def test_shared_equipment_conflict_blocks_cooling_with_structured_explanations(
     assert result.diagnostics.cooling_zone_decisions["cooling-zone"].status is (
         ZoneDecisionStatus.SENSOR_BLOCKED
     )
-    assert "Cooling blocked by shared" in result.diagnostics.cooling_zone_reasons[
-        "cooling-zone"
-    ]
+    assert "Cooling blocked by shared" in result.diagnostics.cooling_zone_reasons["cooling-zone"]
     assert result == evaluate(plant, _mixed_mode_snapshot(), RuntimeState(), NOW)
 
 
@@ -743,8 +753,7 @@ def test_cooling_start_and_stop_thresholds_are_explicit() -> None:
     assert held.next_runtime.cooling_zone_demands["living"] is True
     assert stopped.next_runtime.cooling_zone_demands["living"] is False
     assert (
-        stopped.diagnostics.cooling_zone_decisions["living"].status
-        is ZoneDecisionStatus.SATISFIED
+        stopped.diagnostics.cooling_zone_decisions["living"].status is ZoneDecisionStatus.SATISFIED
     )
 
 
@@ -791,10 +800,7 @@ def test_cooling_blocks_before_condensation_margin_is_crossed() -> None:
     assert decision.status is ZoneDecisionStatus.SENSOR_BLOCKED
     assert decision.dew_point == pytest.approx(13.8516, abs=0.001)
     assert decision.condensation_margin == pytest.approx(1.1484, abs=0.001)
-    assert any(
-        interlock.status is InterlockStatus.BLOCKED
-        for interlock in decision.interlocks
-    )
+    assert any(interlock.status is InterlockStatus.BLOCKED for interlock in decision.interlocks)
 
 
 def test_humidity_aggregation_excludes_optional_and_applies_calibration() -> None:
@@ -937,8 +943,22 @@ def test_shared_pump_remains_running_when_one_consumer_releases_demand() -> None
         PlantConfiguration(
             id="plant",
             zones=(
-                Zone("living", "Living", 21.0, _metadata("temperature.living",)),
-                Zone("office", "Office", 21.0, _metadata("temperature.office",)),
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    _metadata(
+                        "temperature.living",
+                    ),
+                ),
+                Zone(
+                    "office",
+                    "Office",
+                    21.0,
+                    _metadata(
+                        "temperature.office",
+                    ),
+                ),
             ),
             valves=(
                 Valve("valve.floor", "Floor valve", "switch.floor_valve", 1),
@@ -992,8 +1012,22 @@ def test_shared_valve_and_pump_remain_active_until_last_consumer_releases() -> N
         PlantConfiguration(
             id="plant",
             zones=(
-                Zone("living", "Living", 21.0, _metadata("temperature.living",)),
-                Zone("office", "Office", 21.0, _metadata("temperature.office",)),
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    _metadata(
+                        "temperature.living",
+                    ),
+                ),
+                Zone(
+                    "office",
+                    "Office",
+                    21.0,
+                    _metadata(
+                        "temperature.office",
+                    ),
+                ),
             ),
             valves=(Valve("shared", "Shared valve", "switch.shared_valve", 1),),
             pumps=(Pump("pump", "Shared pump", "switch.shared_pump", 10),),
@@ -1050,7 +1084,16 @@ def test_one_zone_requests_every_enabled_delivery_route() -> None:
     plant = compile_topology(
         PlantConfiguration(
             id="plant",
-            zones=(Zone("living", "Living", 21.0, _metadata("temperature.living",)),),
+            zones=(
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    _metadata(
+                        "temperature.living",
+                    ),
+                ),
+            ),
             valves=(
                 Valve("floor-valve", "Floor valve", "switch.floor_valve", 1),
                 Valve("ceiling-valve", "Ceiling valve", "switch.ceiling_valve", 1),
@@ -1177,7 +1220,16 @@ def test_circuit_waits_for_every_series_valve_before_pump_request() -> None:
     plant = compile_topology(
         PlantConfiguration(
             id="plant",
-            zones=(Zone("living", "Living", 21.0, _metadata("temperature.living",)),),
+            zones=(
+                Zone(
+                    "living",
+                    "Living",
+                    21.0,
+                    _metadata(
+                        "temperature.living",
+                    ),
+                ),
+            ),
             valves=(
                 Valve("supply", "Supply valve", "switch.supply_valve", 10),
                 Valve("return", "Return valve", "switch.return_valve", 30),
@@ -1302,9 +1354,9 @@ def test_heat_to_cool_changeover_releases_source_and_waits_for_safe_idle() -> No
     )
     assert cooling.next_runtime.plant_mode is PlantMode.COOLING
     assert cooling.next_runtime.cooling_zone_demands["zone"] is True
-    assert [
-        (command.actuator_id, command.action) for command in cooling.control_plan.commands
-    ] == [("valve", "open")]
+    assert [(command.actuator_id, command.action) for command in cooling.control_plan.commands] == [
+        ("valve", "open")
+    ]
     assert cooling.control_plan.cooling_actuator_ids == frozenset({"valve", "pump"})
 
 
