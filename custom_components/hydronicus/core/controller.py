@@ -2963,6 +2963,185 @@ def _plan_valves(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _PumpPlan:
+    """Pump planning output after valve readiness is established."""
+
+    consumers: dict[str, set[str]]
+    cooling_consumers: dict[str, set[str]]
+    feedback_diagnostics: dict[str, ActuatorDiagnostic]
+    blocked_circuit_ids: set[str]
+    ready_circuit_ids: set[str]
+    cooling_actuator_ids: set[str]
+    pumps: dict[str, PumpRuntime]
+    commands: tuple[ActuatorCommand, ...]
+    actuator_reasons: dict[str, str]
+
+
+def _plan_pumps(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+    *,
+    target_mode: PlantMode,
+    requested_circuits: set[str],
+    cooling_routes: tuple[DeliveryRoute, ...],
+    valve_plan: _ValvePlan,
+) -> _PumpPlan:
+    """Plan pumps only for circuits whose valves are confirmed ready."""
+    ready_circuits = set(valve_plan.ready_circuits)
+    pump_consumers: dict[str, set[str]] = defaultdict(set)
+    for circuit_id in sorted(ready_circuits):
+        pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
+
+    feedback_expected = dict(valve_plan.feedback_expected)
+    feedback_expected.update(
+        {
+            pump_id: "on" if pump_consumers.get(pump_id) else "off"
+            for pump_id in plant.pumps
+        }
+    )
+    feedback_diagnostics = _feedback_diagnostics(
+        plant,
+        snapshot,
+        now,
+        feedback_expected,
+    )
+    pump_dependent_requested = {
+        pump_id: {
+            circuit_id
+            for circuit_id in requested_circuits
+            if plant.circuits[circuit_id].pump_id == pump_id
+        }
+        for pump_id in plant.pumps
+    }
+    blocked_pumps = {
+        pump_id
+        for pump_id, diagnostic in feedback_diagnostics.items()
+        if pump_id in plant.pumps and diagnostic.blocked and pump_dependent_requested[pump_id]
+    }
+    blocked_circuits = {
+        circuit_id
+        for pump_id in blocked_pumps
+        for circuit_id in pump_dependent_requested[pump_id]
+    }
+    for pump_id in blocked_pumps:
+        pump_consumers[pump_id].difference_update(blocked_circuits)
+    ready_circuits.difference_update(blocked_circuits)
+
+    cooling_consumers: dict[str, set[str]] = defaultdict(set)
+    ready_cooling_circuits = {
+        route.circuit_id
+        for route in cooling_routes
+        if route.circuit_id in ready_circuits
+    }
+    for circuit_id in sorted(ready_cooling_circuits):
+        cooling_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
+
+    cooling_actuator_ids = {
+        valve_id
+        for route in cooling_routes
+        for valve_id in plant.circuits[route.circuit_id].valve_ids
+    }
+    cooling_actuator_ids.update(
+        plant.circuits[circuit_id].pump_id for circuit_id in ready_cooling_circuits
+    )
+    if (
+        target_mode is PlantMode.COOLING
+        or runtime.plant_mode is PlantMode.COOLING
+        or runtime.changeover_target_mode is PlantMode.COOLING
+    ):
+        cooling_circuit_ids = {
+            circuit.id for circuit in plant.circuits.values() if circuit.cooling_enabled
+        }
+        cooling_actuator_ids.update(
+            valve_id
+            for circuit_id in cooling_circuit_ids
+            for valve_id in plant.circuits[circuit_id].valve_ids
+        )
+        cooling_actuator_ids.update(
+            plant.circuits[circuit_id].pump_id for circuit_id in cooling_circuit_ids
+        )
+
+    pumps: dict[str, PumpRuntime] = {}
+    commands: list[ActuatorCommand] = []
+    actuator_reasons = dict(valve_plan.actuator_reasons)
+    for pump_id in sorted(plant.pumps):
+        pump = plant.pumps[pump_id]
+        consumers = pump_consumers.get(pump.id, set())
+        previous = runtime.pumps.get(pump.id, PumpRuntime())
+        if pump.entity_id in snapshot.unavailable_entity_ids:
+            current = PumpRuntime(PumpState.OFF, now)
+            actuator_reasons[pump.id] = (
+                "Blocked: the configured pump actuator binding is unresolved."
+            )
+        elif consumers:
+            if previous.state is PumpState.STARTING:
+                current = previous
+                actuator_reasons[pump.id] = (
+                    "Waiting for pump state feedback after the start command."
+                )
+            elif previous.state is not PumpState.RUNNING:
+                current = PumpRuntime(PumpState.RUNNING, now)
+                commands.append(
+                    ActuatorCommand(
+                        pump.id,
+                        ActuatorAction.TURN_ON,
+                        "A ready circuit needs this pump.",
+                    )
+                )
+                actuator_reasons[pump.id] = "Running for ready circuit consumers."
+            else:
+                current = previous
+                actuator_reasons[pump.id] = "Running for ready circuit consumers."
+        elif previous.state is PumpState.STARTING:
+            current = PumpRuntime(PumpState.OFF, now)
+            commands.append(
+                ActuatorCommand(
+                    pump.id,
+                    ActuatorAction.TURN_OFF,
+                    "Stop a pump whose start was not observed before demand released.",
+                )
+            )
+            actuator_reasons[pump.id] = "Stopping an unconfirmed pump start."
+        elif previous.state is PumpState.RUNNING:
+            current = PumpRuntime(PumpState.OVERRUN, now)
+            actuator_reasons[pump.id] = "Overrunning after the final ready circuit released demand."
+        elif previous.state is PumpState.OVERRUN and _elapsed(
+            now,
+            previous.changed_at,
+        ) < timedelta(seconds=pump.overrun_seconds):
+            current = previous
+            actuator_reasons[pump.id] = "Overrun is still protecting the hydraulic circuit."
+        elif previous.state is PumpState.OVERRUN:
+            current = PumpRuntime(PumpState.OFF, now)
+            commands.append(
+                ActuatorCommand(
+                    pump.id,
+                    ActuatorAction.TURN_OFF,
+                    "Pump overrun has completed.",
+                )
+            )
+            actuator_reasons[pump.id] = "Idle because no ready circuit requires this pump."
+        else:
+            current = previous
+            actuator_reasons[pump.id] = "Idle because no ready circuit requires this pump."
+        pumps[pump.id] = current
+
+    return _PumpPlan(
+        consumers=pump_consumers,
+        cooling_consumers=cooling_consumers,
+        feedback_diagnostics=feedback_diagnostics,
+        blocked_circuit_ids=blocked_circuits,
+        ready_circuit_ids=ready_circuits,
+        cooling_actuator_ids=cooling_actuator_ids,
+        pumps=pumps,
+        commands=tuple(commands),
+        actuator_reasons=actuator_reasons,
+    )
+
+
 def evaluate(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
@@ -3029,141 +3208,30 @@ def evaluate(
     )
     valve_consumers = valve_plan.consumers
     cooling_valve_consumers = valve_plan.cooling_consumers
-    feedback_expected = valve_plan.feedback_expected
-    feedback_diagnostics = valve_plan.feedback_diagnostics
     blocked_valves = valve_plan.blocked_valves
     valves = valve_plan.valves
     ready_circuits = valve_plan.ready_circuits
     commands = list(valve_plan.commands)
     actuator_reasons = valve_plan.actuator_reasons
-    pump_consumers: dict[str, set[str]] = defaultdict(set)
-    for circuit_id in sorted(ready_circuits):
-        pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
-
-    feedback_expected.update(
-        {
-            pump_id: "on" if pump_consumers.get(pump_id) else "off"
-            for pump_id in plant.pumps
-        }
+    pump_plan = _plan_pumps(
+        plant,
+        snapshot,
+        runtime,
+        now,
+        target_mode=target_mode,
+        requested_circuits=requested_circuits,
+        cooling_routes=cooling_routes,
+        valve_plan=valve_plan,
     )
-    feedback_diagnostics = _feedback_diagnostics(plant, snapshot, now, feedback_expected)
-    pump_dependent_requested = {
-        pump_id: {
-            circuit_id
-            for circuit_id in requested_circuits
-            if plant.circuits[circuit_id].pump_id == pump_id
-        }
-        for pump_id in plant.pumps
-    }
-    blocked_pumps = {
-        pump_id
-        for pump_id, diagnostic in feedback_diagnostics.items()
-        if pump_id in plant.pumps and diagnostic.blocked and pump_dependent_requested[pump_id]
-    }
-    blocked_pump_circuits = {
-        circuit_id
-        for pump_id in blocked_pumps
-        for circuit_id in pump_dependent_requested[pump_id]
-    }
-    for pump_id in blocked_pumps:
-        pump_consumers[pump_id].difference_update(blocked_pump_circuits)
-    ready_circuits.difference_update(blocked_pump_circuits)
-
-    cooling_pump_consumers: dict[str, set[str]] = defaultdict(set)
-    ready_cooling_circuits = {
-        route.circuit_id
-        for route in cooling_routes
-        if route.circuit_id in ready_circuits
-    }
-    for circuit_id in sorted(ready_cooling_circuits):
-        cooling_pump_consumers[plant.circuits[circuit_id].pump_id].add(circuit_id)
-
-    cooling_actuator_ids = {
-        valve_id
-        for route in cooling_routes
-        for valve_id in plant.circuits[route.circuit_id].valve_ids
-    }
-    cooling_actuator_ids.update(
-        plant.circuits[circuit_id].pump_id for circuit_id in ready_cooling_circuits
-    )
-    if (
-        target_mode is PlantMode.COOLING
-        or runtime.plant_mode is PlantMode.COOLING
-        or runtime.changeover_target_mode is PlantMode.COOLING
-    ):
-        cooling_circuit_ids = {
-            circuit.id for circuit in plant.circuits.values() if circuit.cooling_enabled
-        }
-        cooling_actuator_ids.update(
-            valve_id
-            for circuit_id in cooling_circuit_ids
-            for valve_id in plant.circuits[circuit_id].valve_ids
-        )
-        cooling_actuator_ids.update(
-            plant.circuits[circuit_id].pump_id for circuit_id in cooling_circuit_ids
-        )
-
-    pumps: dict[str, PumpRuntime] = {}
-    for pump_id in sorted(plant.pumps):
-        pump = plant.pumps[pump_id]
-        consumers = pump_consumers.get(pump.id, set())
-        previous = runtime.pumps.get(pump.id, PumpRuntime())
-        if pump.entity_id in snapshot.unavailable_entity_ids:
-            current = PumpRuntime(PumpState.OFF, now)
-            actuator_reasons[pump.id] = (
-                "Blocked: the configured pump actuator binding is unresolved."
-            )
-        elif consumers:
-            if previous.state is PumpState.STARTING:
-                current = previous
-                actuator_reasons[pump.id] = (
-                    "Waiting for pump state feedback after the start command."
-                )
-            elif previous.state is not PumpState.RUNNING:
-                current = PumpRuntime(PumpState.RUNNING, now)
-                commands.append(
-                    ActuatorCommand(
-                        pump.id,
-                        ActuatorAction.TURN_ON,
-                        "A ready circuit needs this pump.",
-                    )
-                )
-                actuator_reasons[pump.id] = "Running for ready circuit consumers."
-            else:
-                current = previous
-                actuator_reasons[pump.id] = "Running for ready circuit consumers."
-        elif previous.state is PumpState.STARTING:
-            current = PumpRuntime(PumpState.OFF, now)
-            commands.append(
-                ActuatorCommand(
-                    pump.id,
-                    ActuatorAction.TURN_OFF,
-                    "Stop a pump whose start was not observed before demand released.",
-                )
-            )
-            actuator_reasons[pump.id] = "Stopping an unconfirmed pump start."
-        elif previous.state is PumpState.RUNNING:
-            current = PumpRuntime(PumpState.OVERRUN, now)
-            actuator_reasons[pump.id] = "Overrunning after the final ready circuit released demand."
-        elif previous.state is PumpState.OVERRUN and _elapsed(now, previous.changed_at) < timedelta(
-            seconds=pump.overrun_seconds
-        ):
-            current = previous
-            actuator_reasons[pump.id] = "Overrun is still protecting the hydraulic circuit."
-        elif previous.state is PumpState.OVERRUN:
-            current = PumpRuntime(PumpState.OFF, now)
-            commands.append(
-                ActuatorCommand(
-                    pump.id,
-                    ActuatorAction.TURN_OFF,
-                    "Pump overrun has completed.",
-                )
-            )
-            actuator_reasons[pump.id] = "Idle because no ready circuit requires this pump."
-        else:
-            current = previous
-            actuator_reasons[pump.id] = "Idle because no ready circuit requires this pump."
-        pumps[pump.id] = current
+    pump_consumers = pump_plan.consumers
+    cooling_pump_consumers = pump_plan.cooling_consumers
+    feedback_diagnostics = pump_plan.feedback_diagnostics
+    blocked_pump_circuits = pump_plan.blocked_circuit_ids
+    ready_circuits = pump_plan.ready_circuit_ids
+    cooling_actuator_ids = pump_plan.cooling_actuator_ids
+    pumps = pump_plan.pumps
+    commands.extend(pump_plan.commands)
+    actuator_reasons = pump_plan.actuator_reasons
 
     overrun_pumps = {pump_id for pump_id, pump in pumps.items() if pump.state is PumpState.OVERRUN}
     for valve_id in sorted(plant.valves):
