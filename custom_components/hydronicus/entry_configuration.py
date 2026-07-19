@@ -34,7 +34,7 @@ from .core.configuration import (
     StoredTopologyError,
     plant_configuration_from_entry_data,
 )
-from .core.model import Circuit, DeliveryRoute, PlantConfiguration, Valve
+from .core.model import Circuit, DeliveryRoute, PlantConfiguration, Source, Valve, Zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +185,182 @@ def _zone_routes(
     return tuple(routes)
 
 
+type _SubentryRecord = tuple[str | None, Mapping[str, Any]]
+
+
+def _compose_circuits(
+    base: PlantConfiguration, records: Sequence[_SubentryRecord]
+) -> tuple[tuple[Circuit, ...], tuple[DeliveryRoute, ...]]:
+    """Compose dynamic circuits and their routes against parent-owned equipment."""
+    circuits = list(base.circuits)
+    routes = list(base.routes)
+    parent_zone_ids = {zone.id for zone in base.zones}
+    parent_valve_ids = {valve.id for valve in base.valves}
+    parent_pump_ids = {pump.id for pump in base.pumps}
+    for _subentry_id, data in records:
+        circuit_id = _uuid(data, "id")
+        zone_ids = _uuid_list(data, CONF_ZONE_IDS, "Circuit subentry")
+        valve_ids = _uuid_list(data, CONF_VALVE_IDS, "Circuit subentry")
+        pump_id = _uuid(data, CONF_PUMP_ID)
+        unknown_zone_ids = sorted(set(zone_ids) - parent_zone_ids)
+        unknown_valve_ids = sorted(set(valve_ids) - parent_valve_ids)
+        if unknown_zone_ids:
+            raise StoredTopologyError(
+                "Circuit subentry references unknown zones: "
+                + ", ".join(unknown_zone_ids)
+                + "."
+            )
+        if unknown_valve_ids:
+            raise StoredTopologyError(
+                "Circuit subentry references unknown valves: "
+                + ", ".join(unknown_valve_ids)
+                + "."
+            )
+        if pump_id not in parent_pump_ids:
+            raise StoredTopologyError(f"Circuit subentry references unknown pump {pump_id}.")
+        circuits.append(
+            Circuit(
+                id=circuit_id,
+                name=str(_required(data, CONF_NAME)),
+                valve_ids=valve_ids,
+                pump_id=pump_id,
+                cooling_enabled=_cooling_enabled(data),
+                supply_temperature_sensor=data.get("supply_temperature_sensor"),
+                surface_temperature_sensor=data.get("surface_temperature_sensor"),
+                condensation_margin=float(data.get("condensation_margin", 2.0)),
+                supply_temperature_max_age_seconds=float(
+                    data.get("supply_temperature_max_age_seconds", 1800.0)
+                ),
+                surface_temperature_max_age_seconds=float(
+                    data.get("surface_temperature_max_age_seconds", 1800.0)
+                ),
+            )
+        )
+        routes.extend(_circuit_routes(data, circuit_id, zone_ids))
+    return tuple(circuits), tuple(routes)
+
+
+def _compose_zones(
+    base: PlantConfiguration, records: Sequence[_SubentryRecord]
+) -> tuple[tuple[Zone, ...], tuple[DeliveryRoute, ...], Mapping[str, str]]:
+    """Compose dynamic zones and their routes against parent-owned circuits."""
+    zones = list(base.zones)
+    routes: list[DeliveryRoute] = []
+    subentry_ids: dict[str, str] = {}
+    parent_circuit_ids = {circuit.id for circuit in base.circuits}
+    for subentry_id, data in records:
+        zone_id = _uuid(data, "id")
+        selected_circuit_ids = _uuid_list(data, CONF_CIRCUIT_IDS, "Zone subentry")
+        unknown_circuit_ids = sorted(set(selected_circuit_ids) - parent_circuit_ids)
+        if unknown_circuit_ids:
+            raise StoredTopologyError(
+                "Zone subentry references unknown circuits: "
+                + ", ".join(unknown_circuit_ids)
+                + "."
+            )
+        try:
+            target_temperature = float(_required(data, CONF_TARGET_TEMPERATURE))
+        except (TypeError, ValueError) as error:
+            raise StoredTopologyError(
+                "Zone subentry target temperature must be numeric."
+            ) from error
+        zone = plant_configuration_from_entry_data(
+            {
+                "plant_id": "00000000-0000-4000-8000-000000000000",
+                "topology": {
+                    "zones": [
+                        {
+                            **dict(data),
+                            "id": zone_id,
+                            CONF_NAME: str(_required(data, CONF_NAME)),
+                            CONF_TARGET_TEMPERATURE: target_temperature,
+                        }
+                    ],
+                    "circuits": [],
+                    "routes": [],
+                },
+            }
+        ).zones[0]
+        zones.append(zone)
+        routes.extend(_zone_routes(data, zone_id, selected_circuit_ids))
+        if subentry_id is not None:
+            subentry_ids[zone_id] = subentry_id
+    return tuple(zones), tuple(routes), subentry_ids
+
+
+def _compose_actuators(
+    base: PlantConfiguration,
+    circuits: Sequence[Circuit],
+    records: Sequence[_SubentryRecord],
+) -> tuple[tuple[Valve, ...], tuple[Circuit, ...], Mapping[str, str]]:
+    """Compose dynamic valves and attach them to parent-owned circuits."""
+    valves = list(base.valves)
+    composed_circuits = list(circuits)
+    subentry_ids: dict[str, str] = {}
+    parent_circuit_ids = {circuit.id for circuit in base.circuits}
+    for subentry_id, data in records:
+        kind = str(_required(data, CONF_ACTUATOR_KIND))
+        if kind != ACTUATOR_KIND_VALVE:
+            raise StoredTopologyError(f"Unsupported actuator subentry kind {kind!r}.")
+        actuator_id = _uuid(data, "id")
+        selected_circuit_ids = _circuit_ids(data)
+        unknown_circuit_ids = sorted(set(selected_circuit_ids) - parent_circuit_ids)
+        if unknown_circuit_ids:
+            raise StoredTopologyError(
+                "Actuator subentry references unknown circuits: "
+                + ", ".join(unknown_circuit_ids)
+                + "."
+            )
+        try:
+            opening_time_seconds = float(_required(data, CONF_OPENING_TIME))
+        except (TypeError, ValueError) as error:
+            raise StoredTopologyError(
+                "Actuator subentry opening time must be numeric."
+            ) from error
+        valves.append(
+            Valve(
+                id=actuator_id,
+                name=str(_required(data, CONF_NAME)),
+                entity_id=str(_required(data, CONF_ENTITY_ID)),
+                opening_time_seconds=opening_time_seconds,
+                readiness_entity_id=data.get(CONF_VALVE_READINESS_ENTITY),
+                position_entity_id=data.get(CONF_POSITION_FEEDBACK_ENTITY),
+                position_max_age_seconds=float(
+                    data.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0)
+                ),
+            )
+        )
+        selected = set(selected_circuit_ids)
+        composed_circuits = [
+            replace(circuit, valve_ids=(*circuit.valve_ids, actuator_id))
+            if circuit.id in selected
+            else circuit
+            for circuit in composed_circuits
+        ]
+        if subentry_id is not None:
+            subentry_ids[actuator_id] = subentry_id
+    return tuple(valves), tuple(composed_circuits), subentry_ids
+
+
+def _compose_sources(
+    base: PlantConfiguration, records: Sequence[_SubentryRecord]
+) -> tuple[tuple[Source, ...], Mapping[str, str]]:
+    """Compose dynamic heat sources through the canonical persisted decoder."""
+    sources = list(base.sources)
+    subentry_ids: dict[str, str] = {}
+    for subentry_id, data in records:
+        source = plant_configuration_from_entry_data(
+            {
+                "plant_id": "00000000-0000-4000-8000-000000000000",
+                "topology": {CONF_SOURCES: [dict(data)]},
+            }
+        ).sources[0]
+        sources.append(source)
+        if subentry_id is not None:
+            subentry_ids[source.id] = subentry_id
+    return tuple(sources), subentry_ids
+
+
 def effective_plant_configuration(
     entry: Any,
     *,
@@ -226,141 +402,15 @@ def effective_plant_configuration(
     zone_records.extend((None, data) for data in proposed_zones)
     source_records.extend((None, data) for data in proposed_sources)
 
-    zones = list(base.zones)
-    valves = list(base.valves)
-    circuits = list(base.circuits)
-    routes = list(base.routes)
-    sources = list(base.sources)
-    parent_circuit_ids = {circuit.id for circuit in circuits}
-    parent_zone_ids = {zone.id for zone in base.zones}
-    parent_valve_ids = {valve.id for valve in base.valves}
-    parent_pump_ids = {pump.id for pump in base.pumps}
+    zones, zone_routes, zone_subentry_ids = _compose_zones(base, zone_records)
+    circuits, routes = _compose_circuits(base, circuit_records)
+    routes = [*routes, *zone_routes]
+    valves, circuits, actuator_subentry_ids = _compose_actuators(
+        base, circuits, actuator_records
+    )
     # Keep this tracer deletion-safe by referencing only parent-owned objects.
     # Cross-subentry dependencies need an explicit cascade or repair policy first.
-    for _subentry_id, data in circuit_records:
-        circuit_id = _uuid(data, "id")
-        zone_ids = _uuid_list(data, CONF_ZONE_IDS, "Circuit subentry")
-        valve_ids = _uuid_list(data, CONF_VALVE_IDS, "Circuit subentry")
-        pump_id = _uuid(data, CONF_PUMP_ID)
-        unknown_zone_ids = sorted(set(zone_ids) - parent_zone_ids)
-        unknown_valve_ids = sorted(set(valve_ids) - parent_valve_ids)
-        if unknown_zone_ids:
-            raise StoredTopologyError(
-                "Circuit subentry references unknown zones: " + ", ".join(unknown_zone_ids) + "."
-            )
-        if unknown_valve_ids:
-            raise StoredTopologyError(
-                "Circuit subentry references unknown valves: " + ", ".join(unknown_valve_ids) + "."
-            )
-        if pump_id not in parent_pump_ids:
-            raise StoredTopologyError(f"Circuit subentry references unknown pump {pump_id}.")
-        circuits.append(
-            Circuit(
-                id=circuit_id,
-                name=str(_required(data, CONF_NAME)),
-                valve_ids=valve_ids,
-                pump_id=pump_id,
-                cooling_enabled=_cooling_enabled(data),
-                supply_temperature_sensor=data.get("supply_temperature_sensor"),
-                surface_temperature_sensor=data.get("surface_temperature_sensor"),
-                condensation_margin=float(data.get("condensation_margin", 2.0)),
-                supply_temperature_max_age_seconds=float(
-                    data.get("supply_temperature_max_age_seconds", 1800.0)
-                ),
-                surface_temperature_max_age_seconds=float(
-                    data.get("surface_temperature_max_age_seconds", 1800.0)
-                ),
-            )
-        )
-        routes.extend(_circuit_routes(data, circuit_id, zone_ids))
-
-    zone_subentry_ids: dict[str, str] = {}
-    for subentry_id, data in zone_records:
-        zone_id = _uuid(data, "id")
-        selected_circuit_ids = _uuid_list(data, CONF_CIRCUIT_IDS, "Zone subentry")
-        unknown_circuit_ids = sorted(set(selected_circuit_ids) - parent_circuit_ids)
-        if unknown_circuit_ids:
-            raise StoredTopologyError(
-                "Zone subentry references unknown circuits: " + ", ".join(unknown_circuit_ids) + "."
-            )
-        try:
-            target_temperature = float(_required(data, CONF_TARGET_TEMPERATURE))
-        except (TypeError, ValueError) as error:
-            raise StoredTopologyError(
-                "Zone subentry target temperature must be numeric."
-            ) from error
-        zone = plant_configuration_from_entry_data(
-            {
-                "plant_id": "00000000-0000-4000-8000-000000000000",
-                "topology": {
-                    "zones": [
-                        {
-                            **dict(data),
-                            "id": zone_id,
-                            CONF_NAME: str(_required(data, CONF_NAME)),
-                            CONF_TARGET_TEMPERATURE: target_temperature,
-                        }
-                    ],
-                    "circuits": [],
-                    "routes": [],
-                },
-            }
-        ).zones[0]
-        zones.append(zone)
-        routes.extend(_zone_routes(data, zone_id, selected_circuit_ids))
-        if subentry_id is not None:
-            zone_subentry_ids[zone_id] = subentry_id
-
-    actuator_subentry_ids: dict[str, str] = {}
-    for subentry_id, data in actuator_records:
-        kind = str(_required(data, CONF_ACTUATOR_KIND))
-        if kind != ACTUATOR_KIND_VALVE:
-            raise StoredTopologyError(f"Unsupported actuator subentry kind {kind!r}.")
-        actuator_id = _uuid(data, "id")
-        selected_circuit_ids = _circuit_ids(data)
-        unknown_circuit_ids = sorted(set(selected_circuit_ids) - parent_circuit_ids)
-        if unknown_circuit_ids:
-            raise StoredTopologyError(
-                "Actuator subentry references unknown circuits: "
-                + ", ".join(unknown_circuit_ids)
-                + "."
-            )
-        try:
-            opening_time_seconds = float(_required(data, CONF_OPENING_TIME))
-        except (TypeError, ValueError) as error:
-            raise StoredTopologyError("Actuator subentry opening time must be numeric.") from error
-        valves.append(
-            Valve(
-                id=actuator_id,
-                name=str(_required(data, CONF_NAME)),
-                entity_id=str(_required(data, CONF_ENTITY_ID)),
-                opening_time_seconds=opening_time_seconds,
-                readiness_entity_id=data.get(CONF_VALVE_READINESS_ENTITY),
-                position_entity_id=data.get(CONF_POSITION_FEEDBACK_ENTITY),
-                position_max_age_seconds=float(data.get(CONF_POSITION_FEEDBACK_MAX_AGE, 1800.0)),
-            )
-        )
-        selected = set(selected_circuit_ids)
-        circuits = [
-            replace(circuit, valve_ids=(*circuit.valve_ids, actuator_id))
-            if circuit.id in selected
-            else circuit
-            for circuit in circuits
-        ]
-        if subentry_id is not None:
-            actuator_subentry_ids[actuator_id] = subentry_id
-
-    source_subentry_ids: dict[str, str] = {}
-    for subentry_id, data in source_records:
-        source = plant_configuration_from_entry_data(
-            {
-                "plant_id": "00000000-0000-4000-8000-000000000000",
-                "topology": {CONF_SOURCES: [dict(data)]},
-            }
-        ).sources[0]
-        sources.append(source)
-        if subentry_id is not None:
-            source_subentry_ids[source.id] = subentry_id
+    sources, source_subentry_ids = _compose_sources(base, source_records)
 
     return EffectivePlantConfiguration(
         configuration=replace(
@@ -369,7 +419,7 @@ def effective_plant_configuration(
             valves=tuple(valves),
             circuits=tuple(circuits),
             routes=tuple(routes),
-            sources=tuple(sources),
+            sources=sources,
         ),
         actuator_subentry_ids=actuator_subentry_ids,
         zone_subentry_ids=zone_subentry_ids,
