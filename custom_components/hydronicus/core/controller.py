@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from math import fsum, isfinite, log
 from statistics import median
@@ -990,56 +990,44 @@ def _source_release_command(
     return ActuatorCommand(f"source:{source.id}", ActuatorAction.TURN_OFF, reason)
 
 
-def _advance_source_selection(
+@dataclass(frozen=True, slots=True)
+class _SourceObservationReconciliation:
+    """Canonical source state derived from runtime and observed actuator feedback."""
+
+    selection: SourceSelectionRuntime
+    active_source_id: str | None
+    observed_source_id: str | None
+    blocked_diagnostic: SourceSelectionDiagnostic | None = None
+
+
+def _reconcile_source_observations(
     plant: CompiledPlant,
     snapshot: PlantSnapshot,
     runtime: RuntimeState,
     now: datetime,
-    recommendation: SourceRecommendation | None,
-    *,
-    hydraulic_safe: bool,
-    hydraulic_reason: str,
-    demand_permitted: bool,
-    demand_reason: str,
-) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic | None]:
-    """Advance source selection through a one-hot, break-before-make sequence."""
+    recommended_source_id: str | None,
+) -> _SourceObservationReconciliation:
+    """Normalize selector, direct demand, and restored source-selection state."""
     selector = plant.source_selector
-    has_demand_actuator = any(
-        source.demand_entity_id is not None for source in plant.sources.values()
-    )
-    if selector is None and not has_demand_actuator:
-        return (
-            runtime.source_selection,
-            (),
-            SourceSelectionDiagnostic(
-                SourceSelectionPhase.IDLE,
-                runtime.selected_source_id,
-                recommendation.source_id if recommendation is not None else None,
-                recommendation.source_id if recommendation is not None else None,
-                hydraulic_safe,
-                "Source execution is disabled; the shadow recommendation remains available.",
-            )
-            if recommendation is not None
-            else None,
-        )
-
     selection = runtime.source_selection
     observed_source: str | None = None
-    observed_known = True
     if selector is not None:
         observed_source, observed_known = _source_selector_observation(selector, snapshot, plant)
         if selector.entity_id is not None and not observed_known:
-            diagnostic = SourceSelectionDiagnostic(
-                SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
+            return _SourceObservationReconciliation(
+                selection,
                 selection.active_source_id,
-                selection.target_source_id,
-                recommendation.source_id if recommendation is not None else None,
-                False,
-                "Source selection is held because selector feedback is unknown or invalid.",
+                observed_source,
+                SourceSelectionDiagnostic(
+                    SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
+                    selection.active_source_id,
+                    selection.target_source_id,
+                    recommended_source_id,
+                    False,
+                    "Source selection is held because selector feedback is unknown or invalid.",
+                ),
             )
-            return selection, (), diagnostic
 
-    recommended_source_id = recommendation.source_id if recommendation is not None else None
     active_source_id = selection.active_source_id
     if active_source_id is None and selector is None:
         active_source_id = runtime.selected_source_id
@@ -1051,15 +1039,19 @@ def _advance_source_selection(
             )
         )
         if len(observed_demand_sources) > 1:
-            diagnostic = SourceSelectionDiagnostic(
-                SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
-                None,
-                recommendation.source_id if recommendation is not None else None,
-                recommendation.source_id if recommendation is not None else None,
-                False,
-                "Source selection is blocked because multiple source demands are observed on.",
+            return _SourceObservationReconciliation(
+                selection,
+                active_source_id,
+                observed_source,
+                SourceSelectionDiagnostic(
+                    SourceSelectionPhase.WAITING_FOR_HYDRAULICS,
+                    None,
+                    recommended_source_id,
+                    recommended_source_id,
+                    False,
+                    "Source selection is blocked because multiple source demands are observed on.",
+                ),
             )
-            return selection, (), diagnostic
         if len(observed_demand_sources) == 1 and selection.phase not in {
             SourceSelectionPhase.BREAKING,
             SourceSelectionPhase.SELECTING,
@@ -1113,6 +1105,51 @@ def _advance_source_selection(
             transition_started_at=now,
             last_selected_at=now if observed_source else None,
         )
+    return _SourceObservationReconciliation(selection, active_source_id, observed_source)
+
+
+def _advance_source_selection(
+    plant: CompiledPlant,
+    snapshot: PlantSnapshot,
+    runtime: RuntimeState,
+    now: datetime,
+    recommendation: SourceRecommendation | None,
+    *,
+    hydraulic_safe: bool,
+    hydraulic_reason: str,
+    demand_permitted: bool,
+    demand_reason: str,
+) -> tuple[SourceSelectionRuntime, tuple[ActuatorCommand, ...], SourceSelectionDiagnostic | None]:
+    """Advance source selection through a one-hot, break-before-make sequence."""
+    selector = plant.source_selector
+    has_demand_actuator = any(
+        source.demand_entity_id is not None for source in plant.sources.values()
+    )
+    if selector is None and not has_demand_actuator:
+        return (
+            runtime.source_selection,
+            (),
+            SourceSelectionDiagnostic(
+                SourceSelectionPhase.IDLE,
+                runtime.selected_source_id,
+                recommendation.source_id if recommendation is not None else None,
+                recommendation.source_id if recommendation is not None else None,
+                hydraulic_safe,
+                "Source execution is disabled; the shadow recommendation remains available.",
+            )
+            if recommendation is not None
+            else None,
+        )
+
+    recommended_source_id = recommendation.source_id if recommendation is not None else None
+    reconciliation = _reconcile_source_observations(
+        plant, snapshot, runtime, now, recommended_source_id
+    )
+    if reconciliation.blocked_diagnostic is not None:
+        return reconciliation.selection, (), reconciliation.blocked_diagnostic
+    selection = reconciliation.selection
+    active_source_id = reconciliation.active_source_id
+    observed_source = reconciliation.observed_source_id
 
     if selection.phase is SourceSelectionPhase.BREAKING:
         target_source_id = recommended_source_id
