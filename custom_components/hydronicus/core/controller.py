@@ -1959,51 +1959,60 @@ def _feedback_diagnostics(
     return diagnostics
 
 
-def safe_shutdown(
+def _plan_source_shutdown(
+    plant: CompiledPlant,
+    phase: SafeShutdownPhase,
+) -> tuple[ActuatorCommand, ...]:
+    """Release every source output at the start of safe shutdown."""
+    if phase is not SafeShutdownPhase.IDLE:
+        return ()
+    commands: list[ActuatorCommand] = []
+    if plant.source_selector is not None and plant.source_selector.entity_id is not None:
+        commands.append(
+            ActuatorCommand(
+                plant.source_selector.id,
+                ActuatorAction.SELECT,
+                "Release source selector before hydraulic shutdown.",
+                plant.source_selector.release_option,
+            )
+        )
+    commands.extend(
+        ActuatorCommand(
+            f"source:{source.id}",
+            ActuatorAction.TURN_OFF,
+            "Release source demand before hydraulic shutdown.",
+        )
+        for source in sorted(plant.sources.values(), key=lambda item: item.id)
+        if source.demand_entity_id is not None
+    )
+    return tuple(commands)
+
+
+@dataclass(frozen=True, slots=True)
+class _ShutdownPumpPlan:
+    """One pump phase of safe shutdown."""
+
+    pumps: dict[str, PumpRuntime]
+    commands: tuple[ActuatorCommand, ...]
+    phase: SafeShutdownPhase | None
+    deadline: datetime | None
+
+
+def _plan_shutdown_pumps(
     plant: CompiledPlant,
     runtime: RuntimeState,
     now: datetime,
-) -> tuple[SafeShutdownPlan, RuntimeState]:
-    """Build one idempotent safe-shutdown step in explicit safe order.
-
-    Source demand is released first, pump overrun is observed next, pumps are
-    stopped only after their overrun deadline, and valves close only after all
-    pumps are off.  The function is pure; an adapter may intercept or shadow
-    the returned commands.
-    """
-    phase = runtime.safe_shutdown_phase
-    source_commands: list[ActuatorCommand] = []
-    if phase is SafeShutdownPhase.IDLE:
-        if plant.source_selector is not None and plant.source_selector.entity_id is not None:
-            source_commands.append(
-                ActuatorCommand(
-                    plant.source_selector.id,
-                    ActuatorAction.SELECT,
-                    "Release source selector before hydraulic shutdown.",
-                    plant.source_selector.release_option,
-                )
-            )
-        source_commands.extend(
-            ActuatorCommand(
-                f"source:{source.id}",
-                ActuatorAction.TURN_OFF,
-                "Release source demand before hydraulic shutdown.",
-            )
-            for source in sorted(plant.sources.values(), key=lambda item: item.id)
-            if source.demand_entity_id is not None
-        )
-
+) -> _ShutdownPumpPlan:
+    """Observe pump overrun and stop pumps before valves may close."""
     pumps = dict(runtime.pumps)
-    valves = dict(runtime.valves)
-    commands = list(source_commands)
+    commands: list[ActuatorCommand] = []
     next_deadline: datetime | None = None
-    pump_stop_commands: list[ActuatorCommand] = []
     active_pumps = False
     for pump_id, pump in sorted(plant.pumps.items()):
         previous = pumps.get(pump_id, PumpRuntime())
         if previous.state is PumpState.STARTING:
             pumps[pump_id] = PumpRuntime(PumpState.OFF, now)
-            pump_stop_commands.append(
+            commands.append(
                 ActuatorCommand(
                     pump_id,
                     ActuatorAction.TURN_OFF,
@@ -2014,13 +2023,11 @@ def safe_shutdown(
             active_pumps = True
             if pump.overrun_seconds > 0:
                 pumps[pump_id] = PumpRuntime(PumpState.OVERRUN, now)
-                next_deadline = min(
-                    (next_deadline or now + timedelta(seconds=pump.overrun_seconds)),
-                    now + timedelta(seconds=pump.overrun_seconds),
-                )
+                deadline = now + timedelta(seconds=pump.overrun_seconds)
+                next_deadline = min(next_deadline or deadline, deadline)
             else:
                 pumps[pump_id] = PumpRuntime(PumpState.OFF, now)
-                pump_stop_commands.append(
+                commands.append(
                     ActuatorCommand(
                         pump_id,
                         ActuatorAction.TURN_OFF,
@@ -2034,7 +2041,7 @@ def safe_shutdown(
                 next_deadline = min(next_deadline or deadline, deadline)
             else:
                 pumps[pump_id] = PumpRuntime(PumpState.OFF, now)
-                pump_stop_commands.append(
+                commands.append(
                     ActuatorCommand(
                         pump_id,
                         ActuatorAction.TURN_OFF,
@@ -2042,11 +2049,59 @@ def safe_shutdown(
                     )
                 )
 
-    if active_pumps and next_deadline is not None:
+    phase = (
+        SafeShutdownPhase.PUMP_OVERRUN
+        if active_pumps and next_deadline is not None
+        else SafeShutdownPhase.PUMPS_STOPPED
+        if commands
+        else None
+    )
+    return _ShutdownPumpPlan(pumps, tuple(commands), phase, next_deadline)
+
+
+def _plan_shutdown_valves(
+    valves: Mapping[str, ValveRuntime],
+    now: datetime,
+) -> tuple[dict[str, ValveRuntime], tuple[ActuatorCommand, ...]]:
+    """Close valves only after every pump phase has completed."""
+    next_valves = dict(valves)
+    commands: list[ActuatorCommand] = []
+    for valve_id, valve_runtime in sorted(next_valves.items()):
+        if valve_runtime.state is ValveState.CLOSED:
+            continue
+        next_valves[valve_id] = ValveRuntime(ValveState.CLOSED, now)
+        commands.append(
+            ActuatorCommand(
+                valve_id,
+                ActuatorAction.CLOSE,
+                "Close valve after all pumps have stopped.",
+            )
+        )
+    return next_valves, tuple(commands)
+
+
+def safe_shutdown(
+    plant: CompiledPlant,
+    runtime: RuntimeState,
+    now: datetime,
+) -> tuple[SafeShutdownPlan, RuntimeState]:
+    """Build one idempotent safe-shutdown step in explicit safe order.
+
+    Source demand is released first, pump overrun is observed next, pumps are
+    stopped only after their overrun deadline, and valves close only after all
+    pumps are off.  The function is pure; an adapter may intercept or shadow
+    the returned commands.
+    """
+    source_commands = _plan_source_shutdown(plant, runtime.safe_shutdown_phase)
+    pump_plan = _plan_shutdown_pumps(plant, runtime, now)
+    pumps = pump_plan.pumps
+    valves = dict(runtime.valves)
+    commands = list(source_commands)
+    if pump_plan.phase is SafeShutdownPhase.PUMP_OVERRUN:
         plan = SafeShutdownPlan(
             SafeShutdownPhase.PUMP_OVERRUN,
             tuple(commands),
-            next_deadline,
+            pump_plan.deadline,
             "Source demand released; observing pump overrun before stopping pumps.",
         )
         return plan, RuntimeState(
@@ -2060,8 +2115,8 @@ def safe_shutdown(
             safe_shutdown_started_at=runtime.safe_shutdown_started_at or now,
         )
 
-    commands.extend(pump_stop_commands)
-    if pump_stop_commands:
+    commands.extend(pump_plan.commands)
+    if pump_plan.phase is SafeShutdownPhase.PUMPS_STOPPED:
         plan = SafeShutdownPlan(
             SafeShutdownPhase.PUMPS_STOPPED,
             tuple(commands),
@@ -2079,17 +2134,7 @@ def safe_shutdown(
             safe_shutdown_started_at=runtime.safe_shutdown_started_at or now,
         )
 
-    valve_close_commands: list[ActuatorCommand] = []
-    for valve_id, valve_runtime in sorted(valves.items()):
-        if valve_runtime.state is not ValveState.CLOSED:
-            valves[valve_id] = ValveRuntime(ValveState.CLOSED, now)
-            valve_close_commands.append(
-                ActuatorCommand(
-                    valve_id,
-                    ActuatorAction.CLOSE,
-                    "Close valve after all pumps have stopped.",
-                )
-            )
+    valves, valve_close_commands = _plan_shutdown_valves(valves, now)
     commands.extend(valve_close_commands)
     phase = SafeShutdownPhase.VALVES_CLOSED
     plan = SafeShutdownPlan(
