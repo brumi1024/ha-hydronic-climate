@@ -305,119 +305,33 @@ class SourceDiagnostic:
     reason: str
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True)
 class Source:
     """A configured heat source used by qualification and guarded demand."""
 
     id: str
     name: str
-    priority: int
-    kind: SourceKind
-    availability_entity_id: str | None
-    temperature_entity_id: str | None
-    minimum_temperature: float | None
-    maximum_age_seconds: float
-    hysteresis: float
-    demand_entity_id: str | None
-
-    def __init__(
-        self,
-        id: str,
-        name: str,
-        priority: int = 0,
-        kind: SourceKind | str = SourceKind.EXTERNAL,
-        availability_entity_id: str | None = None,
-        temperature_entity_id: str | None = None,
-        minimum_temperature: float | None = None,
-        maximum_age_seconds: float = 1800.0,
-        hysteresis: float = 0.5,
-        *,
-        source_type: SourceKind | str | None = None,
-        availability_entity: str | None = None,
-        temperature_entity: str | None = None,
-        buffer_minimum_temperature: float | None = None,
-        buffer_maximum_age_seconds: float | None = None,
-        buffer_hysteresis: float | None = None,
-        demand_entity_id: str | None = None,
-        source_demand_entity_id: str | None = None,
-    ) -> None:
-        """Accept descriptive aliases while storing one stable source contract."""
-        if source_type is not None:
-            kind = source_type
-        if availability_entity is not None:
-            availability_entity_id = availability_entity
-        if temperature_entity is not None:
-            temperature_entity_id = temperature_entity
-        if buffer_minimum_temperature is not None:
-            minimum_temperature = buffer_minimum_temperature
-        if buffer_maximum_age_seconds is not None:
-            maximum_age_seconds = buffer_maximum_age_seconds
-        if buffer_hysteresis is not None:
-            hysteresis = buffer_hysteresis
-        if source_demand_entity_id is not None:
-            demand_entity_id = source_demand_entity_id
-        normalized_kind_value = str(kind)
-        if normalized_kind_value in {"buffer", "temperature_buffer"}:
-            normalized_kind_value = SourceKind.TEMPERATURE_QUALIFIED_BUFFER.value
-        normalized_kind = SourceKind(normalized_kind_value)
-        object.__setattr__(self, "id", id)
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "priority", priority)
-        object.__setattr__(self, "kind", normalized_kind)
-        object.__setattr__(self, "availability_entity_id", availability_entity_id)
-        object.__setattr__(self, "temperature_entity_id", temperature_entity_id)
-        object.__setattr__(self, "minimum_temperature", minimum_temperature)
-        object.__setattr__(self, "maximum_age_seconds", float(maximum_age_seconds))
-        object.__setattr__(self, "hysteresis", float(hysteresis))
-        object.__setattr__(self, "demand_entity_id", demand_entity_id)
+    priority: int = 0
+    kind: SourceKind = SourceKind.EXTERNAL
+    availability_entity_id: str | None = None
+    temperature_entity_id: str | None = None
+    minimum_temperature: float | None = None
+    maximum_age_seconds: float = 1800.0
+    hysteresis: float = 0.5
+    demand_entity_id: str | None = None
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True)
 class SourceSelectionActuator:
     """Generic source selector configuration with a synthetic-safe default."""
 
     id: str
     name: str
-    entity_id: str | None
-    break_interval_seconds: float
-    minimum_dwell_seconds: float
-    release_option: str
-    shadow_only: bool
-
-    def __init__(
-        self,
-        id: str,
-        name: str,
-        entity_id: str | None = None,
-        break_interval_seconds: float = 30.0,
-        minimum_dwell_seconds: float = 300.0,
-        *,
-        selector_entity_id: str | None = None,
-        break_seconds: float | None = None,
-        minimum_source_dwell_seconds: float | None = None,
-        release_option: str = "none",
-        shadow_only: bool = True,
-    ) -> None:
-        """Accept descriptive aliases while keeping selector execution synthetic by default."""
-        if (
-            entity_id is not None
-            and selector_entity_id is not None
-            and entity_id != selector_entity_id
-        ):
-            raise ValueError("Source selector entity was provided more than once.")
-        if selector_entity_id is not None:
-            entity_id = selector_entity_id
-        if break_seconds is not None:
-            break_interval_seconds = break_seconds
-        if minimum_source_dwell_seconds is not None:
-            minimum_dwell_seconds = minimum_source_dwell_seconds
-        object.__setattr__(self, "id", id)
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "entity_id", entity_id)
-        object.__setattr__(self, "break_interval_seconds", float(break_interval_seconds))
-        object.__setattr__(self, "minimum_dwell_seconds", float(minimum_dwell_seconds))
-        object.__setattr__(self, "release_option", release_option)
-        object.__setattr__(self, "shadow_only", bool(shadow_only))
+    entity_id: str | None = None
+    break_interval_seconds: float = 30.0
+    minimum_dwell_seconds: float = 300.0
+    release_option: str = "none"
+    shadow_only: bool = True
 
 
 @dataclass(frozen=True, slots=True)
