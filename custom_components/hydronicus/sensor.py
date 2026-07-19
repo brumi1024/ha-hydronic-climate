@@ -54,6 +54,15 @@ class ControllerStatusSensor(SensorEntity):
         """Return a bounded, low-cardinality controller status."""
         return self._runtime.operational_status()
 
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the latest operation decisions beside the bounded status."""
+        return {
+            "dry_run": self._runtime.dry_run,
+            "safe_shutdown_phase": self._runtime.runtime_state.safe_shutdown_phase.value,
+            "operations": self._runtime.execution_summary(),
+        }
+
 
 class ReconciliationStatusSensor(SensorEntity):
     """Expose bounded reconciliation status without high-cardinality attributes."""
@@ -442,7 +451,7 @@ class SourceChangeoverSensor(SensorEntity):
             "recommended_source_id": recommendation.source_id if recommendation else None,
             "dwell_remaining_seconds": getattr(selection, "dwell_remaining_seconds", 0.0),
             "hydraulically_safe": getattr(selection, "hydraulically_safe", False),
-            "global_shadow_mode": self._runtime.shadow_mode,
+            "dry_run": self._runtime.dry_run,
             "explanation": getattr(selection, "explanation", None),
         }
 

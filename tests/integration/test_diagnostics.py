@@ -8,9 +8,9 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
     CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
+    CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
-    CONF_SHADOW_MODE,
     DOMAIN,
 )
 from custom_components.hydronicus.diagnostics import async_get_config_entry_diagnostics
@@ -30,7 +30,7 @@ def _entry(*, detailed_actuators: bool = False) -> MockConfigEntry:
     data = {
         CONF_NAME: "Private Solymar Plant",
         CONF_PLANT_ID: PLANT_ID,
-        CONF_SHADOW_MODE: True,
+        CONF_DRY_RUN: True,
         "private_url": "https://private.example/hydronic?token=do-not-export",
         "token": "synthetic-secret-token",
         "topology": {

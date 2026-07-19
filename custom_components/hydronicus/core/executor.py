@@ -63,6 +63,7 @@ class ActuatorOperation:
     service: str
     target_state: ActuatorObservedState
     target_value: str | None = None
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +101,7 @@ class ExecutionReport:
 
     executed: tuple[ActuatorOperation, ...] = ()
     suppressed: tuple[ActuatorOperation, ...] = ()
-    shadowed: tuple[ActuatorOperation, ...] = ()
+    proposed: tuple[ActuatorOperation, ...] = ()
     failures: tuple[ActuatorExecutionFailure, ...] = ()
 
     @property
@@ -159,6 +160,7 @@ def operation_for(command: ActuatorCommand, binding: ActuatorBinding) -> Actuato
             "select_option",
             ActuatorObservedState.SELECTED,
             command.target,
+            command.reason,
         )
     if domain == "select":
         raise ValueError(
@@ -189,6 +191,7 @@ def operation_for(command: ActuatorCommand, binding: ActuatorBinding) -> Actuato
         domain=domain,
         service=service,
         target_state=target_state,
+        reason=command.reason,
     )
 
 
@@ -232,8 +235,7 @@ class ActuatorExecutor:
     """Execute explicit, idempotent commands against generic HA entities."""
 
     bindings: Mapping[str, ActuatorBinding]
-    shadow_mode: bool = True
-    actuator_shadow_modes: Mapping[str, bool] = field(default_factory=dict)
+    dry_run: bool = True
     readiness_bindings: Mapping[str, str] = field(default_factory=dict)
     observed_states: dict[str, ActuatorObservedState] = field(default_factory=dict)
     observed_values: dict[str, str] = field(default_factory=dict)
@@ -246,10 +248,6 @@ class ActuatorExecutor:
     def __post_init__(self) -> None:
         """Copy configuration and initialize every actuator conservatively."""
         self.bindings = dict(self.bindings)
-        self.actuator_shadow_modes = {
-            str(actuator_id): bool(shadow)
-            for actuator_id, shadow in self.actuator_shadow_modes.items()
-        }
         self.readiness_bindings = {
             str(actuator_id): str(entity_id)
             for actuator_id, entity_id in self.readiness_bindings.items()
@@ -294,12 +292,10 @@ class ActuatorExecutor:
         cls,
         plant: CompiledPlant,
         *,
-        shadow_mode: bool = True,
-        actuator_shadow_modes: Mapping[str, bool] | None = None,
+        dry_run: bool = True,
     ) -> ActuatorExecutor:
         """Build generic bindings from the compiled plant topology."""
         bindings: dict[str, ActuatorBinding] = {}
-        configured_shadow_modes = dict(actuator_shadow_modes or {})
         for actuator_id, valve in plant.valves.items():
             bindings[actuator_id] = ActuatorBinding(actuator_id, valve.entity_id)
         readiness_bindings = {
@@ -319,18 +315,14 @@ class ActuatorExecutor:
                         f"Actuator ID {binding_id!r} is used by more than one actuator."
                     )
                 bindings[binding_id] = ActuatorBinding(binding_id, source.demand_entity_id)
-                configured_shadow_modes.setdefault(binding_id, source.shadow_mode)
         if plant.source_selector is not None and plant.source_selector.entity_id is not None:
             selector_id = plant.source_selector.id
             if selector_id in bindings:
                 raise ValueError(f"Actuator ID {selector_id!r} is used by more than one actuator.")
             bindings[selector_id] = ActuatorBinding(selector_id, plant.source_selector.entity_id)
-            if plant.source_selector.shadow_only:
-                configured_shadow_modes[selector_id] = True
         return cls(
             bindings=bindings,
-            shadow_mode=shadow_mode,
-            actuator_shadow_modes=configured_shadow_modes,
+            dry_run=dry_run,
             readiness_bindings=readiness_bindings,
         )
 
@@ -478,16 +470,16 @@ class ActuatorExecutor:
         plan: ControlPlan,
         dispatch: DispatchOperation,
         *,
-        force_shadow: bool = False,
-        force_shadow_actuator_ids: frozenset[str] = frozenset(),
-        force_shadow_start_actuator_ids: frozenset[str] = frozenset(),
+        force_dry_run: bool = False,
+        force_dry_run_actuator_ids: frozenset[str] = frozenset(),
+        force_dry_run_start_actuator_ids: frozenset[str] = frozenset(),
         force_dispatch: bool = False,
         unavailable_actuator_ids: frozenset[str] = frozenset(),
     ) -> ExecutionReport:
-        """Dispatch only unsatisfied, non-shadowed explicit operations."""
+        """Dispatch only unsatisfied, allowed explicit operations."""
         executed: list[ActuatorOperation] = []
         suppressed: list[ActuatorOperation] = []
-        shadowed: list[ActuatorOperation] = []
+        proposed: list[ActuatorOperation] = []
         failures: list[ActuatorExecutionFailure] = []
         for command in plan.commands:
             try:
@@ -508,16 +500,15 @@ class ActuatorExecutor:
                 suppressed.append(operation)
                 continue
             if (
-                force_shadow
-                or command.actuator_id in force_shadow_actuator_ids
+                force_dry_run
+                or command.actuator_id in force_dry_run_actuator_ids
                 or (
-                    command.actuator_id in force_shadow_start_actuator_ids
+                    command.actuator_id in force_dry_run_start_actuator_ids
                     and command.action in {ActuatorAction.OPEN, ActuatorAction.TURN_ON}
                 )
-                or self.shadow_mode
-                or self.actuator_shadow_modes.get(command.actuator_id, False)
+                or self.dry_run
             ):
-                shadowed.append(operation)
+                proposed.append(operation)
                 continue
             try:
                 await dispatch(operation)
@@ -553,7 +544,7 @@ class ActuatorExecutor:
             ):
                 self.failure_states.pop(command.actuator_id, None)
             executed.append(operation)
-        return ExecutionReport(tuple(executed), tuple(suppressed), tuple(shadowed), tuple(failures))
+        return ExecutionReport(tuple(executed), tuple(suppressed), tuple(proposed), tuple(failures))
 
     async def async_safe_shutdown(
         self,
@@ -562,7 +553,8 @@ class ActuatorExecutor:
         now: datetime,
         dispatch: DispatchOperation,
         *,
-        force_shadow: bool = False,
+        force_dry_run: bool = False,
+        force_dry_run_actuator_ids: frozenset[str] = frozenset(),
         unavailable_actuator_ids: frozenset[str] = frozenset(),
     ) -> SafeShutdownReport:
         """Execute one explicit source-release, overrun, pump, or valve phase."""
@@ -575,7 +567,8 @@ class ActuatorExecutor:
         execution = await self.async_execute(
             control_plan,
             dispatch,
-            force_shadow=force_shadow,
+            force_dry_run=force_dry_run,
+            force_dry_run_actuator_ids=force_dry_run_actuator_ids,
             force_dispatch=True,
             unavailable_actuator_ids=unavailable_actuator_ids,
         )

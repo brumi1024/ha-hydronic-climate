@@ -8,7 +8,7 @@ The command was `/Users/benjaminteke/.cache/uv/archive-v0/1DnAqMaMGcCSHYZRevXYy/
 
 The topology contained 48 zones, 24 circuits, 12 shared valves, 6 shared pumps, 3 sources, and 96 routes.
 
-The topology also contained 96 temperature sensors, 48 humidity sensors, 48 supply or surface interlock references, and a shadow-only source selector.
+The topology also contained 96 temperature sensors, 48 humidity sensors, 48 supply or surface interlock references, and a Dry run-only source selector.
 
 The measured compile time was 8.572 ms.
 
@@ -34,4 +34,4 @@ Those runs isolated the variation to evaluation timing, so the 2000 ms budget ac
 
 If a future run crosses a threshold, retain the topology and emitted metrics, identify whether the regression is in compilation, evaluation, reconciliation, or publication, and document the reason before changing the threshold.
 
-The benchmark is synthetic and shadow-only evidence, not authorization for physical Home Assistant service execution.
+The benchmark is synthetic and Dry run-only evidence, not authorization for physical Home Assistant service execution.

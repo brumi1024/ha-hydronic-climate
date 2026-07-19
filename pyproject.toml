@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ha-hydronicus"
-version = "0.5.0"
+version = "0.1.0"
 description = "A safe, topology-aware Home Assistant integration for hydronic heating and cooling plants."
 readme = "README.md"
 requires-python = ">=3.14.2"
 license = { text = "MIT" }
 authors = [{ name = "Hydronicus contributors" }]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 4 - Beta",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.14",

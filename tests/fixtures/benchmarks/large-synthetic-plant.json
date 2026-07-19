@@ -17,7 +17,7 @@
     "valves_per_circuit": 2,
     "shared_circuits_per_pump": 4,
     "source_selector": true,
-    "shadow_mode": true,
+    "dry_run": true,
     "thresholds": {
       "compile_ms_max": 1000.0,
       "evaluation_ms_max": 2000.0,

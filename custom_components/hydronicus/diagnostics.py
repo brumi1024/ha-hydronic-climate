@@ -11,6 +11,7 @@ from .const import (
     MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
 )
+from .core.executor import ActuatorOperation
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -204,7 +205,7 @@ def _configuration_shape(runtime: HydronicRuntime, references: _References) -> d
         "plant": {
             "reference": references.ref("plant", runtime.plant.id),
             "name": _REDACTED_NAME,
-            "shadow_mode": runtime.shadow_mode,
+            "dry_run": runtime.dry_run,
             "diagnostics_include_actuator_details": runtime.diagnostics_include_actuator_details,
         },
         "counts": {
@@ -298,7 +299,6 @@ def _configuration_objects(runtime: HydronicRuntime, references: _References) ->
                 "availability_configured": source.availability_entity_id is not None,
                 "temperature_reference_configured": source.temperature_entity_id is not None,
                 "demand_actuator_configured": source.demand_entity_id is not None,
-                "source_shadow_mode": source.shadow_mode,
             }
             for source_id, source in sorted(runtime.plant.sources.items())
         ],
@@ -467,7 +467,6 @@ def _controller(runtime: HydronicRuntime, references: _References) -> dict[str, 
                 "active": diagnostic.active,
                 "demand_requested": diagnostic.demand_requested,
                 "demand_permitted": diagnostic.demand_permitted,
-                "source_shadow_mode": diagnostic.shadow_mode,
                 "blocked": diagnostic.blocked,
                 "reason": _safe_reason(references, diagnostic.reason),
             }
@@ -503,12 +502,42 @@ def _execution(runtime: HydronicRuntime, references: _References) -> dict[str, o
     """Return bounded execution counters and failure categories."""
     report = runtime.last_execution
     if report is None:
-        return {"present": False, "executed": 0, "suppressed": 0, "shadowed": 0, "failures": []}
+        return {
+            "present": False,
+            "executed": 0,
+            "suppressed": 0,
+            "proposed": 0,
+            "operations": {"executed": [], "suppressed": [], "proposed": []},
+            "failures": [],
+        }
+
+    def operation_details(operations: Iterable[ActuatorOperation]) -> list[dict[str, object]]:
+        """Redact one latest-operation list without losing its decision reason."""
+        return [
+            {
+                "actuator_reference": references.ref("actuator", operation.actuator_id),
+                "entity_reference": references.entity(operation.entity_id),
+                "service": operation.service,
+                "target_state": operation.target_state.value,
+                "target_value": references.text(operation.target_value)
+                if operation.target_value is not None
+                else None,
+                "reason": _safe_reason(references, operation.reason),
+            }
+            for operation in operations
+        ]
+
     return {
         "present": True,
+        "dry_run": runtime.dry_run,
         "executed": len(report.executed),
         "suppressed": len(report.suppressed),
-        "shadowed": len(report.shadowed),
+        "proposed": len(report.proposed),
+        "operations": {
+            "executed": operation_details(report.executed),
+            "suppressed": operation_details(report.suppressed),
+            "proposed": operation_details(report.proposed),
+        },
         "failures": sorted(failure.kind.value for failure in report.failures),
         "failure_messages": [references.text(failure.explanation) for failure in report.failures],
     }

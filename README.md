@@ -13,12 +13,20 @@ It models comfort zones, hydraulic circuits, delivery routes, valves, pumps, and
 
 ## Current status
 
-The repository contains a public-beta shadow-mode implementation.
-The current release is `0.5.0`.
+The release target is `0.1.0`.
+The current candidate supports end-to-end Dry run behavior and a configurable Plant control boundary.
+Anyone can install Hydronicus, configure a Plant through the Home Assistant UI, exercise heating and cooling demand, inspect hydraulic sequencing and source recommendations, and troubleshoot the result without operating equipment.
+Release publication and complete disposable staging evidence remain pending.
 
-The implementation can create and validate a plant through the Home Assistant UI, observe configured sensors, calculate heating and cooling shadow demand, recommend eligible sources, and expose the virtual sequence that would be needed by the configured topology.
-The runtime also contains an explicit actuator executor seam for synthetic and intercepted service-call tests.
-New plants remain in shadow mode, and this public beta is not a production authorization for physical control.
+| Capability | Current candidate | `v0.1.0` release target |
+| --- | --- | --- |
+| Heating valves and pumps | Proposed in Dry run; controlled when off | Same behavior |
+| Cooling and condensation protection | Starts remain Dry run | Starts remain Dry run |
+| Source recommendation | Visible in both modes; selection remains Dry run | Same behavior |
+| Direct source demand | Proposed in Dry run; controlled when off after a valid pump path | Same behavior |
+
+The codebase contains the tested generic service-call executor needed for heating control.
+The Plant UI exposes one Dry run setting, records proposed versus executed operations, and performs an ordered safe shutdown when Dry run is re-enabled.
 
 The current implementation includes:
 
@@ -33,13 +41,14 @@ The current implementation includes:
 - Multiple zones per circuit and multiple circuits per zone.
 - Shared valve and pump modeling with active-consumer tracking.
 - Heating demand with hysteresis and virtual valve opening and pump overrun timing.
-- Cooling condensation diagnostics and shadow source recommendations.
-- Explicit, idempotent switch and native-valve executor operations behind shadow controls.
-- Shadow climate, demand, aggregate-temperature, blocked-state, actuator-request, topology-preview, and explanation entities.
+- Cooling condensation diagnostics and Dry run source recommendations.
+- Explicit, idempotent switch and native-valve executor operations behind the Plant Dry run control.
+- Dry run climate, demand, aggregate-temperature, blocked-state, actuator-request, topology-preview, and explanation entities.
 - Structured non-fatal warnings when shared valves limit independent control.
 
-Production cooling control, source changeover, Repairs, downloadable diagnostics, and rollout controls remain milestone work.
-Treat the roadmap as a statement of intent rather than a promise that those features are available in this release.
+Home Assistant Repairs for unresolved bindings, redacted downloadable diagnostics, startup reconciliation, and bounded command-failure handling are implemented.
+Cooling starts, source changeover, source-demand starts, and physical actuator rollout remain gated milestone work.
+Treat the roadmap as a statement of intent rather than authorization to use those paths on physical equipment.
 
 ## Installation
 
@@ -59,7 +68,7 @@ The integration is not currently part of the HACS default repository list, so th
 ## First simulated Plant
 
 Use a disposable Home Assistant instance or a staging configuration with synthetic entities.
-Do not bind a public-beta shadow-mode test to equipment that must not be observed or controlled by the test.
+Do not bind a Dry run test to equipment that must not be observed or controlled by the test.
 
 Before opening the Hydronicus setup flow, prepare these generic entities in Home Assistant:
 
@@ -80,26 +89,29 @@ Then complete the Hydronicus flow:
 5. Review the compiled topology and submit the flow.
 
 The review should describe the route from the Zone to the Circuit, the valve opening step, and the pump request step.
-The new Plant remains in shadow mode.
+The new Plant starts in Dry run.
 
 To exercise the simulation, change the synthetic sensor below the target minus the heating start threshold.
 The Zone demand entity should turn on, the virtual valve should move through opening, and the virtual pump should become requested after the configured opening time.
 Raise the synthetic sensor above the stop threshold to release demand.
 The virtual pump then follows its configured overrun period before the virtual valve closes.
 
-Changing a climate target changes the calculated shadow demand only while the Plant remains in its default shadow mode.
-It does not send a command to the configured valve or pump entity in that mode.
+Changing a climate target changes the calculated demand and the latest proposed operations.
+Dry run does not send a command to the configured valve, pump, or direct source-demand entity.
+If Dry run is turned off in an isolated test, heating valve and pump operations can execute after the configured confirmation.
+Cooling starts and source-selector operations remain proposed and do not execute.
 
 See [configuration and simulation](docs/configuration.md) for a complete generic example and [troubleshooting](docs/troubleshooting.md) if the flow or entities do not behave as expected.
 
-## Shadow mode boundary
+## Dry run boundary
 
-Shadow mode is a safety boundary, not a physical simulation of water flow, pressure, temperature, or equipment response.
-It evaluates the configured graph and keeps virtual actuator state in memory.
+Dry run is a safety boundary, not a physical simulation of water flow, pressure, temperature, or equipment response.
+It evaluates the configured graph, reads actuator feedback, and records proposed operations without dispatching them.
 It cannot prove that a real valve opens, that a pump produces flow, or that a heat source can deliver safe water.
 
-Do not enable or infer physical control from a shadow result.
-Physical control is not implemented in the current release.
+Do not infer physical safety from a Dry run result.
+Turning Dry run off is a tested software control boundary for heating operations, not authorization to operate a physical plant.
+Keep real equipment outside the actuator path until the exact staged scope has human approval.
 
 ## Supported topology
 
@@ -115,7 +127,7 @@ Hydronicus uses explicit objects and relationships:
 Independent branches, shared pumps, shared valves, and one Zone routed to multiple Circuits can be represented.
 Sharing a valve or another hydraulically coupled component does not create independent physical control.
 
-Read [supported topology patterns](docs/topology.md) before mapping an existing plant.
+Read [how Hydronicus works](docs/how-it-works.md) before mapping an existing plant.
 
 ## Safety limits
 
@@ -125,9 +137,10 @@ It is not a boiler safety controller, pressure-relief system, flow proving devic
 Keep physical protection independent of Home Assistant, including the protections required by the heat source, emitters, water circuit, electrical installation, and local regulations.
 Do not use the integration to bypass a hardware interlock or to decide whether equipment is safe to operate.
 
-The software currently calculates heating, cooling, and source decisions in shadow mode by default.
-Cooling interlocks, dew-point checks, source selection, and explicit actuator execution are available as non-production implementation seams and diagnostics.
-They are not production safety controls or an authorization to operate physical equipment in this release.
+The software calculates heating, cooling, and source decisions while every new Plant starts in Dry run.
+Cooling interlocks, dew-point checks, source selection, and the internal actuator executor are implemented and tested.
+The Dry run setting controls heating valves, pumps, and configured direct source demand, while cooling starts and source selectors remain Dry run only.
+These are not production safety controls or authorization to operate physical equipment.
 
 Read [safety limits](docs/safety.md) before using any real sensor data.
 
@@ -138,6 +151,15 @@ Use [upgrade and rollback](docs/upgrade-and-rollback.md) for HACS updates, confi
 
 When reporting a problem, use the [diagnostic bug-report template](.github/ISSUE_TEMPLATE/diagnostic-bug-report.md).
 Remove credentials, tokens, private addresses, and household-specific entity details before submitting any diagnostic information.
+
+## Documentation
+
+- [How Hydronicus works](docs/how-it-works.md) explains the model, evaluation cycle, shared equipment, and exact control boundary.
+- [Configuration and simulation](docs/configuration.md) walks through a complete UI-created Plant.
+- [Safety limits](docs/safety.md) separates software coordination from physical protection.
+- [Troubleshooting](docs/troubleshooting.md) covers setup, observations, explanations, Repairs, and diagnostics.
+- [Upgrade and rollback](docs/upgrade-and-rollback.md) covers backup-first installation changes.
+- [Development](docs/development.md) and [staging](docs/home-server-staging.md) are contributor references.
 
 ## Development
 

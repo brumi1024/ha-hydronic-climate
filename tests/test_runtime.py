@@ -59,7 +59,7 @@ sys.modules.setdefault("homeassistant.core", homeassistant_core)
 sys.modules.setdefault("homeassistant.helpers", homeassistant_helpers)
 sys.modules.setdefault("homeassistant.helpers.event", homeassistant_helpers_event)
 
-CONF_SHADOW_MODE = import_module("custom_components.hydronicus.const").CONF_SHADOW_MODE
+CONF_DRY_RUN = import_module("custom_components.hydronicus.const").CONF_DRY_RUN
 CONF_PLANT_ID = import_module("custom_components.hydronicus.const").CONF_PLANT_ID
 runtime_module = import_module("custom_components.hydronicus.runtime")
 HydronicRuntime = runtime_module.HydronicRuntime
@@ -124,7 +124,7 @@ def _configured_entry(
         data={
             "name": "Hydronic plant",
             "plant_id": PLANT_UUID,
-            "shadow_mode": True,
+            "dry_run": True,
             "topology": {
                 "zones": [zone],
                 "circuits": [
@@ -166,19 +166,19 @@ def _configured_entry(
 class RuntimeTests(unittest.TestCase):
     """Verify runtime data construction."""
 
-    def test_defaults_to_shadow_mode(self) -> None:
+    def test_defaults_to_dry_run(self) -> None:
         runtime = HydronicRuntime.from_entry(SimpleNamespace(data={CONF_PLANT_ID: "plant"}))
 
         self.assertEqual(runtime.plant_id, "plant")
         self.assertEqual(runtime.name, "Hydronic plant")
-        self.assertTrue(runtime.shadow_mode)
+        self.assertTrue(runtime.dry_run)
 
-    def test_reads_explicit_shadow_mode(self) -> None:
+    def test_reads_explicit_dry_run(self) -> None:
         runtime = HydronicRuntime.from_entry(
-            SimpleNamespace(data={CONF_PLANT_ID: "plant", CONF_SHADOW_MODE: False})
+            SimpleNamespace(data={CONF_PLANT_ID: "plant", CONF_DRY_RUN: False})
         )
 
-        self.assertFalse(runtime.shadow_mode)
+        self.assertFalse(runtime.dry_run)
 
     def test_zone_aggregation_requires_a_controller_evaluation(self) -> None:
         """The adapter must not reimplement aggregation before the core evaluates."""

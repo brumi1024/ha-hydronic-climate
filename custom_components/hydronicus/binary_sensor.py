@@ -1,4 +1,4 @@
-"""Read-only shadow demand entities."""
+"""Read-only demand, execution, and safety entities."""
 
 from __future__ import annotations
 
@@ -31,6 +31,31 @@ class HydronicShadowEntity(BinarySensorEntity):
     async def async_added_to_hass(self) -> None:
         """Subscribe after Home Assistant has registered the entity."""
         self.async_on_remove(self._runtime.async_add_listener(self.async_write_ha_state))
+
+
+class DryRunBinarySensor(HydronicShadowEntity):
+    """Expose the Plant-wide Dry run safety boundary."""
+
+    _attr_icon = "mdi:eye-outline"
+
+    def __init__(self, entry: HydronicConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{self._runtime.plant_id}_dry_run"
+        self._attr_name = "Dry run"
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether actuator dispatch is currently suppressed."""
+        return self._runtime.dry_run
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the latest operation boundary and safe-shutdown phase."""
+        return {
+            "dry_run": self._runtime.dry_run,
+            "safe_shutdown_phase": self._runtime.runtime_state.safe_shutdown_phase.value,
+            "operations": self._runtime.execution_summary(),
+        }
 
 
 class ModeChangeoverLockoutBinarySensor(HydronicShadowEntity):
@@ -71,7 +96,7 @@ class ModeChangeoverLockoutBinarySensor(HydronicShadowEntity):
 
 
 class ZoneDemandBinarySensor(HydronicShadowEntity):
-    """Whether a zone currently requests heat in shadow mode."""
+    """Whether a zone currently requests heat."""
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         super().__init__(entry)
@@ -117,7 +142,7 @@ class ZoneBlockedBinarySensor(HydronicShadowEntity):
 
 
 class ZoneCoolingDemandBinarySensor(HydronicShadowEntity):
-    """Whether a zone currently requests cooling in shadow mode."""
+    """Whether a zone currently requests cooling."""
 
     def __init__(self, entry: HydronicConfigEntry, zone_id: str, name: str) -> None:
         super().__init__(entry)
@@ -181,7 +206,7 @@ class SourceDemandBinarySensor(HydronicShadowEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return the demand requested by the latest evaluation, including shadow mode."""
+        """Return the demand requested by the latest evaluation."""
         diagnostic = self._runtime.source_diagnostic(self._source_id)
         return bool(getattr(diagnostic, "demand_requested", False))
 
@@ -189,15 +214,13 @@ class SourceDemandBinarySensor(HydronicShadowEntity):
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose the guarded permit and execution boundary atomically."""
         diagnostic = self._runtime.source_diagnostic(self._source_id)
-        source = self._runtime.plant.sources[self._source_id]
         return {
             "available": getattr(diagnostic, "available", None),
             "eligible": getattr(diagnostic, "eligible", False),
             "recommended": getattr(diagnostic, "recommended", False),
             "active": getattr(diagnostic, "active", False),
             "demand_permitted": getattr(diagnostic, "demand_permitted", False),
-            "source_shadow_mode": source.shadow_mode,
-            "global_shadow_mode": self._runtime.shadow_mode,
+            "dry_run": self._runtime.dry_run,
             "blocked": getattr(diagnostic, "blocked", False),
             "reason": getattr(diagnostic, "reason", None),
         }
@@ -362,9 +385,12 @@ class ActuatorBlockedBinarySensor(HydronicShadowEntity):
 async def async_setup_entry(
     hass: HomeAssistant, entry: HydronicConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Add read-only shadow demand and actuator-request entities."""
+    """Add demand and actuator-request entities."""
     runtime = entry.runtime_data
-    parent_entities: list[BinarySensorEntity] = [ModeChangeoverLockoutBinarySensor(entry)]
+    parent_entities: list[BinarySensorEntity] = [
+        DryRunBinarySensor(entry),
+        ModeChangeoverLockoutBinarySensor(entry),
+    ]
     subentry_entities: dict[str, list[BinarySensorEntity]] = {}
     for zone in runtime.plant.zones.values():
         entities = [

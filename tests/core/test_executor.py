@@ -88,6 +88,7 @@ def test_generic_adapter_translates_only_explicit_services(
         domain,
         service,
         target,
+        reason="synthetic demand",
     )
     assert operation.service != "toggle"
 
@@ -104,9 +105,10 @@ async def test_source_selector_translates_select_option_and_is_idempotent() -> N
         "select_option",
         ActuatorObservedState.SELECTED,
         "buffer",
+        "synthetic source selection",
     )
 
-    executor = ActuatorExecutor({"selector": binding}, shadow_mode=False)
+    executor = ActuatorExecutor({"selector": binding}, dry_run=False)
     dispatched: list[ActuatorOperation] = []
 
     async def dispatch(operation: ActuatorOperation) -> None:
@@ -155,7 +157,7 @@ def test_from_plant_builds_bindings_for_both_actuator_families() -> None:
         logic_summary=(),
     )
 
-    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    executor = ActuatorExecutor.from_plant(plant, dry_run=False)
 
     assert executor.bindings == {
         "valve": ActuatorBinding("valve", "valve.floor"),
@@ -164,51 +166,6 @@ def test_from_plant_builds_bindings_for_both_actuator_families() -> None:
     executor.observe_entity_state("sensor.unrelated", "18.0")
     with pytest.raises(KeyError, match="Unknown actuator"):
         executor.actuator_state("missing")
-
-
-@pytest.mark.asyncio
-async def test_per_source_shadow_preserves_guarded_demand_without_dispatch() -> None:
-    """A source may remain synthetic while its guarded demand stays observable."""
-    plant = CompiledPlant(
-        id="plant",
-        zones={},
-        valves={},
-        pumps={},
-        circuits={},
-        routes=(),
-        logic_summary=(),
-        sources={
-            "heat-pump": Source(
-                "heat-pump",
-                "Heat pump",
-                demand_entity_id="switch.synthetic_heat_pump",
-                shadow_mode=True,
-            )
-        },
-    )
-    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
-    dispatched: list[ActuatorOperation] = []
-
-    async def dispatch(operation: ActuatorOperation) -> None:
-        dispatched.append(operation)
-
-    report = await executor.async_execute(
-        ControlPlan(
-            commands=(
-                ActuatorCommand(
-                    "source:heat-pump",
-                    ActuatorAction.TURN_ON,
-                    "Synthetic guarded demand",
-                ),
-            ),
-            valve_consumers={},
-            pump_consumers={},
-        ),
-        dispatch,
-    )
-
-    assert dispatched == []
-    assert [operation.entity_id for operation in report.shadowed] == ["switch.synthetic_heat_pump"]
 
 
 @pytest.mark.asyncio
@@ -230,7 +187,7 @@ async def test_executor_safe_shutdown_dispatches_only_intercepted_source_release
             )
         },
     )
-    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    executor = ActuatorExecutor.from_plant(plant, dry_run=False)
     dispatched: list[ActuatorOperation] = []
 
     async def dispatch(operation: ActuatorOperation) -> None:
@@ -267,7 +224,7 @@ async def test_executor_safe_shutdown_releases_bound_source_selector() -> None:
             shadow_only=False,
         ),
     )
-    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    executor = ActuatorExecutor.from_plant(plant, dry_run=False)
     dispatched: list[ActuatorOperation] = []
 
     async def dispatch(operation: ActuatorOperation) -> None:
@@ -291,7 +248,7 @@ async def test_executor_suppresses_an_already_satisfied_command() -> None:
     """Executing the same desired operation twice results in one dispatch."""
     executor = ActuatorExecutor(
         {"valve": ActuatorBinding("valve", "switch.floor_valve")},
-        shadow_mode=False,
+        dry_run=False,
     )
     dispatched: list[ActuatorOperation] = []
 
@@ -310,7 +267,7 @@ async def test_executor_suppresses_an_already_satisfied_command() -> None:
     assert len(dispatched) == 1
     assert first.executed == tuple(dispatched)
     assert second.suppressed == tuple(dispatched)
-    assert second.shadowed == ()
+    assert second.proposed == ()
 
 
 @pytest.mark.asyncio
@@ -318,7 +275,7 @@ async def test_reconciliation_records_desired_observed_and_retained_state() -> N
     """Repeated evaluation retains an in-flight request until feedback arrives."""
     executor = ActuatorExecutor(
         {"valve": ActuatorBinding("valve", "switch.floor_valve")},
-        shadow_mode=False,
+        dry_run=False,
     )
     dispatched: list[ActuatorOperation] = []
 
@@ -355,7 +312,7 @@ async def test_rejected_service_call_is_a_deterministic_failure_without_retainin
     """A rejected call is reported and cannot masquerade as actuator feedback."""
     executor = ActuatorExecutor(
         {"valve": ActuatorBinding("valve", "switch.floor_valve")},
-        shadow_mode=False,
+        dry_run=False,
     )
 
     async def reject(_operation: ActuatorOperation) -> None:
@@ -379,7 +336,7 @@ async def test_timeout_is_distinguished_from_a_rejected_service_call() -> None:
     """Timeouts retain a stable failure explanation for the adapter."""
     executor = ActuatorExecutor(
         {"valve": ActuatorBinding("valve", "switch.floor_valve")},
-        shadow_mode=False,
+        dry_run=False,
     )
 
     async def timeout(_operation: ActuatorOperation) -> None:
@@ -397,11 +354,11 @@ async def test_timeout_is_distinguished_from_a_rejected_service_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_global_shadow_preserves_commands_without_dispatching() -> None:
-    """Global shadow mode leaves the plan untouched while suppressing all calls."""
+async def test_dry_run_preserves_commands_without_dispatching() -> None:
+    """Dry run leaves the plan untouched while suppressing all calls."""
     executor = ActuatorExecutor(
         {"valve": ActuatorBinding("valve", "switch.floor_valve")},
-        shadow_mode=True,
+        dry_run=True,
     )
     dispatched: list[ActuatorOperation] = []
 
@@ -414,7 +371,7 @@ async def test_global_shadow_preserves_commands_without_dispatching() -> None:
     )
 
     assert dispatched == []
-    assert len(report.shadowed) == 1
+    assert len(report.proposed) == 1
     assert executor.actuator_state("valve") is ActuatorObservedState.UNKNOWN
 
 
@@ -423,7 +380,7 @@ async def test_forced_shadow_preserves_commands_without_dispatching() -> None:
     """A cooling-only shadow boundary suppresses calls even when heating is active."""
     executor = ActuatorExecutor(
         {"valve": ActuatorBinding("valve", "switch.floor_valve")},
-        shadow_mode=False,
+        dry_run=False,
     )
     dispatched: list[ActuatorOperation] = []
 
@@ -433,11 +390,11 @@ async def test_forced_shadow_preserves_commands_without_dispatching() -> None:
     report = await executor.async_execute(
         _plan(ActuatorCommand("valve", "open", "cooling demand")),
         dispatch,
-        force_shadow=True,
+        force_dry_run=True,
     )
 
     assert dispatched == []
-    assert [operation.actuator_id for operation in report.shadowed] == ["valve"]
+    assert [operation.actuator_id for operation in report.proposed] == ["valve"]
     assert executor.actuator_state("valve") is ActuatorObservedState.UNKNOWN
 
 
@@ -446,7 +403,7 @@ async def test_cooling_shadow_suppresses_starts_but_allows_safe_shutdowns() -> N
     """Cooling starts stay synthetic while shutdown commands can make paths safe."""
     executor = ActuatorExecutor(
         {"pump": ActuatorBinding("pump", "switch.floor_pump")},
-        shadow_mode=False,
+        dry_run=False,
     )
     dispatched: list[ActuatorOperation] = []
 
@@ -459,42 +416,11 @@ async def test_cooling_shadow_suppresses_starts_but_allows_safe_shutdowns() -> N
             ActuatorCommand("pump", ActuatorAction.TURN_ON, "cooling demand"),
         ),
         dispatch,
-        force_shadow_start_actuator_ids=frozenset({"pump"}),
+        force_dry_run_start_actuator_ids=frozenset({"pump"}),
     )
 
     assert [operation.service for operation in dispatched] == ["turn_off"]
-    assert [operation.service for operation in report.shadowed] == ["turn_on"]
-
-
-@pytest.mark.asyncio
-async def test_per_actuator_shadow_only_suppresses_that_actuator() -> None:
-    """One shadowed actuator does not block another physical operation."""
-    executor = ActuatorExecutor(
-        {
-            "shadowed": ActuatorBinding("shadowed", "switch.shadowed_valve"),
-            "active": ActuatorBinding("active", "switch.active_valve"),
-        },
-        shadow_mode=False,
-        actuator_shadow_modes={"shadowed": True},
-    )
-    dispatched: list[ActuatorOperation] = []
-
-    async def dispatch(operation: ActuatorOperation) -> None:
-        dispatched.append(operation)
-
-    report = await executor.async_execute(
-        _plan(
-            ActuatorCommand("shadowed", "open", "shadowed demand"),
-            ActuatorCommand("active", "open", "active demand"),
-        ),
-        dispatch,
-    )
-
-    assert [operation.actuator_id for operation in report.shadowed] == ["shadowed"]
-    assert [operation.actuator_id for operation in dispatched] == ["active"]
-    assert executor.actuator_state("shadowed") is ActuatorObservedState.UNKNOWN
-    assert executor.actuator_state("active") is ActuatorObservedState.UNKNOWN
-    assert executor.requested_state("active") is ActuatorObservedState.ON
+    assert [operation.service for operation in report.proposed] == ["turn_on"]
 
 
 def test_configured_readiness_feedback_can_satisfy_a_valve_without_waiting_for_timer() -> None:
@@ -516,7 +442,7 @@ def test_configured_readiness_feedback_can_satisfy_a_valve_without_waiting_for_t
         routes=(),
         logic_summary=(),
     )
-    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    executor = ActuatorExecutor.from_plant(plant, dry_run=False)
 
     executor.observe_entities(
         {
@@ -536,7 +462,7 @@ def test_native_valve_feedback_and_invalid_executor_references_fail_closed() -> 
     """Native valve feedback is usable while unknown executor references remain errors."""
     executor = ActuatorExecutor(
         {"valve": ActuatorBinding("valve", "valve.floor_valve")},
-        shadow_mode=False,
+        dry_run=False,
     )
     executor.observe_entity_state("valve.floor_valve", "open")
     assert executor.readiness_state("valve") is True
@@ -545,7 +471,7 @@ def test_native_valve_feedback_and_invalid_executor_references_fail_closed() -> 
 
     switch_executor = ActuatorExecutor(
         {"switch": ActuatorBinding("switch", "switch.floor_valve")},
-        shadow_mode=False,
+        dry_run=False,
     )
     assert switch_executor.readiness_state("switch") is None
 
@@ -576,7 +502,7 @@ def test_from_plant_rejects_a_valve_and_pump_id_collision() -> None:
 def test_reload_starts_unknown_and_reconcile_uses_only_observed_state() -> None:
     """A new executor never restores a previous optimistic command as observed state."""
     bindings = {"valve": ActuatorBinding("valve", "switch.floor_valve")}
-    executor = ActuatorExecutor(bindings, shadow_mode=False)
+    executor = ActuatorExecutor(bindings, dry_run=False)
 
     assert executor.actuator_state("valve") is ActuatorObservedState.UNKNOWN
 

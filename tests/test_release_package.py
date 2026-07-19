@@ -22,9 +22,9 @@ def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> N
     """The release archive has the path shape HACS expects for content_in_root=false."""
 
     archive_path = tmp_path / "hydronicus.zip"
-    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.5.0")
+    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.1.0")
 
-    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.5.0") == files
+    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.1.0") == files
     with ZipFile(archive_path) as archive:
         assert archive.namelist() == files
         assert all(path.startswith("custom_components/hydronicus/") for path in files)
@@ -60,16 +60,16 @@ def test_readme_minimum_version_check_rejects_unrelated_version() -> None:
     )
 
 
-def test_public_beta_evidence_contract_is_documented_without_legacy_package(
+def test_public_control_boundary_is_documented_without_legacy_package(
     tmp_path: Path,
 ) -> None:
-    """Release evidence names the disposable boundary and excludes the legacy package."""
-    evidence = (
-        REPOSITORY_ROOT / "docs" / "evidence" / "public-beta-installation-transcript.md"
-    ).read_text(encoding="utf-8")
-    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.5.0")
+    """Public docs state the control boundary and exclude the legacy package."""
+    how_it_works = (REPOSITORY_ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
+    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.1.0")
 
-    assert "synthetic" in evidence
-    assert "shadow mode" in evidence
-    assert "independent human installation" in evidence
+    assert "Every new Plant starts in Dry run" in how_it_works
+    assert "records the complete plan as proposed operations" in how_it_works
+    assert "Cooling start operations are explicitly forced into Dry run" in how_it_works
+    assert "Source-selector operations are explicitly kept in Dry run" in how_it_works
+    assert "When Dry run is off" in how_it_works
     assert all("hydronic_climate" not in path for path in files)

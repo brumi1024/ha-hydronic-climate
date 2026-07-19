@@ -19,12 +19,11 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 
 from .const import (
     ACTUATOR_COMMAND_TIMEOUT_SECONDS,
-    CONF_ACTUATOR_SHADOW_MODES,
     CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS,
+    CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
     CONF_REQUESTED_MODE,
-    CONF_SHADOW_MODE,
     MAX_RECONCILIATION_INTERVAL_SECONDS,
     MIN_RECONCILIATION_INTERVAL_SECONDS,
     RECONCILIATION_INTERVAL_SECONDS,
@@ -79,11 +78,10 @@ class HydronicRuntime:
 
     plant_id: str
     name: str
-    shadow_mode: bool
+    dry_run: bool
     plant: CompiledPlant
     actuator_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     zone_subentry_ids: Mapping[str, str] = field(default_factory=dict)
-    actuator_shadow_modes: Mapping[str, bool] = field(default_factory=dict)
     diagnostics_include_actuator_details: bool = False
     source_subentry_ids: Mapping[str, str] = field(default_factory=dict)
     runtime_state: RuntimeState = field(default_factory=RuntimeState)
@@ -119,8 +117,7 @@ class HydronicRuntime:
         """Create an executor whose state starts unknown until observed."""
         self.executor = ActuatorExecutor.from_plant(
             self.plant,
-            shadow_mode=self.shadow_mode,
-            actuator_shadow_modes=self.actuator_shadow_modes,
+            dry_run=self.dry_run,
         )
 
     @classmethod
@@ -131,11 +128,10 @@ class HydronicRuntime:
         return cls(
             plant_id=str(entry.data.get(CONF_PLANT_ID, getattr(entry, "entry_id", "plant"))),
             name=str(entry.data.get(CONF_NAME, getattr(entry, "title", "Hydronic plant"))),
-            shadow_mode=bool(entry.data.get(CONF_SHADOW_MODE, True)),
+            dry_run=bool(entry.data.get(CONF_DRY_RUN, True)),
             plant=plant,
             actuator_subentry_ids=effective.actuator_subentry_ids,
             zone_subentry_ids=effective.zone_subentry_ids,
-            actuator_shadow_modes=_stored_actuator_shadow_modes(entry),
             diagnostics_include_actuator_details=bool(
                 entry.data.get(CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS, False)
             ),
@@ -152,6 +148,46 @@ class HydronicRuntime:
             },
             _entry=entry,
         )
+
+    async def async_set_dry_run(
+        self, dry_run: bool, *, hass: HomeAssistant | None = None
+    ) -> bool:
+        """Apply Plant Dry run, safely releasing active heating before suppression."""
+        requested = bool(dry_run)
+        if requested == self.dry_run:
+            return True
+        active_hass = hass or self._hass
+        if active_hass is None or self._entry is None:
+            raise RuntimeError("Hydronic runtime is not started.")
+
+        if requested:
+            report = await self.async_safe_shutdown(active_hass, force_dry_run=False)
+            while (
+                not report.execution.failures
+                and report.plan.next_deadline is None
+                and report.plan.phase is not SafeShutdownPhase.VALVES_CLOSED
+            ):
+                report = await self.async_safe_shutdown(active_hass, force_dry_run=False)
+            if report.execution.failures or (
+                report.plan.phase is not SafeShutdownPhase.VALVES_CLOSED
+            ):
+                return False
+            self.runtime_state = replace(
+                report.next_runtime,
+                safe_shutdown_phase=SafeShutdownPhase.IDLE,
+                safe_shutdown_started_at=None,
+            )
+
+        data = dict(self._entry.data)
+        data[CONF_DRY_RUN] = requested
+        active_hass.config_entries.async_update_entry(self._entry, data=data)
+        self.dry_run = requested
+        self.executor.dry_run = requested
+        if requested:
+            self._notify_listeners_if_changed()
+        else:
+            await self.async_refresh(active_hass)
+        return True
 
     async def async_set_requested_mode(
         self,
@@ -256,7 +292,7 @@ class HydronicRuntime:
     async def async_set_zone_target_temperature(
         self, zone_id: str, temperature: float, *, hass: HomeAssistant | None = None
     ) -> None:
-        """Persist and immediately apply a zone setpoint in shadow mode."""
+        """Persist and immediately apply a zone setpoint in the runtime."""
         temperature = _validate_target_temperature(temperature)
         if zone_id not in self.plant.zones:
             raise ValueError(f"Unknown zone {zone_id}.")
@@ -279,7 +315,7 @@ class HydronicRuntime:
     async def async_set_zone_preset_mode(
         self, zone_id: str, preset_mode: str, *, hass: HomeAssistant | None = None
     ) -> None:
-        """Persist a configured preset and immediately apply its target in shadow mode."""
+        """Persist a configured preset and immediately apply its target in the runtime."""
         if zone_id not in self.plant.zones:
             raise ValueError(f"Unknown zone {zone_id}.")
         normalized = str(preset_mode).lower()
@@ -365,11 +401,45 @@ class HydronicRuntime:
         """Return the latest rejected or timed-out command explanation."""
         return self.executor.failure_for(actuator_id)
 
+    def execution_summary(self) -> dict[str, object]:
+        """Return the latest bounded proposed, executed, and suppressed operations."""
+        report = self.last_execution
+
+        def operations(items: tuple[ActuatorOperation, ...]) -> list[dict[str, object]]:
+            return [
+                {
+                    "actuator_id": operation.actuator_id,
+                    "entity_id": operation.entity_id,
+                    "service": operation.service,
+                    "target_state": operation.target_state.value,
+                    "target_value": operation.target_value,
+                    "reason": operation.reason,
+                }
+                for operation in items
+            ]
+
+        if report is None:
+            return {
+                "dry_run": self.dry_run,
+                "proposed": [],
+                "executed": [],
+                "suppressed": [],
+                "failures": [],
+            }
+        return {
+            "dry_run": self.dry_run,
+            "proposed": operations(report.proposed),
+            "executed": operations(report.executed),
+            "suppressed": operations(report.suppressed),
+            "failures": [failure.explanation for failure in report.failures],
+        }
+
     async def async_safe_shutdown(
         self,
         hass: HomeAssistant | None = None,
         *,
         now: datetime | None = None,
+        force_dry_run: bool | None = None,
     ) -> SafeShutdownReport:
         """Release source demand, observe overrun, then stop pumps and valves."""
         active_hass = hass or self._hass
@@ -381,7 +451,13 @@ class HydronicRuntime:
             self.runtime_state,
             effective_now,
             lambda operation: self._async_dispatch_actuator(active_hass, operation),
-            force_shadow=self.shadow_mode,
+            force_dry_run=self.dry_run if force_dry_run is None else force_dry_run,
+            force_dry_run_actuator_ids=(
+                frozenset({self.plant.source_selector.id})
+                if self.plant.source_selector is not None
+                and self.plant.source_selector.entity_id is not None
+                else frozenset()
+            ),
             unavailable_actuator_ids=self._unavailable_actuator_ids(),
         )
         self.runtime_state = report.next_runtime
@@ -688,7 +764,7 @@ class HydronicRuntime:
                 else:
                     valves[actuator_id] = ValveRuntime(ValveState.OPENING, now, False)
             elif (
-                self.shadow_mode
+                self.dry_run
                 and current is not None
                 and current.state is ValveState.OPENING
             ):
@@ -710,7 +786,7 @@ class HydronicRuntime:
                 # An unknown transition invalidates a previous ready assumption.
                 valves[actuator_id] = (
                     current
-                    if self.shadow_mode or current.state is ValveState.OPENING
+                    if self.dry_run or current.state is ValveState.OPENING
                     else ValveRuntime(ValveState.OPENING, now, False)
                 )
 
@@ -748,7 +824,7 @@ class HydronicRuntime:
             elif current is not None and current.state is PumpState.RUNNING:
                 pumps[actuator_id] = PumpRuntime(
                     PumpState.RUNNING
-                    if self.shadow_mode
+                    if self.dry_run
                     else PumpState.STARTING
                     if any(self.runtime_state.zone_demands.values())
                     else PumpState.OVERRUN,
@@ -1164,8 +1240,13 @@ class HydronicRuntime:
             result.control_plan,
             lambda operation: self._async_dispatch_actuator(hass, operation),
             unavailable_actuator_ids=self._unavailable_actuator_ids(),
-            force_shadow_start_actuator_ids=result.control_plan.cooling_actuator_ids,
-            force_shadow_actuator_ids=result.control_plan.source_selection_actuator_ids,
+            force_dry_run_start_actuator_ids=result.control_plan.cooling_actuator_ids,
+            force_dry_run_actuator_ids=(
+                frozenset({self.plant.source_selector.id})
+                if self.plant.source_selector is not None
+                and self.plant.source_selector.entity_id is not None
+                else frozenset()
+            ),
         )
         self._apply_execution_contract(self.last_execution, now)
         if self._entry is not None or self._hass is not None:
@@ -1265,7 +1346,7 @@ class HydronicRuntime:
 
     def _apply_execution_contract(self, report: ExecutionReport, now: datetime) -> None:
         """Keep physical pumps in starting state until an observation confirms them."""
-        if self.shadow_mode and not report.failures:
+        if self.dry_run and not report.failures:
             return
         pumps = dict(self.runtime_state.pumps)
         valves = dict(self.runtime_state.valves)
@@ -1391,16 +1472,6 @@ def _stored_zone_preset_mode(
         return "none"
     value = str(data.get("preset_mode", "none")).lower()
     return value if value in _PRESET_MODES and value in zone.preset_targets else "none"
-
-
-def _stored_actuator_shadow_modes(entry: Any) -> Mapping[str, bool]:
-    """Read optional per-actuator shadow flags without coercing malformed values."""
-    raw = entry.data.get(CONF_ACTUATOR_SHADOW_MODES, {})
-    if not isinstance(raw, Mapping):
-        return {}
-    return {
-        str(actuator_id): value for actuator_id, value in raw.items() if isinstance(value, bool)
-    }
 
 
 def _zone_preset_mode_update(

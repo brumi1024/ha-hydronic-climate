@@ -26,6 +26,8 @@ from .const import (
     CONF_COOLING_START_DELTA,
     CONF_COOLING_STOP_DELTA,
     CONF_DESIGNATED_REFERENCE,
+    CONF_DRY_RUN,
+    CONF_DRY_RUN_CONFIRMATION,
     CONF_ECO_TARGET,
     CONF_ENTITY_ID,
     CONF_FAULT_FEEDBACK_ENTITY,
@@ -55,14 +57,12 @@ from .const import (
     CONF_REQUIRED,
     CONF_ROUTES,
     CONF_SENSOR_ENTITY,
-    CONF_SHADOW_MODE,
     CONF_SOURCE_AVAILABILITY_ENTITY,
     CONF_SOURCE_DEMAND_ENTITY,
     CONF_SOURCE_HYSTERESIS,
     CONF_SOURCE_MAXIMUM_AGE,
     CONF_SOURCE_MINIMUM_TEMPERATURE,
     CONF_SOURCE_PRIORITY,
-    CONF_SOURCE_SHADOW_MODE,
     CONF_SOURCE_TEMPERATURE_ENTITY,
     CONF_SOURCE_TYPE,
     CONF_SUPPLY_TEMPERATURE_MAX_AGE,
@@ -335,6 +335,15 @@ def _warning_review_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required("confirm", default=False): selector.BooleanSelector(),
+        }
+    )
+
+
+def _dry_run_confirmation_schema() -> vol.Schema:
+    """Require one explicit acknowledgement before enabling equipment control."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_DRY_RUN_CONFIRMATION, default=False): selector.BooleanSelector(),
         }
     )
 
@@ -1266,7 +1275,6 @@ def _source_data(user_input: Mapping[str, Any], source_id: str) -> dict[str, Any
         CONF_SOURCE_HYSTERESIS: user_input.get(
             CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS
         ),
-        CONF_SOURCE_SHADOW_MODE: bool(user_input.get(CONF_SOURCE_SHADOW_MODE, False)),
     }
 
 
@@ -1332,10 +1340,6 @@ def _source_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
                 CONF_SOURCE_HYSTERESIS,
                 default=defaults.get(CONF_SOURCE_HYSTERESIS, DEFAULT_SOURCE_HYSTERESIS),
             ): vol.All(vol.Coerce(float), vol.Range(min=0)),
-            vol.Required(
-                CONF_SOURCE_SHADOW_MODE,
-                default=defaults.get(CONF_SOURCE_SHADOW_MODE, False),
-            ): selector.BooleanSelector(),
         }
     )
 
@@ -1449,16 +1453,78 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._draft = {
                     CONF_NAME: name,
                     CONF_PLANT_ID: str(uuid4()),
-                    CONF_SHADOW_MODE: True,
+                    CONF_DRY_RUN: bool(user_input.get(CONF_DRY_RUN, True)),
                 }
                 return await self.async_step_zone()
 
         schema = vol.Schema(
             {
                 vol.Required(CONF_NAME, default=DEFAULT_PLANT_NAME): str,
+                vol.Optional(CONF_DRY_RUN, default=True): selector.BooleanSelector(),
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Change the Plant Dry run setting through Home Assistant reconfiguration."""
+        entry = self._get_reconfigure_entry()
+        current_dry_run = bool(entry.data.get(CONF_DRY_RUN, True))
+        if user_input is not None:
+            requested_dry_run = bool(user_input[CONF_DRY_RUN])
+            if requested_dry_run is False and current_dry_run:
+                self._requested_dry_run = False
+                return await self.async_step_dry_run_confirmation()
+            return await self._async_apply_dry_run(entry, requested_dry_run)
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_DRY_RUN, default=current_dry_run): selector.BooleanSelector(),
+                }
+            ),
+        )
+
+    async def async_step_dry_run_confirmation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.FlowResult:
+        """Confirm the exact heating outputs before leaving Dry run."""
+        entry = self._get_reconfigure_entry()
+        if user_input is not None:
+            if not user_input.get(CONF_DRY_RUN_CONFIRMATION, False):
+                return self.async_show_form(
+                    step_id="dry_run_confirmation",
+                    data_schema=_dry_run_confirmation_schema(),
+                    errors={"base": "dry_run_confirmation_required"},
+                )
+            return await self._async_apply_dry_run(entry, self._requested_dry_run)
+        return self.async_show_form(
+            step_id="dry_run_confirmation",
+            data_schema=_dry_run_confirmation_schema(),
+        )
+
+    async def _async_apply_dry_run(
+        self, entry: config_entries.ConfigEntry, dry_run: bool
+    ) -> config_entries.FlowResult:
+        """Apply Dry run, completing any active heating shutdown first."""
+        runtime = getattr(entry, "runtime_data", None)
+        if runtime is not None:
+            if not await runtime.async_set_dry_run(dry_run, hass=self.hass):
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=vol.Schema(
+                        {
+                            vol.Required(CONF_DRY_RUN, default=dry_run): selector.BooleanSelector(),
+                        }
+                    ),
+                    errors={"base": "dry_run_shutdown_in_progress"},
+                )
+        else:
+            data = dict(entry.data)
+            data[CONF_DRY_RUN] = dry_run
+            self.hass.config_entries.async_update_entry(entry, data=data)
+        return self.async_abort(reason="reconfigure_successful")
 
     async def async_step_zone(
         self, user_input: dict[str, Any] | None = None
@@ -1648,7 +1714,7 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_circuit(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Collect the first hydraulic circuit and its shadow-only equipment path."""
+        """Collect the first hydraulic circuit and its Dry run equipment path."""
         errors: dict[str, str] = {}
         if user_input is not None:
             name = str(user_input[CONF_NAME]).strip()
@@ -1808,11 +1874,23 @@ class HydronicClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         if user_input is not None:
+            if not self._draft[CONF_DRY_RUN] and not user_input.get(
+                CONF_DRY_RUN_CONFIRMATION, False
+            ):
+                return self.async_show_form(
+                    step_id="review",
+                    data_schema=_dry_run_confirmation_schema(),
+                    errors={"base": "dry_run_confirmation_required"},
+                    description_placeholders=_initial_review_placeholders(topology, plant),
+                )
             await self.async_set_unique_id(self._draft[CONF_PLANT_ID])
             self._abort_if_unique_id_configured()
             return self.async_create_entry(title=self._draft[CONF_NAME], data=self._draft)
 
         return self.async_show_form(
             step_id="review",
+            data_schema=(
+                _dry_run_confirmation_schema() if not self._draft[CONF_DRY_RUN] else None
+            ),
             description_placeholders=_initial_review_placeholders(topology, plant),
         )

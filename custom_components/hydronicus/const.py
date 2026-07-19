@@ -4,14 +4,14 @@ from typing import Final
 
 DOMAIN: Final = "hydronicus"
 PLATFORMS: Final = ("binary_sensor", "button", "climate", "select", "sensor")
-CONFIG_ENTRY_VERSION: Final = 2
+CONFIG_ENTRY_VERSION: Final = 1
 CONFIG_ENTRY_MINOR_VERSION: Final = 1
 CONF_NAME: Final = "name"
 CONF_ACTUATOR_KIND: Final = "actuator_kind"
 CONF_PLANT_ID: Final = "plant_id"
-CONF_SHADOW_MODE: Final = "shadow_mode"
+CONF_DRY_RUN: Final = "dry_run"
+CONF_DRY_RUN_CONFIRMATION: Final = "dry_run_confirmation"
 CONF_REQUESTED_MODE: Final = "requested_mode"
-CONF_ACTUATOR_SHADOW_MODES: Final = "actuator_shadow_modes"
 CONF_DIAGNOSTICS_INCLUDE_ACTUATOR_DETAILS: Final = "diagnostics_include_actuator_details"
 CONF_TOPOLOGY: Final = "topology"
 CONF_ZONES: Final = "zones"
@@ -86,7 +86,6 @@ CONF_SOURCE_TEMPERATURE_ENTITY: Final = "temperature_entity"
 CONF_SOURCE_MINIMUM_TEMPERATURE: Final = "minimum_temperature"
 CONF_SOURCE_MAXIMUM_AGE: Final = "maximum_age_seconds"
 CONF_SOURCE_HYSTERESIS: Final = "hysteresis"
-CONF_SOURCE_SHADOW_MODE: Final = "shadow_mode"
 CONF_COOLING_ENABLED: Final = "cooling_enabled"
 CONF_SUPPLY_TEMPERATURE_SENSOR: Final = "supply_temperature_sensor"
 CONF_SURFACE_TEMPERATURE_SENSOR: Final = "surface_temperature_sensor"

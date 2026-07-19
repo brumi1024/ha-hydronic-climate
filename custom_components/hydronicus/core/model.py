@@ -259,7 +259,7 @@ class Zone:
 
     @property
     def temperature_sensors(self) -> tuple[str, ...]:
-        """Return legacy entity IDs for existing adapter and migration callers."""
+        """Return entity IDs for adapter callers that do not need metadata."""
         return tuple(sensor.entity_id for sensor in self.temperature_sensor_metadata)
 
     @property
@@ -443,14 +443,13 @@ class SourceDiagnostic:
     active: bool
     demand_requested: bool
     demand_permitted: bool
-    shadow_mode: bool
     blocked: bool
     reason: str
 
 
 @dataclass(frozen=True, slots=True, init=False)
 class Source:
-    """A configured heat source used only by the shadow recommender."""
+    """A configured heat source used by qualification and guarded demand."""
 
     id: str
     name: str
@@ -462,7 +461,6 @@ class Source:
     maximum_age_seconds: float
     hysteresis: float
     demand_entity_id: str | None
-    shadow_mode: bool
 
     def __init__(
         self,
@@ -484,7 +482,6 @@ class Source:
         buffer_hysteresis: float | None = None,
         demand_entity_id: str | None = None,
         source_demand_entity_id: str | None = None,
-        shadow_mode: bool = False,
     ) -> None:
         """Accept descriptive aliases while storing one stable source contract."""
         if source_type is not None:
@@ -515,7 +512,6 @@ class Source:
         object.__setattr__(self, "maximum_age_seconds", float(maximum_age_seconds))
         object.__setattr__(self, "hysteresis", float(hysteresis))
         object.__setattr__(self, "demand_entity_id", demand_entity_id)
-        object.__setattr__(self, "shadow_mode", shadow_mode)
 
     @property
     def source_type(self) -> SourceKind:

@@ -64,7 +64,7 @@ def _plant_entry() -> MockConfigEntry:
         data={
             "name": "Hydronic plant",
             "plant_id": PLANT_ID,
-            "shadow_mode": True,
+            "dry_run": True,
             "topology": {
                 "zones": [
                     {

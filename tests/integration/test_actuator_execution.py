@@ -10,10 +10,9 @@ from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
-    CONF_ACTUATOR_SHADOW_MODES,
+    CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
-    CONF_SHADOW_MODE,
     DOMAIN,
 )
 from custom_components.hydronicus.core.executor import ActuatorFailureKind, ActuatorObservedState
@@ -37,9 +36,8 @@ def declare_synthetic_pump_state(hass) -> None:
 
 def _entry(
     *,
-    shadow_mode: bool,
+    dry_run: bool,
     valve_entity_id: str = "switch.synthetic_valve",
-    actuator_shadow: bool = False,
     pump_overrun_seconds: float = 300.0,
     valve_opening_seconds: float = 300.0,
     readiness_entity_id: str | None = None,
@@ -49,7 +47,7 @@ def _entry(
     data = {
         CONF_NAME: "Synthetic plant",
         CONF_PLANT_ID: PLANT_ID,
-        CONF_SHADOW_MODE: shadow_mode,
+        CONF_DRY_RUN: dry_run,
         "topology": {
             "zones": [
                 {
@@ -100,8 +98,6 @@ def _entry(
                 "source_demand_entity": "switch.synthetic_source",
             }
         ]
-    if actuator_shadow:
-        data[CONF_ACTUATOR_SHADOW_MODES] = {VALVE_ID: True}
     if readiness_entity_id is not None:
         data["topology"]["valves"][0]["readiness_entity_id"] = readiness_entity_id
     return MockConfigEntry(domain=DOMAIN, title="Synthetic plant", data=data)
@@ -141,7 +137,7 @@ async def test_demand_reaches_the_expected_generic_service_call(
     _register_recorder(hass, calls)
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set(entity_id, initial_state)
-    entry = _entry(shadow_mode=False, valve_entity_id=entity_id)
+    entry = _entry(dry_run=False, valve_entity_id=entity_id)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -159,6 +155,38 @@ async def test_demand_reaches_the_expected_generic_service_call(
     assert calls == [(expected_domain, expected_service, entity_id)]
 
 
+async def test_dry_run_off_executes_heating_and_source_demand_after_pump_feedback(hass) -> None:
+    """Direct source demand waits until the commanded pump is observed running."""
+    calls: list[tuple[str, str, str]] = []
+    _register_recorder(hass, calls)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    hass.states.async_set("switch.synthetic_source", "off")
+    entry = _entry(
+        dry_run=False,
+        valve_opening_seconds=0.0,
+        pump_overrun_seconds=0.0,
+        source_demand=True,
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert calls == [
+        ("switch", "turn_on", "switch.synthetic_valve"),
+        ("switch", "turn_on", "switch.synthetic_pump"),
+    ]
+    assert all(entity != "switch.synthetic_source" for _domain, _service, entity in calls)
+
+    hass.states.async_set("switch.synthetic_pump", "on")
+    await hass.async_block_till_done()
+    assert calls[-1] == ("switch", "turn_on", "switch.synthetic_source")
+    assert calls.index(("switch", "turn_on", "switch.synthetic_pump")) < calls.index(
+        ("switch", "turn_on", "switch.synthetic_source")
+    )
+
+
 async def test_rejected_service_call_is_explained_without_failing_setup(hass) -> None:
     """A service rejection becomes a stable runtime failure report."""
 
@@ -168,7 +196,7 @@ async def test_rejected_service_call_is_explained_without_failing_setup(hass) ->
     hass.services.async_register("switch", "turn_on", reject)
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "off")
-    entry = _entry(shadow_mode=False)
+    entry = _entry(dry_run=False)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -181,6 +209,55 @@ async def test_rejected_service_call_is_explained_without_failing_setup(hass) ->
     assert "synthetic rejection" in report.failures[0].explanation
     assert entry.runtime_data.executor.failure_for(VALVE_ID) == report.failures[0]
     assert entry.runtime_data.runtime_state.valves[VALVE_ID].state.value == "closed"
+
+
+async def test_rejected_valve_close_keeps_runtime_conservative(hass) -> None:
+    """A failed close does not claim that an observed-open valve is closed."""
+
+    async def reject_close(_call) -> None:
+        raise HomeAssistantError("synthetic close rejection")
+
+    hass.services.async_register("switch", "turn_off", reject_close)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    entry = _entry(dry_run=False)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.states.async_set("switch.synthetic_valve", "on")
+    hass.states.async_set("sensor.synthetic_temperature", "22.0")
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.runtime_state.valves[VALVE_ID].state.value == "opening"
+
+
+async def test_rejected_pump_start_is_retained_as_failure(hass) -> None:
+    """A failed pump start remains visible as an actuator failure."""
+
+    calls: list[str] = []
+
+    async def reject_pump(call) -> None:
+        calls.append(call.data["entity_id"])
+        if call.data["entity_id"] == "switch.synthetic_pump":
+            raise HomeAssistantError("synthetic pump rejection")
+
+    hass.services.async_register("switch", "turn_on", reject_pump)
+    hass.states.async_set("sensor.synthetic_temperature", "18.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(dry_run=False, valve_opening_seconds=0.0)
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.states.async_set("switch.synthetic_valve", "on")
+    await hass.async_block_till_done()
+
+    assert "switch.synthetic_pump" in calls
+    failure = entry.runtime_data.executor.failure_for(PUMP_ID)
+    assert failure is not None
+    assert failure.operation.target_state is ActuatorObservedState.ON
 
 
 async def test_delayed_service_success_is_reconciled_without_a_duplicate_command(hass) -> None:
@@ -198,7 +275,7 @@ async def test_delayed_service_success_is_reconciled_without_a_duplicate_command
     hass.services.async_register("switch", "turn_on", delayed_open)
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "off")
-    entry = _entry(shadow_mode=False)
+    entry = _entry(dry_run=False)
     entry.add_to_hass(hass)
 
     with pytest.MonkeyPatch.context() as patch:
@@ -227,7 +304,7 @@ async def test_periodic_reconciliation_repairs_a_missed_feedback_event_without_c
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "off")
     hass.states.async_set("switch.synthetic_pump", "off")
-    entry = _entry(shadow_mode=False, valve_opening_seconds=0.0)
+    entry = _entry(dry_run=False, valve_opening_seconds=0.0)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -274,7 +351,7 @@ async def test_readiness_feedback_allows_pump_only_after_the_valve_is_ready(hass
     hass.states.async_set("binary_sensor.synthetic_valve_ready", "off")
     hass.states.async_set("switch.synthetic_pump", "off")
     entry = _entry(
-        shadow_mode=False,
+        dry_run=False,
         valve_entity_id="valve.synthetic_valve",
         valve_opening_seconds=300.0,
         readiness_entity_id="binary_sensor.synthetic_valve_ready",
@@ -297,11 +374,11 @@ async def test_readiness_feedback_allows_pump_only_after_the_valve_is_ready(hass
     assert entry.runtime_data.runtime_state.valves[VALVE_ID].is_ready is True
 
 
-async def test_global_shadow_keeps_the_desired_plan_without_service_calls(hass) -> None:
-    """Global shadow mode preserves the command and explanation while issuing no call."""
+async def test_dry_run_keeps_the_desired_plan_without_service_calls(hass) -> None:
+    """Dry run preserves the command and explanation while issuing no call."""
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "off")
-    entry = _entry(shadow_mode=True)
+    entry = _entry(dry_run=True)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -312,27 +389,68 @@ async def test_global_shadow_keeps_the_desired_plan_without_service_calls(hass) 
     assert runtime.evaluation.control_plan.commands[0].action is ActuatorAction.OPEN
     assert runtime.evaluation.diagnostics.actuator_reasons[VALVE_ID].startswith("Opening")
     assert runtime.last_execution is not None
-    assert [operation.actuator_id for operation in runtime.last_execution.shadowed] == [VALVE_ID]
+    assert [operation.actuator_id for operation in runtime.last_execution.proposed] == [VALVE_ID]
+    assert "valve" in runtime.last_execution.proposed[0].reason
+    summary = runtime.execution_summary()
+    assert summary["dry_run"] is True
+    assert summary["proposed"]
+    assert summary["executed"] == []
 
 
-async def test_per_actuator_shadow_suppresses_only_the_selected_command(hass) -> None:
-    """A per-actuator shadow flag does not alter the desired control plan."""
+async def test_reconfigure_can_leave_dry_run_after_one_confirmation(hass) -> None:
+    """The normal config-entry reconfigure path changes the Plant boundary."""
+    hass.states.async_set("sensor.synthetic_temperature", "22.0")
+    hass.states.async_set("switch.synthetic_valve", "off")
+    entry = _entry(dry_run=True)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_DRY_RUN: False}
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "dry_run_confirmation"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"dry_run_confirmation": True}
+    )
+    assert result["type"] == "abort"
+    await hass.async_block_till_done()
+    assert entry.data[CONF_DRY_RUN] is False
+    assert entry.runtime_data.dry_run is False
+
+
+async def test_returning_to_dry_run_completes_ordered_shutdown_before_persisting(hass) -> None:
+    """Dry run is persisted only after active heating has released pump then valve."""
     calls: list[tuple[str, str, str]] = []
     _register_recorder(hass, calls)
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "off")
-    entry = _entry(shadow_mode=False, actuator_shadow=True)
+    hass.states.async_set("switch.synthetic_pump", "off")
+    entry = _entry(
+        dry_run=False,
+        valve_opening_seconds=0.0,
+        pump_overrun_seconds=0.0,
+    )
     entry.add_to_hass(hass)
-
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    hass.states.async_set("switch.synthetic_valve", "on")
+    await hass.async_block_till_done()
+    hass.states.async_set("switch.synthetic_pump", "on")
+    await hass.async_block_till_done()
+    calls.clear()
 
-    runtime = entry.runtime_data
-    assert runtime.evaluation is not None
-    assert runtime.evaluation.control_plan.commands[0].actuator_id == VALVE_ID
-    assert runtime.last_execution is not None
-    assert [operation.actuator_id for operation in runtime.last_execution.shadowed] == [VALVE_ID]
-    assert calls == []
+    assert await entry.runtime_data.async_set_dry_run(True, hass=hass)
+    assert calls == [
+        ("switch", "turn_off", "switch.synthetic_pump"),
+        ("switch", "turn_off", "switch.synthetic_valve"),
+    ]
+    assert entry.data[CONF_DRY_RUN] is True
+    assert entry.runtime_data.dry_run is True
 
 
 async def test_reload_reconstructs_unknown_state_when_feedback_is_not_trustworthy(hass) -> None:
@@ -341,7 +459,7 @@ async def test_reload_reconstructs_unknown_state_when_feedback_is_not_trustworth
     _register_recorder(hass, calls)
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "off")
-    entry = _entry(shadow_mode=False)
+    entry = _entry(dry_run=False)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -365,7 +483,7 @@ async def test_reload_during_valve_opening_does_not_start_pump_early(hass) -> No
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "off")
     hass.states.async_set("switch.synthetic_pump", "off")
-    entry = _entry(shadow_mode=False, valve_opening_seconds=300.0)
+    entry = _entry(dry_run=False, valve_opening_seconds=300.0)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -393,7 +511,7 @@ async def test_reload_during_pump_starting_does_not_assume_running_feedback(hass
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "off")
     hass.states.async_set("switch.synthetic_pump", "off")
-    entry = _entry(shadow_mode=False, valve_opening_seconds=0.0)
+    entry = _entry(dry_run=False, valve_opening_seconds=0.0)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -417,7 +535,7 @@ async def test_reload_during_pump_running_keeps_observed_running_state_without_c
     hass.states.async_set("sensor.synthetic_temperature", "18.0")
     hass.states.async_set("switch.synthetic_valve", "on")
     hass.states.async_set("switch.synthetic_pump", "on")
-    entry = _entry(shadow_mode=False, valve_opening_seconds=0.0)
+    entry = _entry(dry_run=False, valve_opening_seconds=0.0)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -438,7 +556,7 @@ async def test_reload_during_shutdown_preserves_pump_overrun_before_valve_close(
     hass.states.async_set("sensor.synthetic_temperature", "22.0")
     hass.states.async_set("switch.synthetic_valve", "on")
     hass.states.async_set("switch.synthetic_pump", "on")
-    entry = _entry(shadow_mode=False, pump_overrun_seconds=60.0)
+    entry = _entry(dry_run=False, pump_overrun_seconds=60.0)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -466,7 +584,7 @@ async def test_reload_during_pump_overrun_keeps_valve_protected(hass) -> None:
     hass.states.async_set("valve.synthetic_valve", "open")
     hass.states.async_set("switch.synthetic_pump", "on")
     entry = _entry(
-        shadow_mode=False,
+        dry_run=False,
         valve_entity_id="valve.synthetic_valve",
         valve_opening_seconds=300.0,
         pump_overrun_seconds=60.0,
@@ -495,7 +613,7 @@ async def test_reload_reconciles_observed_active_actuators_before_idle_shutdown(
     hass.states.async_set("sensor.synthetic_temperature", "22.0")
     hass.states.async_set("switch.synthetic_valve", "on")
     hass.states.async_set("switch.synthetic_pump", "on")
-    entry = _entry(shadow_mode=False, pump_overrun_seconds=0.0)
+    entry = _entry(dry_run=False, pump_overrun_seconds=0.0)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -513,7 +631,7 @@ async def test_safe_shutdown_is_ordered_and_idempotent_with_intercepted_services
     hass.states.async_set("switch.synthetic_pump", "off")
     hass.states.async_set("switch.synthetic_source", "on")
     entry = _entry(
-        shadow_mode=False,
+        dry_run=False,
         pump_overrun_seconds=10.0,
         valve_opening_seconds=0.0,
         source_demand=True,

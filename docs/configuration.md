@@ -25,12 +25,13 @@ See the [Home Assistant Template documentation](https://www.home-assistant.io/in
 For a disposable fixture, copy [examples/simulated-entities.yaml](examples/simulated-entities.yaml) into the test configuration and restart or reload the relevant helpers.
 
 The actuator entities are observed by the current release.
-They are not switched by Hydronicus while the Plant is in shadow mode.
+Every Plant created through the UI starts in Dry run, so Hydronicus does not switch them until the Plant setting is deliberately changed.
 
 ## Create the first Plant
 
 Open **Settings > Devices & services > Add integration**, search for **Hydronicus**, and enter a Plant name.
-The flow stores the Plant in shadow mode.
+Leave **Dry run** enabled for the first test.
+The flow stores the Plant with Dry run enabled by default.
 
 ### Add a Comfort Zone
 
@@ -45,7 +46,7 @@ Select one of the available policies:
 - **Mean** calculates the arithmetic mean.
 - **Median** selects the middle value after sorting the readings.
 - **Heating-oriented minimum** uses the lowest reading.
-- **Cooling-oriented maximum** is exposed as a topology option, but production cooling is not implemented in this release.
+- **Cooling-oriented maximum** supports cooling shadow evaluation, but physical cooling starts are not supported or authorized in this release.
 - **Designated reference** uses the one observation marked as the reference.
 - **Weighted mean** applies the positive weights configured through detailed sensor editing.
 
@@ -95,6 +96,10 @@ The pump enters virtual overrun before it becomes idle, and the valve closes aft
 
 No physical service call is part of this sequence in the current release.
 
+Cooling demand, condensation blocking, source recommendations, and source changeover reasoning are also visible in Dry run when their required objects and observations are configured.
+Cooling starts and source-selector operations remain Dry run only.
+When Dry run is off, heating valves, pumps, and a configured direct source-demand output can execute after the required confirmation and pump-path checks.
+
 ## Add more objects
 
 After the first Plant exists, use the config entry's subentry controls to add more objects.
@@ -110,44 +115,13 @@ Every relationship is stored by a generated identifier rather than by a display 
 Renaming an object should therefore not be used as a substitute for reviewing the resulting topology.
 Always open the topology preview after a reconfiguration.
 
-## Independent and shared equipment examples
+## Shared equipment
 
-Use these object assignments when reviewing the topology produced by the UI.
-The names are logical placeholders and do not imply a particular installation.
+Select the same existing pump or valve when it is physically shared by multiple Circuits.
+Hydronicus keeps the actuator requested while any active Circuit still consumes it.
+It warns when a shared valve prevents independent hydraulic control.
 
-### Independent valves and pumps
-
-| Circuit | Zone | Valves | Pump |
-| --- | --- | --- | --- |
-| Circuit A | Zone A | Valve A | Pump A |
-| Circuit B | Zone B | Valve B | Pump B |
-
-Each Circuit has its own valve path and pump.
-Demand from Zone A therefore does not add a consumer to Valve B or Pump B.
-
-### Independent valves with a shared pump
-
-| Circuit | Zone | Valves | Pump |
-| --- | --- | --- | --- |
-| Circuit A | Zone A | Valve A | Pump shared |
-| Circuit B | Zone B | Valve B | Pump shared |
-
-Select the same existing pump for both Circuits while keeping their valve selections distinct.
-The shared pump remains requested until both ready Circuit consumer sets are empty.
-
-### Shared valve and pump
-
-| Circuit | Zone | Valves | Pump |
-| --- | --- | --- | --- |
-| Circuit A | Zone A | Valve shared | Pump shared |
-| Circuit B | Zone B | Valve shared | Pump shared |
-
-Attach the same valve Actuator and pump to both Circuits.
-Hydronicus presents a non-fatal warning because separate climate entities cannot provide independent hydraulic control through the shared valve.
-Confirm that this coupling represents the real plant before accepting the review step.
-
-These examples describe topology configuration, not pump sizing, flow capacity, or physical safety.
-Read [supported topology patterns](topology.md) for the ownership and coupling rules behind them.
+Read [how Hydronicus works](how-it-works.md) for diagrams and the complete ownership rules.
 
 ## Configuration checklist
 
@@ -159,7 +133,7 @@ Before accepting a simulated Plant, check all of the following:
 - Each Circuit has a valid valve path and pump.
 - Shared equipment is intentional and documented for the test.
 - The topology preview describes the expected route and sequence.
-- The Plant remains in shadow mode.
+- The Plant remains in Dry run for the first test.
 - No real equipment is being used as a test substitute.
 
 If validation rejects a proposed object, review the object references and ownership boundaries before trying a different name.

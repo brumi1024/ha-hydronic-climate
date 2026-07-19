@@ -25,7 +25,7 @@ def load_benchmark_profile() -> dict[str, Any]:
     assert fixture["format"] == "hydronicus-synthetic-plant-benchmark"
     assert fixture["format_version"] == 1
     profile = fixture["profile"]
-    assert profile["shadow_mode"] is True
+    assert profile["dry_run"] is True
     return profile
 
 
@@ -154,7 +154,6 @@ def build_large_synthetic_entry() -> dict[str, Any]:
             "priority": source_index,
             "availability_entity": _entity("binary_sensor", "source_available", source_index),
             "demand_entity": _entity("switch", "source_demand", source_index),
-            "shadow_mode": True,
         }
         if source_index == 1:
             source.update(
@@ -186,7 +185,7 @@ def build_large_synthetic_entry() -> dict[str, Any]:
     return {
         "name": str(profile["name"]),
         "plant_id": str(profile["plant_id"]),
-        "shadow_mode": True,
+        "dry_run": True,
         "topology": topology,
     }
 

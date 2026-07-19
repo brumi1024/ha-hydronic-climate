@@ -11,7 +11,7 @@ Use a separate Home Assistant instance or a separate disposable configuration di
 - Run the same Home Assistant release declared in `hacs.json` or the compatibility version currently under test.
 - Mount or synchronize this checkout into `config/custom_components/hydronicus`.
 - Use synthetic temperature sensors and input booleans for the first validation stage.
-- Use shadow mode when observing real sensors or equipment.
+- Keep Dry run enabled when observing real sensors or equipment.
 - Keep credentials, server addresses, tokens, and site-specific paths outside the repository.
 - Make restoring the staging configuration or container a simple, documented server-side operation.
 
@@ -30,11 +30,11 @@ Then perform the applicable staging checks:
 5. Drive the synthetic sensor values through the chunk's named scenario.
 6. Confirm the visible explanations and virtual actuator sequence match the automated scenario.
 7. Confirm logs contain no unexpected exceptions or repeated warnings.
-8. Confirm shadow mode issued no physical service calls.
+8. Confirm Dry run issued no physical service calls.
 
 Record the Home Assistant version, commit SHA, scenario name, result, and any log excerpt needed to explain a failure.
 
 ## Activation boundary
 
 Do not use staging to exercise real actuator service calls until the implementation plan reaches the corresponding staged rollout and provides an immediate manual rollback.
-Synthetic testing comes first, shadow observation comes second, and partial physical control requires an explicit rollout decision.
+Synthetic testing comes first, Dry run observation comes second, and any physical control requires an explicit rollout decision.

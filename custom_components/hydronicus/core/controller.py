@@ -2844,8 +2844,6 @@ def evaluate(
             reason = "Blocked: this source is not the deterministic active recommendation."
         elif demand_requested:
             reason = demand_reason
-            if source.shadow_mode:
-                reason += " Source execution is shadowed."
         else:
             reason = demand_reason
         source_diagnostics[source_id] = SourceDiagnostic(
@@ -2856,7 +2854,6 @@ def evaluate(
             active=active,
             demand_requested=demand_requested,
             demand_permitted=source_permitted,
-            shadow_mode=source.shadow_mode,
             blocked=source.demand_entity_id is not None and not demand_requested,
             reason=reason,
         )

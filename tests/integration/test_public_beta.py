@@ -60,10 +60,10 @@ async def test_public_documentation_path_creates_and_exercises_shadow_plant(hass
         for entry in hass.config_entries.async_entries(DOMAIN)
         if entry.title == "Public beta simulated plant"
     )
-    assert entry.data["shadow_mode"] is True
+    assert entry.data["dry_run"] is True
     await hass.async_block_till_done()
 
-    assert entry.runtime_data.shadow_mode is True
+    assert entry.runtime_data.dry_run is True
     demand_state = hass.states.get(
         "binary_sensor.public_beta_simulated_plant_simulated_zone_demand"
     )
@@ -88,7 +88,7 @@ async def test_public_beta_fresh_entry_can_reload_without_changing_domain(hass) 
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Fresh package plant",
-        data={"name": "Fresh package plant", "plant_id": "fresh-plant", "shadow_mode": True},
+        data={"name": "Fresh package plant", "plant_id": "fresh-plant", "dry_run": True},
     )
     entry.add_to_hass(hass)
 

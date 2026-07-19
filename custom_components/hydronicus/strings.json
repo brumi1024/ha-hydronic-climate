@@ -3,9 +3,24 @@
     "step": {
       "user": {
         "title": "Create a Hydronicus plant",
-        "description": "New plants begin in shadow mode and do not control equipment.",
+        "description": "New Plants start in Dry run by default. Dry run calculates the real plan without controlling equipment.",
         "data": {
-          "name": "Plant name"
+          "name": "Plant name",
+          "dry_run": "Dry run"
+        }
+      },
+      "reconfigure": {
+        "title": "Configure Hydronicus",
+        "description": "Dry run calculates the real heating plan without service calls. Turn it off only after reviewing the configured heating outputs.",
+        "data": {
+          "dry_run": "Dry run"
+        }
+      },
+      "dry_run_confirmation": {
+        "title": "Confirm heating control",
+        "description": "Hydronicus will be allowed to control the configured heating valves, pumps, and direct source-demand output when the plan permits them.",
+        "data": {
+          "dry_run_confirmation": "I understand these heating outputs may be controlled"
         }
       },
       "zone": {
@@ -51,7 +66,7 @@
       },
       "circuit": {
         "title": "Add the first hydraulic circuit",
-        "description": "Equipment is observed only in this release. No service calls are made.",
+        "description": "Equipment is observed and controlled according to the Plant Dry run setting.",
         "data": {
           "name": "Circuit name",
           "valve_entity": "Valve entity",
@@ -76,13 +91,15 @@
         }
       },
       "review": {
-        "title": "Review shadow topology",
-        "description": "Zone {zone} will request circuit {circuit}. Hydronicus remains in shadow mode.\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}"
+        "title": "Review Dry run topology",
+        "description": "Zone {zone} will request circuit {circuit}. Dry run calculates the plan without service calls.\n\nCompiled topology:\n{logic}\n\nWarnings:\n{warnings}"
       }
     },
     "error": {
       "name_required": "A plant name is required.",
       "invalid_topology": "The initial topology is not valid.",
+      "dry_run_confirmation_required": "Confirm that the configured heating outputs may be controlled.",
+      "dry_run_shutdown_in_progress": "Hydronicus is completing the ordered heating shutdown. Submit Dry run again after the shutdown finishes.",
       "sensor_metadata_required": "Select detailed sensor editing before using weighted mean or designated reference aggregation."
     }
   },
@@ -146,7 +163,7 @@
       "step": {
         "user": {
           "title": "Add a hydraulic circuit",
-          "description": "Connect existing plant equipment to one or more comfort zones in shadow mode.",
+          "description": "Connect existing plant equipment to one or more comfort zones using the Plant Dry run setting.",
           "data": {
             "name": "Circuit name",
             "zone_ids": "Zones",
@@ -202,7 +219,7 @@
       "step": {
         "user": {
           "title": "Add a comfort zone",
-          "description": "Select one or more temperature sensors, choose an aggregation policy, and route the zone through existing circuits in shadow mode. Enable detailed sensor editing to configure required status, calibration, freshness, designated reference, and weights one sensor at a time.",
+          "description": "Select one or more temperature sensors, choose an aggregation policy, and route the zone through existing circuits. Enable detailed sensor editing to configure required status, calibration, freshness, designated reference, and weights one sensor at a time.",
           "data": {
             "name": "Zone name",
             "target_temperature": "Target temperature",
@@ -292,14 +309,13 @@
       "step": {
         "user": {
           "title": "Add a heat source",
-          "description": "Configure source availability and stable priority for shadow recommendation. A buffer source is eligible only while its temperature is fresh and above the configured threshold.",
+          "description": "Configure source availability and stable priority for recommendation. Direct source demand can execute only outside Dry run and after a valid pump path exists.",
           "data": {
             "name": "Source name",
             "source_type": "Source type",
             "priority": "Priority (lower wins)",
             "availability_entity": "Availability entity",
             "source_demand_entity": "Source demand entity",
-            "shadow_mode": "Source shadow mode",
             "temperature_entity": "Buffer temperature entity",
             "minimum_temperature": "Minimum buffer temperature (degrees Celsius)",
             "maximum_age_seconds": "Maximum buffer temperature age (seconds)",
@@ -308,14 +324,13 @@
         },
         "reconfigure": {
           "title": "Update heat source",
-          "description": "Change source availability, priority, or temperature qualification without executing source equipment.",
+          "description": "Change source availability, priority, or temperature qualification.",
           "data": {
             "name": "Source name",
             "source_type": "Source type",
             "priority": "Priority (lower wins)",
             "availability_entity": "Availability entity",
             "source_demand_entity": "Source demand entity",
-            "shadow_mode": "Source shadow mode",
             "temperature_entity": "Buffer temperature entity",
             "minimum_temperature": "Minimum buffer temperature (degrees Celsius)",
             "maximum_age_seconds": "Maximum buffer temperature age (seconds)",

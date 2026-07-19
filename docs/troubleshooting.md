@@ -1,6 +1,6 @@
 # Troubleshooting
 
-This guide covers the current shadow-mode implementation.
+This guide covers the current Dry run and controlled-heating implementation.
 It is written for a disposable or staging Home Assistant instance.
 
 ## Before troubleshooting
@@ -8,8 +8,8 @@ It is written for a disposable or staging Home Assistant instance.
 Record the Hydronicus version, Home Assistant version, and the commit or HACS version being tested.
 Keep credentials, access tokens, private addresses, and household-specific entity details out of issue reports.
 
-If the test involves real sensors, confirm that the Plant is still in shadow mode before continuing.
-The current release should not issue physical actuator service calls.
+If the test involves real sensors, confirm that the Plant is still in Dry run before continuing.
+Dry run should not issue physical actuator service calls.
 
 ## Installation and setup
 
@@ -80,6 +80,16 @@ A required-sensor failure is the exception: it blocks and releases demand immedi
 
 ## Warnings, explanations, and virtual states
 
+### Demand is on but the real valve or pump does not move
+
+This is expected while the Plant is in Dry run.
+The valve and pump request entities describe what Hydronicus would request without sending the service call.
+If Dry run is off, verify that the configured entity is an allowed heating actuator and that the confirmation completed successfully.
+Cooling starts and source-selector operations remain proposed even when Dry run is off.
+
+Do not edit Home Assistant config-entry storage to bypass the UI control or its safe-shutdown path.
+The internal executor tests are not a supported rollout procedure.
+
 ### The valve is opening and the pump is not requested
 
 This is expected while the configured virtual valve opening time has not elapsed.
@@ -89,7 +99,7 @@ The valve state and Zone explanation entities should show the reason.
 ### The pump remains requested after demand stops
 
 This is expected during the configured virtual pump overrun period.
-The overrun protects the modeled Circuit sequence in shadow mode.
+The overrun protects the modeled Circuit sequence in Dry run and active heating mode.
 It does not prove that a physical pump needs the same timing.
 
 ### A shared pump does not turn off when one Zone releases
@@ -122,15 +132,16 @@ Useful checks include:
 4. Copy the first relevant exception and its short traceback.
 5. Redact tokens, credentials, hostnames, private addresses, and household-specific entity details.
 
-The current release does not provide downloadable diagnostics or Repairs issues.
-Do not claim that a missing diagnostic download is a runtime failure.
+Download redacted diagnostics from the Hydronicus config entry or device page before filing an issue.
+Hydronicus also creates Repairs issues for unresolved configured entity bindings and removes them after the binding is restored.
+If diagnostics are unavailable or a binding problem does not produce a Repair, capture the first relevant log exception and report it as a runtime problem.
 Use the [diagnostic bug-report template](../.github/ISSUE_TEMPLATE/diagnostic-bug-report.md) and provide only the information needed to reproduce the issue.
 
 ## Recovery
 
 ### The integration reload fails
 
-Keep the Plant in shadow mode.
+Keep the Plant in Dry run.
 Check for an invalid or partially edited subentry and restore the last known-good configuration from a Home Assistant backup if necessary.
 Then restart or reload the integration and confirm that the topology preview returns.
 

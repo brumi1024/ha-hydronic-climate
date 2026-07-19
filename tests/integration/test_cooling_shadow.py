@@ -11,10 +11,10 @@ from custom_components.hydronicus.const import (
     CONF_COOLING_ENABLED,
     CONF_COOLING_START_DELTA,
     CONF_COOLING_STOP_DELTA,
+    CONF_DRY_RUN,
     CONF_HUMIDITY_SENSORS,
     CONF_NAME,
     CONF_PLANT_ID,
-    CONF_SHADOW_MODE,
     CONF_SUPPLY_TEMPERATURE_SENSOR,
     CONF_TEMPERATURE_SENSORS,
     DOMAIN,
@@ -34,7 +34,7 @@ HEATING_ROUTE_ID = "00000000-0000-4000-8000-000000000014"
 COOLING_ROUTE_ID = "00000000-0000-4000-8000-000000000015"
 
 
-def _cooling_entry(*, shadow_mode: bool = True) -> MockConfigEntry:
+def _cooling_entry(*, dry_run: bool = True) -> MockConfigEntry:
     """Return one persisted, cooling-enabled synthetic plant."""
     return MockConfigEntry(
         domain=DOMAIN,
@@ -42,7 +42,7 @@ def _cooling_entry(*, shadow_mode: bool = True) -> MockConfigEntry:
         data={
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: PLANT_ID,
-            CONF_SHADOW_MODE: shadow_mode,
+            CONF_DRY_RUN: dry_run,
             "topology": {
                 "zones": [
                     {
@@ -98,7 +98,7 @@ def _shared_mode_entry() -> MockConfigEntry:
         data={
             CONF_NAME: "Shared mode plant",
             CONF_PLANT_ID: PLANT_ID,
-            CONF_SHADOW_MODE: True,
+            CONF_DRY_RUN: True,
             "topology": {
                 "zones": [
                     {
@@ -164,7 +164,7 @@ def _shared_mode_entry() -> MockConfigEntry:
     )
 
 
-async def test_cooling_remains_shadowed_when_heating_execution_is_enabled(hass) -> None:
+async def test_cooling_remains_proposed_when_heating_execution_is_enabled(hass) -> None:
     """Cooling commands never reach Home Assistant while active heating control is enabled."""
     calls: list[tuple[str, str, str]] = []
 
@@ -178,7 +178,7 @@ async def test_cooling_remains_shadowed_when_heating_execution_is_enabled(hass) 
     hass.states.async_set("sensor.cooling_supply", "18.0")
     hass.states.async_set("switch.cooling_valve", "off")
     hass.states.async_set("switch.cooling_pump", "off")
-    entry = _cooling_entry(shadow_mode=False)
+    entry = _cooling_entry(dry_run=False)
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -186,11 +186,11 @@ async def test_cooling_remains_shadowed_when_heating_execution_is_enabled(hass) 
 
     assert calls == []
     assert entry.runtime_data.last_execution is not None
-    shadowed_ids = {
-        operation.actuator_id for operation in entry.runtime_data.last_execution.shadowed
+    proposed_ids = {
+        operation.actuator_id for operation in entry.runtime_data.last_execution.proposed
     }
-    assert shadowed_ids
-    assert shadowed_ids <= {VALVE_ID, PUMP_ID}
+    assert proposed_ids
+    assert proposed_ids <= {VALVE_ID, PUMP_ID}
 
 
 async def test_cooling_diagnostics_reload_and_shadow_boundary(hass) -> None:
@@ -268,7 +268,7 @@ async def test_shared_mode_arbitration_is_visible_and_shadow_only(hass) -> None:
 
 
 async def test_mode_changeover_entities_lock_until_shared_path_is_idle(hass) -> None:
-    """The HA mode request exposes the lockout while keeping cooling shadow-only."""
+    """The HA mode request exposes the lockout while keeping cooling in Dry run."""
     calls: list[tuple[str, str, str]] = []
 
     async def record(call) -> None:

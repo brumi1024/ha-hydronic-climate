@@ -5,9 +5,9 @@ from __future__ import annotations
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.hydronicus.const import (
+    CONF_DRY_RUN,
     CONF_NAME,
     CONF_PLANT_ID,
-    CONF_SHADOW_MODE,
     DOMAIN,
 )
 
@@ -20,14 +20,14 @@ async def test_setup_unload_and_reload_entry(hass) -> None:
         data={
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: "plant-1",
-            CONF_SHADOW_MODE: True,
+            CONF_DRY_RUN: True,
         },
     )
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     assert entry.runtime_data is not None
-    assert entry.runtime_data.shadow_mode is True
+    assert entry.runtime_data.dry_run is True
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert not hasattr(entry, "runtime_data")
@@ -44,7 +44,7 @@ async def test_configured_zone_climate_unloads_with_entry(hass) -> None:
         data={
             CONF_NAME: "Hydronic plant",
             CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
-            CONF_SHADOW_MODE: True,
+            CONF_DRY_RUN: True,
             "topology": {
                 "zones": [
                     {

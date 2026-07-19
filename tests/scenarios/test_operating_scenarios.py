@@ -197,7 +197,7 @@ async def test_active_executor_tracer_is_idempotent_at_unchanged_fake_clock() ->
         valve_opening=30,
     )
     snapshot = PlantSnapshot({"sensor.zone": TemperatureObservation(20.0, NOW)})
-    executor = ActuatorExecutor.from_plant(plant, shadow_mode=False)
+    executor = ActuatorExecutor.from_plant(plant, dry_run=False)
     dispatched: list[ActuatorOperation] = []
 
     async def dispatch(operation: ActuatorOperation) -> None:

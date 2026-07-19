@@ -27,7 +27,7 @@ from .runtime import HydronicRuntime
 
 
 class ZoneClimate(ClimateEntity):
-    """A read-only-mode, shadow-only climate interface for one zone."""
+    """A read-only climate interface for one zone's Hydronicus demand."""
 
     _attr_has_entity_name = True
     _attr_should_poll = False

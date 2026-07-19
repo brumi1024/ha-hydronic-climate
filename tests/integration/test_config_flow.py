@@ -78,7 +78,7 @@ async def test_user_config_flow_creates_entry(hass) -> None:
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     assert result["title"] == "Hydronic plant"
-    assert result["data"]["shadow_mode"] is True
+    assert result["data"]["dry_run"] is True
     topology = result["data"]["topology"]
     assert topology["zones"][0]["name"] == "Living room"
     assert topology["zones"][0]["temperature_sensors"] == ["sensor.living_temperature"]

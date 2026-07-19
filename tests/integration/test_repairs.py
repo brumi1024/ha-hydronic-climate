@@ -6,7 +6,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.hydronicus.const import CONF_NAME, CONF_PLANT_ID, CONF_SHADOW_MODE, DOMAIN
+from custom_components.hydronicus.const import CONF_DRY_RUN, CONF_NAME, CONF_PLANT_ID, DOMAIN
 
 PLANT_ID = "00000000-0000-4000-8000-000000000001"
 ZONE_A = "00000000-0000-4000-8000-000000000002"
@@ -33,7 +33,7 @@ def _entry() -> MockConfigEntry:
         data={
             CONF_NAME: "Synthetic plant",
             CONF_PLANT_ID: PLANT_ID,
-            CONF_SHADOW_MODE: True,
+            CONF_DRY_RUN: True,
             "topology": {
                 "zones": [
                     {
