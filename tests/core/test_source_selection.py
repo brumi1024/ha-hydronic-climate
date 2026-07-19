@@ -32,6 +32,8 @@ from hydronicus_core.model import (
 from hydronicus_core.topology import TopologyValidationError, compile_topology
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
+STORED_PLANT_ID = "00000000-0000-4000-8000-000000000001"
+STORED_SELECTOR_ID = "00000000-0000-4000-8000-000000000002"
 
 
 def _configuration(
@@ -521,7 +523,7 @@ def test_healthy_source_change_honors_minimum_dwell_before_release() -> None:
         (
             {
                 "source_selector": {
-                    "id": "selector",
+                    "id": STORED_SELECTOR_ID,
                     "name": "Selector",
                     "entity_id": "select.one",
                     "selector_entity_id": "select.two",
@@ -532,7 +534,7 @@ def test_healthy_source_change_honors_minimum_dwell_before_release() -> None:
         (
             {
                 "source_selector": {
-                    "id": "selector",
+                    "id": STORED_SELECTOR_ID,
                     "name": "Selector",
                     "break_seconds": 10,
                 }
@@ -540,11 +542,23 @@ def test_healthy_source_change_honors_minimum_dwell_before_release() -> None:
             "unsupported fields: break_seconds",
         ),
         (
-            {"source_selector": {"id": "selector", "name": "Selector", "release_option": ""}},
+            {
+                "source_selector": {
+                    "id": STORED_SELECTOR_ID,
+                    "name": "Selector",
+                    "release_option": "",
+                }
+            },
             "release option",
         ),
         (
-            {"source_selector": {"id": "selector", "name": "Selector", "shadow_only": "yes"}},
+            {
+                "source_selector": {
+                    "id": STORED_SELECTOR_ID,
+                    "name": "Selector",
+                    "shadow_only": "yes",
+                }
+            },
             "shadow_only",
         ),
     ],
@@ -553,7 +567,7 @@ def test_source_selector_configuration_rejects_unsafe_stored_values(
     topology: dict[str, object], message: str
 ) -> None:
     with pytest.raises(StoredTopologyError, match=message):
-        plant_configuration_from_entry_data({"plant_id": "plant", "topology": topology})
+        plant_configuration_from_entry_data({"plant_id": STORED_PLANT_ID, "topology": topology})
 
 
 @pytest.mark.parametrize(
@@ -624,10 +638,10 @@ def test_source_selector_configuration_defaults_to_synthetic_execution() -> None
     """Persisted selector timing is typed without enabling physical control."""
     configuration = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant",
+            "plant_id": STORED_PLANT_ID,
             "topology": {
                 "source_selector": {
-                    "id": "synthetic-selector",
+                    "id": STORED_SELECTOR_ID,
                     "name": "Synthetic selector",
                     "break_interval_seconds": 12,
                     "minimum_dwell_seconds": 45,

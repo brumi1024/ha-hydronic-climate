@@ -49,9 +49,7 @@ def _cooling_entry(*, dry_run: bool = True) -> MockConfigEntry:
                         "id": ZONE_ID,
                         "name": "Living",
                         "target_temperature": 24.0,
-                        CONF_TEMPERATURE_SENSORS: ["sensor.living_temperature"],
                         "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
-                        CONF_HUMIDITY_SENSORS: ["sensor.living_humidity"],
                         "humidity_sensor_metadata": [{"entity_id": "sensor.living_humidity"}],
                         CONF_COOLING_START_DELTA: 0.5,
                         CONF_COOLING_STOP_DELTA: 0.2,
@@ -105,14 +103,18 @@ def _shared_mode_entry() -> MockConfigEntry:
                         "id": HEATING_ZONE_ID,
                         "name": "Heating zone",
                         "target_temperature": 21.0,
-                        CONF_TEMPERATURE_SENSORS: ["sensor.heating_temperature"],
+                        "temperature_sensor_metadata": [
+                            {"entity_id": "sensor.heating_temperature"}
+                        ],
                     },
                     {
                         "id": COOLING_ZONE_ID,
                         "name": "Cooling zone",
                         "target_temperature": 24.0,
-                        CONF_TEMPERATURE_SENSORS: ["sensor.cooling_temperature"],
-                        CONF_HUMIDITY_SENSORS: ["sensor.cooling_humidity"],
+                        "temperature_sensor_metadata": [
+                            {"entity_id": "sensor.cooling_temperature"}
+                        ],
+                        "humidity_sensor_metadata": [{"entity_id": "sensor.cooling_humidity"}],
                     },
                 ],
                 "valves": [

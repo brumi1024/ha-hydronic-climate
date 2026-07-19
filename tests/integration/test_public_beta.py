@@ -88,7 +88,11 @@ async def test_public_beta_fresh_entry_can_reload_without_changing_domain(hass) 
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Fresh package plant",
-        data={"name": "Fresh package plant", "plant_id": "fresh-plant", "dry_run": True},
+        data={
+            "name": "Fresh package plant",
+            "plant_id": "00000000-0000-4000-8000-000000000001",
+            "dry_run": True,
+        },
     )
     entry.add_to_hass(hass)
 

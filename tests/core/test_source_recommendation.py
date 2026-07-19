@@ -26,6 +26,9 @@ from hydronicus_core.model import (
 from hydronicus_core.topology import TopologyValidationError, compile_topology
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
+STORED_PLANT_ID = "00000000-0000-4000-8000-000000000001"
+STORED_SOURCE_ID = "00000000-0000-4000-8000-000000000002"
+STORED_BUFFER_ID = "00000000-0000-4000-8000-000000000003"
 
 
 def _plant(*sources: Source):
@@ -58,18 +61,18 @@ def test_decodes_canonical_source_configuration() -> None:
     """Persisted generic and temperature-qualified fields become typed sources."""
     plant = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant-1",
+            "plant_id": STORED_PLANT_ID,
             "topology": {
                 "sources": [
                     {
-                        "id": "external",
+                        "id": STORED_SOURCE_ID,
                         "name": "Boiler",
                         "priority": 20,
                         "source_type": "external",
                         "availability_entity": "binary_sensor.boiler_available",
                     },
                     {
-                        "id": "buffer",
+                        "id": STORED_BUFFER_ID,
                         "name": "Buffer",
                         "priority": 10,
                         "source_type": "temperature_qualified_buffer",
@@ -121,9 +124,15 @@ def test_rejects_invalid_stored_source_configuration() -> None:
     with pytest.raises(StoredTopologyError, match="source type"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant",
+                "plant_id": STORED_PLANT_ID,
                 "topology": {
-                    "sources": [{"id": "source", "name": "Source", "source_type": "unknown"}]
+                    "sources": [
+                        {
+                            "id": STORED_SOURCE_ID,
+                            "name": "Source",
+                            "source_type": "unknown",
+                        }
+                    ]
                 },
             }
         )
@@ -131,8 +140,10 @@ def test_rejects_invalid_stored_source_configuration() -> None:
     with pytest.raises(StoredTopologyError, match="priority"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant",
-                "topology": {"sources": [{"id": "source", "name": "Source", "priority": 1.5}]},
+                "plant_id": STORED_PLANT_ID,
+                "topology": {
+                    "sources": [{"id": STORED_SOURCE_ID, "name": "Source", "priority": 1.5}]
+                },
             }
         )
 
@@ -149,8 +160,10 @@ def test_rejects_short_source_kind_names(source_fields) -> None:
     with pytest.raises(StoredTopologyError, match="source type"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant",
-                "topology": {"sources": [{"id": "source", "name": "Source", **source_fields}]},
+                "plant_id": STORED_PLANT_ID,
+                "topology": {
+                    "sources": [{"id": STORED_SOURCE_ID, "name": "Source", **source_fields}]
+                },
             }
         )
 
@@ -172,8 +185,10 @@ def test_rejects_alternate_source_fields(source_fields) -> None:
     with pytest.raises(StoredTopologyError, match="Stored source uses unsupported fields"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant",
-                "topology": {"sources": [{"id": "source", "name": "Source", **source_fields}]},
+                "plant_id": STORED_PLANT_ID,
+                "topology": {
+                    "sources": [{"id": STORED_SOURCE_ID, "name": "Source", **source_fields}]
+                },
             }
         )
 

@@ -19,7 +19,7 @@ async def test_setup_unload_and_reload_entry(hass) -> None:
         title="Hydronic plant",
         data={
             CONF_NAME: "Hydronic plant",
-            CONF_PLANT_ID: "plant-1",
+            CONF_PLANT_ID: "00000000-0000-4000-8000-000000000001",
             CONF_DRY_RUN: True,
         },
     )
