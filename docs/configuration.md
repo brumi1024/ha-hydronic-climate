@@ -94,7 +94,7 @@ zone demand -> circuit request -> valve opening -> valve ready -> pump requested
 Raise the synthetic temperature above the stop threshold.
 The pump enters virtual overrun before it becomes idle, and the valve closes after the pump no longer needs protection.
 
-No physical service call is part of this sequence in the current release.
+No physical service call is dispatched while Dry run remains enabled.
 
 Cooling demand, condensation blocking, source recommendations, and source changeover reasoning are also visible in Dry run when their required objects and observations are configured.
 Cooling starts and source-selector operations remain Dry run only.

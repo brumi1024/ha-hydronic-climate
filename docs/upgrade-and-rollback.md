@@ -1,7 +1,9 @@
 # Install, update, and rollback
 
-Hydronicus `0.1.0` is the first public release.
+Hydronicus `0.1.0` is the planned first public release.
 There is no earlier public installation or persisted schema to migrate.
+Config-entry version 1 and minor version 1 are the initial fresh-install contract, not a migration target.
+Compatibility support begins only after a schema has shipped in an actual published release.
 
 ## Fresh HACS installation
 

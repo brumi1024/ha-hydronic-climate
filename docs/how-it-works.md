@@ -27,18 +27,21 @@ This allows objects to be renamed without changing their logical relationships.
 Hydronicus repeatedly performs the same deterministic cycle:
 
 ```text
-observe Home Assistant entities
-  -> validate freshness and availability
-  -> aggregate Zone observations
-  -> calculate heating and cooling demand
-  -> resolve eligible Delivery Routes
-  -> calculate complete actuator consumer sets
-  -> sequence valves before pumps
-  -> evaluate source eligibility and changeover
-  -> publish requests, blocks, and explanations
+snapshot Home Assistant entities
+  -> evaluate heating and cooling independently
+  -> filter and arbitrate Delivery Routes
+  -> coordinate shared-mode changeover
+  -> plan valves, then pumps
+  -> recommend and safely transition sources
+  -> assemble runtime, plan, deadlines, and diagnostics
+  -> execute or shadow ordered operations
+  -> publish only changed public state
 ```
 
 Running the cycle twice with unchanged input does not produce toggle behavior or duplicate commands.
+The controller package is pure and has no Home Assistant imports.
+The runtime adapter owns snapshots, service execution, timed wakeups, feedback reconciliation, Repairs, and entity publication.
+This separation keeps safety decisions reproducible while containing external side effects at one boundary.
 
 ## Heating behavior
 
