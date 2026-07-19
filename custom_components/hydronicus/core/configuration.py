@@ -442,7 +442,12 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
     raw_valves = _objects(raw_topology, "valves")
     raw_pumps = _objects(raw_topology, "pumps")
     raw_sources = _objects(raw_topology, "sources")
-    require_uuid = bool(raw_valves or raw_pumps)
+    for item in raw_circuits:
+        _reject_unsupported_fields(
+            item,
+            {"valve_id", "valve_opening_time_seconds", "pump_overrun_seconds"},
+            "circuit",
+        )
     for item in raw_valves:
         _reject_unsupported_fields(
             item,
@@ -471,7 +476,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
             },
             "pump",
         )
-    plant_id = _id(data, "plant_id", require_uuid=require_uuid)
+    plant_id = _id(data, "plant_id", require_uuid=True)
     zones = []
     for item in _objects(raw_topology, "zones"):
         metadata = temperature_sensor_metadata_from_mapping(item)
@@ -488,7 +493,7 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
         ) = _zone_timing(item)
         zones.append(
             Zone(
-                id=_id(item, "id", require_uuid=require_uuid),
+                id=_id(item, "id", require_uuid=True),
                 name=str(_required(item, "name")),
                 target_temperature=_required_number(item, "target_temperature"),
                 temperature_sensor_metadata=metadata,
@@ -503,176 +508,85 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                 humidity_sensor_metadata=humidity_metadata,
             )
         )
-    if require_uuid:
-        valves = tuple(
-            Valve(
-                id=_id(item, "id", require_uuid=True),
-                name=str(_required(item, "name")),
-                entity_id=str(_required(item, "entity_id")),
-                opening_time_seconds=_number(item, "opening_time_seconds", 30.0, non_negative=True),
-                readiness_entity_id=_optional_entity_id(item, "readiness_entity_id"),
-                position_entity_id=_optional_entity_id(item, "position_feedback_entity"),
-                position_max_age_seconds=_number(
-                    item,
-                    "position_feedback_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-            )
-            for item in raw_valves
+    valves = tuple(
+        Valve(
+            id=_id(item, "id", require_uuid=True),
+            name=str(_required(item, "name")),
+            entity_id=str(_required(item, "entity_id")),
+            opening_time_seconds=_number(item, "opening_time_seconds", 30.0, non_negative=True),
+            readiness_entity_id=_optional_entity_id(item, "readiness_entity_id"),
+            position_entity_id=_optional_entity_id(item, "position_feedback_entity"),
+            position_max_age_seconds=_number(
+                item,
+                "position_feedback_max_age_seconds",
+                _LEGACY_MAX_AGE_SECONDS,
+                positive=True,
+            ),
         )
-        pumps = tuple(
-            Pump(
-                id=_id(item, "id", require_uuid=True),
-                name=str(_required(item, "name")),
-                entity_id=str(_required(item, "entity_id")),
-                overrun_seconds=_number(item, "overrun_seconds", 120.0, non_negative=True),
-                power_entity_id=_optional_entity_id(item, "power_feedback_entity"),
-                flow_entity_id=_optional_entity_id(item, "flow_feedback_entity"),
-                fault_entity_id=_optional_entity_id(item, "fault_feedback_entity"),
-                power_max_age_seconds=_number(
-                    item,
-                    "power_feedback_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-                flow_max_age_seconds=_number(
-                    item,
-                    "flow_feedback_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-                fault_max_age_seconds=_number(
-                    item,
-                    "fault_feedback_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-            )
-            for item in raw_pumps
+        for item in raw_valves
+    )
+    pumps = tuple(
+        Pump(
+            id=_id(item, "id", require_uuid=True),
+            name=str(_required(item, "name")),
+            entity_id=str(_required(item, "entity_id")),
+            overrun_seconds=_number(item, "overrun_seconds", 120.0, non_negative=True),
+            power_entity_id=_optional_entity_id(item, "power_feedback_entity"),
+            flow_entity_id=_optional_entity_id(item, "flow_feedback_entity"),
+            fault_entity_id=_optional_entity_id(item, "fault_feedback_entity"),
+            power_max_age_seconds=_number(
+                item,
+                "power_feedback_max_age_seconds",
+                _LEGACY_MAX_AGE_SECONDS,
+                positive=True,
+            ),
+            flow_max_age_seconds=_number(
+                item,
+                "flow_feedback_max_age_seconds",
+                _LEGACY_MAX_AGE_SECONDS,
+                positive=True,
+            ),
+            fault_max_age_seconds=_number(
+                item,
+                "fault_feedback_max_age_seconds",
+                _LEGACY_MAX_AGE_SECONDS,
+                positive=True,
+            ),
         )
-        circuits = [
-            Circuit(
-                id=_id(item, "id", require_uuid=True),
-                name=str(_required(item, "name")),
-                valve_ids=_string_list(item, "valve_ids", require_uuid=True),
-                pump_id=_id(item, "pump_id", require_uuid=True),
-                cooling_enabled=_boolean(item, "cooling_enabled", False),
-                supply_temperature_sensor=item.get("supply_temperature_sensor"),
-                surface_temperature_sensor=item.get("surface_temperature_sensor"),
-                condensation_margin=_number(item, "condensation_margin", 2.0, non_negative=True),
-                supply_temperature_max_age_seconds=_number(
-                    item,
-                    "supply_temperature_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-                surface_temperature_max_age_seconds=_number(
-                    item,
-                    "surface_temperature_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-            )
-            for item in raw_circuits
-        ]
-    else:
-        valve_data: dict[str, Valve] = {}
-        pump_data: dict[str, Pump] = {}
-        circuits = []
-        for item in raw_circuits:
-            name = str(_required(item, "name"))
-            valve_id = str(_required(item, "valve_id"))
-            pump_id = str(_required(item, "pump_id"))
-            valve_opening_time = _number(
-                item, "valve_opening_time_seconds", 30.0, non_negative=True
-            )
-            pump_overrun = _number(item, "pump_overrun_seconds", 120.0, non_negative=True)
-            prior_valve = valve_data.get(valve_id)
-            valve_data[valve_id] = Valve(
-                id=valve_id,
-                name=prior_valve.name if prior_valve is not None else f"{name} valve",
-                entity_id=valve_id,
-                opening_time_seconds=(
-                    max(prior_valve.opening_time_seconds, valve_opening_time)
-                    if prior_valve is not None
-                    else valve_opening_time
-                ),
-                position_entity_id=_optional_entity_id(item, "position_feedback_entity"),
-                position_max_age_seconds=_number(
-                    item,
-                    "position_feedback_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-            )
-            prior_pump = pump_data.get(pump_id)
-            pump_data[pump_id] = Pump(
-                id=pump_id,
-                name=prior_pump.name if prior_pump is not None else f"{name} pump",
-                entity_id=pump_id,
-                overrun_seconds=(
-                    max(prior_pump.overrun_seconds, pump_overrun)
-                    if prior_pump is not None
-                    else pump_overrun
-                ),
-                power_entity_id=_optional_entity_id(item, "power_feedback_entity"),
-                flow_entity_id=_optional_entity_id(item, "flow_feedback_entity"),
-                fault_entity_id=_optional_entity_id(item, "fault_feedback_entity"),
-                power_max_age_seconds=_number(
-                    item,
-                    "power_feedback_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-                flow_max_age_seconds=_number(
-                    item,
-                    "flow_feedback_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-                fault_max_age_seconds=_number(
-                    item,
-                    "fault_feedback_max_age_seconds",
-                    _LEGACY_MAX_AGE_SECONDS,
-                    positive=True,
-                ),
-            )
-            circuits.append(
-                Circuit(
-                    id=str(_required(item, "id")),
-                    name=name,
-                    valve_ids=(valve_id,),
-                    pump_id=pump_id,
-                    cooling_enabled=_boolean(item, "cooling_enabled", False),
-                    supply_temperature_sensor=item.get("supply_temperature_sensor"),
-                    surface_temperature_sensor=item.get("surface_temperature_sensor"),
-                    condensation_margin=_number(
-                        item, "condensation_margin", 2.0, non_negative=True
-                    ),
-                    supply_temperature_max_age_seconds=_number(
-                        item,
-                        "supply_temperature_max_age_seconds",
-                        _LEGACY_MAX_AGE_SECONDS,
-                        positive=True,
-                    ),
-                    surface_temperature_max_age_seconds=_number(
-                        item,
-                        "surface_temperature_max_age_seconds",
-                        _LEGACY_MAX_AGE_SECONDS,
-                        positive=True,
-                    ),
-                )
-            )
-        valves = tuple(valve_data.values())
-        pumps = tuple(pump_data.values())
-    sources = tuple(_source_from_mapping(item, require_uuid=require_uuid) for item in raw_sources)
-    source_selector = _source_selector_from_mapping(raw_topology, require_uuid=require_uuid)
+        for item in raw_pumps
+    )
+    circuits = [
+        Circuit(
+            id=_id(item, "id", require_uuid=True),
+            name=str(_required(item, "name")),
+            valve_ids=_string_list(item, "valve_ids", require_uuid=True),
+            pump_id=_id(item, "pump_id", require_uuid=True),
+            cooling_enabled=_boolean(item, "cooling_enabled", False),
+            supply_temperature_sensor=item.get("supply_temperature_sensor"),
+            surface_temperature_sensor=item.get("surface_temperature_sensor"),
+            condensation_margin=_number(item, "condensation_margin", 2.0, non_negative=True),
+            supply_temperature_max_age_seconds=_number(
+                item,
+                "supply_temperature_max_age_seconds",
+                _LEGACY_MAX_AGE_SECONDS,
+                positive=True,
+            ),
+            surface_temperature_max_age_seconds=_number(
+                item,
+                "surface_temperature_max_age_seconds",
+                _LEGACY_MAX_AGE_SECONDS,
+                positive=True,
+            ),
+        )
+        for item in raw_circuits
+    ]
+    sources = tuple(_source_from_mapping(item, require_uuid=True) for item in raw_sources)
+    source_selector = _source_selector_from_mapping(raw_topology, require_uuid=True)
     routes = tuple(
         DeliveryRoute(
-            id=_id(item, "id", require_uuid=require_uuid),
-            zone_id=_id(item, "zone_id", require_uuid=require_uuid),
-            circuit_id=_id(item, "circuit_id", require_uuid=require_uuid),
+            id=_id(item, "id", require_uuid=True),
+            zone_id=_id(item, "zone_id", require_uuid=True),
+            circuit_id=_id(item, "circuit_id", require_uuid=True),
             enabled=_route_enabled(item),
         )
         for item in _objects(raw_topology, "routes")

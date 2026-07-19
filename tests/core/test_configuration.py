@@ -9,30 +9,28 @@ from hydronicus_core.configuration import (
 )
 from hydronicus_core.model import TemperatureAggregation
 
+PLANT_ID = "00000000-0000-4000-8000-000000000001"
+ZONE_ID = "00000000-0000-4000-8000-000000000002"
+VALVE_ID = "00000000-0000-4000-8000-000000000003"
+PUMP_ID = "00000000-0000-4000-8000-000000000004"
+CIRCUIT_ID = "00000000-0000-4000-8000-000000000005"
+ROUTE_ID = "00000000-0000-4000-8000-000000000006"
 
-def test_existing_circuits_default_to_heating_only() -> None:
-    """Omitted cooling compatibility remains disabled for legacy persisted circuits."""
+
+def test_circuits_default_to_heating_only() -> None:
+    """Omitted cooling compatibility remains disabled for canonical circuits."""
     plant = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant-1",
+            "plant_id": PLANT_ID,
             "topology": {
-                "zones": [
-                    {
-                        "id": "zone-1",
-                        "name": "Living room",
-                        "target_temperature": 21.5,
-                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
-                    }
-                ],
                 "circuits": [
                     {
-                        "id": "circuit-1",
+                        "id": CIRCUIT_ID,
                         "name": "Floor loop",
-                        "valve_id": "valve-1",
-                        "pump_id": "pump-1",
+                        "valve_ids": [VALVE_ID],
+                        "pump_id": PUMP_ID,
                     }
                 ],
-                "routes": [{"id": "route-1", "zone_id": "zone-1", "circuit_id": "circuit-1"}],
             },
         }
     )
@@ -45,84 +43,20 @@ def test_cooling_compatibility_requires_a_persisted_boolean() -> None:
     with pytest.raises(StoredTopologyError, match="cooling_enabled.*boolean"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant-1",
+                "plant_id": PLANT_ID,
                 "topology": {
-                    "zones": [
-                        {
-                            "id": "zone-1",
-                            "name": "Living room",
-                            "target_temperature": 21.5,
-                            "temperature_sensor_metadata": [
-                                {"entity_id": "sensor.living_temperature"}
-                            ],
-                        }
-                    ],
                     "circuits": [
                         {
-                            "id": "circuit-1",
+                            "id": CIRCUIT_ID,
                             "name": "Floor loop",
-                            "valve_id": "valve-1",
-                            "pump_id": "pump-1",
+                            "valve_ids": [VALVE_ID],
+                            "pump_id": PUMP_ID,
                             "cooling_enabled": "false",
                         }
                     ],
-                    "routes": [{"id": "route-1", "zone_id": "zone-1", "circuit_id": "circuit-1"}],
                 },
             }
         )
-
-
-def test_decodes_initial_shadow_topology_from_config_entry_data() -> None:
-    plant = plant_configuration_from_entry_data(
-        {
-            "plant_id": "plant-1",
-            "topology": {
-                "zones": [
-                    {
-                        "id": "zone-1",
-                        "name": "Living room",
-                        "target_temperature": 21.5,
-                        "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
-                    }
-                ],
-                "circuits": [
-                    {
-                        "id": "circuit-1",
-                        "name": "Floor loop",
-                        "valve_id": "valve.floor_loop",
-                        "pump_id": "switch.floor_pump",
-                        "valve_opening_time_seconds": 45,
-                        "pump_overrun_seconds": 180,
-                        "position_feedback_entity": "sensor.floor_valve_position",
-                        "position_feedback_max_age_seconds": 90,
-                        "power_feedback_entity": "sensor.floor_pump_power",
-                        "power_feedback_max_age_seconds": 91,
-                        "flow_feedback_entity": "sensor.floor_flow",
-                        "flow_feedback_max_age_seconds": 92,
-                        "fault_feedback_entity": "binary_sensor.floor_pump_fault",
-                        "fault_feedback_max_age_seconds": 93,
-                    }
-                ],
-                "routes": [{"id": "route-1", "zone_id": "zone-1", "circuit_id": "circuit-1"}],
-            },
-        }
-    )
-
-    assert plant.id == "plant-1"
-    assert plant.zones[0].target_temperature == 21.5
-    assert plant.zones[0].temperature_sensors == ("sensor.living_temperature",)
-    assert plant.valves[0].opening_time_seconds == 45
-    assert plant.pumps[0].overrun_seconds == 180
-    assert plant.valves[0].position_entity_id == "sensor.floor_valve_position"
-    assert plant.valves[0].position_max_age_seconds == 90
-    assert plant.pumps[0].power_entity_id == "sensor.floor_pump_power"
-    assert plant.pumps[0].power_max_age_seconds == 91
-    assert plant.pumps[0].flow_entity_id == "sensor.floor_flow"
-    assert plant.pumps[0].flow_max_age_seconds == 92
-    assert plant.pumps[0].fault_entity_id == "binary_sensor.floor_pump_fault"
-    assert plant.pumps[0].fault_max_age_seconds == 93
-    assert plant.circuits[0].valve_ids == ("valve.floor_loop",)
-    assert plant.routes[0].zone_id == "zone-1"
 
 
 def test_decodes_configured_valve_readiness_feedback() -> None:
@@ -237,13 +171,13 @@ def test_rejects_nonboolean_route_enablement() -> None:
     with pytest.raises(StoredTopologyError, match="route enabled must be a boolean"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant-1",
+                "plant_id": PLANT_ID,
                 "topology": {
                     "routes": [
                         {
-                            "id": "route-1",
-                            "zone_id": "zone-1",
-                            "circuit_id": "circuit-1",
+                            "id": ROUTE_ID,
+                            "zone_id": ZONE_ID,
+                            "circuit_id": CIRCUIT_ID,
                             "enabled": "false",
                         }
                     ]
@@ -255,11 +189,11 @@ def test_rejects_nonboolean_route_enablement() -> None:
 def test_decodes_zone_temperature_aggregation_from_config_entry_data() -> None:
     plant = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant-1",
+            "plant_id": PLANT_ID,
             "topology": {
                 "zones": [
                     {
-                        "id": "zone-1",
+                        "id": ZONE_ID,
                         "name": "Living room",
                         "target_temperature": 21.5,
                         "temperature_sensor_metadata": [
@@ -288,11 +222,11 @@ def test_decodes_zone_temperature_aggregation_from_config_entry_data() -> None:
 def test_zone_temperature_aggregation_defaults_to_mean() -> None:
     plant = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant-1",
+            "plant_id": PLANT_ID,
             "topology": {
                 "zones": [
                     {
-                        "id": "zone-1",
+                        "id": ZONE_ID,
                         "name": "Living room",
                         "target_temperature": 21.5,
                         "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
@@ -311,11 +245,11 @@ def test_rejects_unknown_zone_temperature_aggregation() -> None:
     with pytest.raises(StoredTopologyError, match="temperature_aggregation"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant-1",
+                "plant_id": PLANT_ID,
                 "topology": {
                     "zones": [
                         {
-                            "id": "zone-1",
+                            "id": ZONE_ID,
                             "name": "Living room",
                             "target_temperature": 21.5,
                             "temperature_sensor_metadata": [
@@ -336,11 +270,11 @@ def test_rejects_non_positive_or_invalid_zone_weight(weight) -> None:
     with pytest.raises(StoredTopologyError, match="must be"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant-1",
+                "plant_id": PLANT_ID,
                 "topology": {
                     "zones": [
                         {
-                            "id": "zone-1",
+                            "id": ZONE_ID,
                             "name": "Living room",
                             "target_temperature": 21.5,
                             "temperature_sensor_metadata": [
@@ -362,9 +296,9 @@ def test_rejects_missing_required_persisted_topology_field() -> None:
     with pytest.raises(StoredTopologyError, match="temperature_sensor_metadata"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant-1",
+                "plant_id": PLANT_ID,
                 "topology": {
-                    "zones": [{"id": "zone-1", "name": "Living room", "target_temperature": 21}],
+                    "zones": [{"id": ZONE_ID, "name": "Living room", "target_temperature": 21}],
                     "circuits": [],
                     "routes": [],
                 },
@@ -456,44 +390,10 @@ def test_decodes_first_class_actuator_nodes_from_entry_data() -> None:
 
 
 def test_empty_plant_entry_remains_a_valid_milestone_zero_configuration() -> None:
-    plant = plant_configuration_from_entry_data({"plant_id": "plant-1"})
+    plant = plant_configuration_from_entry_data({"plant_id": PLANT_ID})
 
-    assert plant.id == "plant-1"
+    assert plant.id == PLANT_ID
     assert plant.zones == ()
-
-
-def test_legacy_shared_actuators_keep_the_most_conservative_timing() -> None:
-    """Legacy circuit-owned timings must not make a shared actuator less safe."""
-    plant = plant_configuration_from_entry_data(
-        {
-            "plant_id": "plant-1",
-            "topology": {
-                "circuits": [
-                    {
-                        "id": "circuit-1",
-                        "name": "Floor loop",
-                        "valve_id": "switch.shared_valve",
-                        "pump_id": "switch.shared_pump",
-                        "valve_opening_time_seconds": 30,
-                        "pump_overrun_seconds": 120,
-                    },
-                    {
-                        "id": "circuit-2",
-                        "name": "Ceiling loop",
-                        "valve_id": "switch.shared_valve",
-                        "pump_id": "switch.shared_pump",
-                        "valve_opening_time_seconds": 60,
-                        "pump_overrun_seconds": 180,
-                    },
-                ]
-            },
-        }
-    )
-
-    assert len(plant.valves) == 1
-    assert plant.valves[0].opening_time_seconds == 60
-    assert len(plant.pumps) == 1
-    assert plant.pumps[0].overrun_seconds == 180
 
 
 def test_rejects_non_uuid_ids_in_first_class_persisted_topology() -> None:
@@ -550,11 +450,11 @@ def test_rejects_non_uuid_ids_in_first_class_persisted_topology() -> None:
 def test_canonical_sensor_metadata_gets_safe_defaults() -> None:
     plant = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant-1",
+            "plant_id": PLANT_ID,
             "topology": {
                 "zones": [
                     {
-                        "id": "zone-1",
+                        "id": ZONE_ID,
                         "name": "Living room",
                         "target_temperature": 21.0,
                         "temperature_sensor_metadata": [{"entity_id": "sensor.living_temperature"}],
@@ -578,11 +478,11 @@ def test_canonical_sensor_metadata_gets_safe_defaults() -> None:
 def test_decodes_sensor_metadata_and_zone_policy_fields() -> None:
     plant = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant-1",
+            "plant_id": PLANT_ID,
             "topology": {
                 "zones": [
                     {
-                        "id": "zone-1",
+                        "id": ZONE_ID,
                         "name": "Living room",
                         "target_temperature": 21.0,
                         "temperature_sensor_metadata": [
@@ -652,11 +552,11 @@ def test_rejects_invalid_sensor_metadata(metadata, message) -> None:
     with pytest.raises(StoredTopologyError, match=message):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant-1",
+                "plant_id": PLANT_ID,
                 "topology": {
                     "zones": [
                         {
-                            "id": "zone-1",
+                            "id": ZONE_ID,
                             "name": "Living room",
                             "target_temperature": 21.0,
                             "temperature_sensor_metadata": metadata,
@@ -673,11 +573,11 @@ def test_designated_reference_requires_one_metadata_record() -> None:
     with pytest.raises(StoredTopologyError, match="exactly one designated"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant-1",
+                "plant_id": PLANT_ID,
                 "topology": {
                     "zones": [
                         {
-                            "id": "zone-1",
+                            "id": ZONE_ID,
                             "name": "Living room",
                             "target_temperature": 21.0,
                             "temperature_sensor_metadata": [{"entity_id": "sensor.one"}],
@@ -691,18 +591,18 @@ def test_designated_reference_requires_one_metadata_record() -> None:
         )
 
 
-def test_legacy_route_enablement_is_preserved() -> None:
+def test_route_enablement_is_preserved() -> None:
     plant = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant-1",
+            "plant_id": PLANT_ID,
             "topology": {
                 "zones": [],
                 "circuits": [],
                 "routes": [
                     {
-                        "id": "route-1",
-                        "zone_id": "zone-1",
-                        "circuit_id": "circuit-1",
+                        "id": ROUTE_ID,
+                        "zone_id": ZONE_ID,
+                        "circuit_id": CIRCUIT_ID,
                         "enabled": False,
                     }
                 ],
@@ -788,7 +688,7 @@ def test_decodes_cooling_zone_and_circuit_safety_fields() -> None:
 def test_decodes_canonical_humidity_sensor_metadata() -> None:
     """Humidity uses the same canonical immutable metadata collection."""
     zone_data = {
-        "id": "zone-1",
+        "id": ZONE_ID,
         "name": "Living room",
         "target_temperature": 24.0,
         "temperature_sensor_metadata": [{"entity_id": "sensor.temperature"}],
@@ -803,7 +703,7 @@ def test_decodes_canonical_humidity_sensor_metadata() -> None:
     }
     plant = plant_configuration_from_entry_data(
         {
-            "plant_id": "plant-1",
+            "plant_id": PLANT_ID,
             "topology": {"zones": [zone_data], "circuits": [], "routes": []},
         }
     )
@@ -830,11 +730,11 @@ def test_rejects_unsupported_sensor_representations(unsupported_fields) -> None:
     with pytest.raises(StoredTopologyError, match="unsupported sensor fields"):
         plant_configuration_from_entry_data(
             {
-                "plant_id": "plant-1",
+                "plant_id": PLANT_ID,
                 "topology": {
                     "zones": [
                         {
-                            "id": "zone-1",
+                            "id": ZONE_ID,
                             "name": "Living room",
                             "target_temperature": 24.0,
                             "temperature_sensor_metadata": [{"entity_id": "sensor.temperature"}],

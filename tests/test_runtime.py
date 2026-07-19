@@ -167,15 +167,15 @@ class RuntimeTests(unittest.TestCase):
     """Verify runtime data construction."""
 
     def test_defaults_to_dry_run(self) -> None:
-        runtime = HydronicRuntime.from_entry(SimpleNamespace(data={CONF_PLANT_ID: "plant"}))
+        runtime = HydronicRuntime.from_entry(SimpleNamespace(data={CONF_PLANT_ID: PLANT_UUID}))
 
-        self.assertEqual(runtime.plant_id, "plant")
+        self.assertEqual(runtime.plant_id, PLANT_UUID)
         self.assertEqual(runtime.name, "Hydronic plant")
         self.assertTrue(runtime.dry_run)
 
     def test_reads_explicit_dry_run(self) -> None:
         runtime = HydronicRuntime.from_entry(
-            SimpleNamespace(data={CONF_PLANT_ID: "plant", CONF_DRY_RUN: False})
+            SimpleNamespace(data={CONF_PLANT_ID: PLANT_UUID, CONF_DRY_RUN: False})
         )
 
         self.assertFalse(runtime.dry_run)
@@ -196,9 +196,7 @@ class RuntimeSchedulingTests(unittest.IsolatedAsyncioTestCase):
         runtime = HydronicRuntime.from_entry(_configured_entry())
         hass = _RuntimeHomeAssistant("20.0")
         runtime._hass = hass
-        runtime.runtime_state = RuntimeState(
-            safe_shutdown_phase=SafeShutdownPhase.PUMP_OVERRUN
-        )
+        runtime.runtime_state = RuntimeState(safe_shutdown_phase=SafeShutdownPhase.PUMP_OVERRUN)
 
         with mock.patch.object(
             runtime_module.HydronicRuntime,
