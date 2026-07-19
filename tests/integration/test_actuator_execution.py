@@ -449,6 +449,9 @@ async def test_returning_to_dry_run_completes_ordered_shutdown_before_persisting
         ("switch", "turn_off", "switch.synthetic_pump"),
         ("switch", "turn_off", "switch.synthetic_valve"),
     ]
+    assert entry.runtime_data.runtime_state.safe_shutdown_phase.value == "idle"
+    assert entry.runtime_data.runtime_state.zone_demands == {ZONE_ID: True}
+    assert entry.runtime_data.runtime_state.cooling_zone_demands == {ZONE_ID: False}
     assert entry.data[CONF_DRY_RUN] is True
     assert entry.runtime_data.dry_run is True
 
@@ -650,15 +653,22 @@ async def test_safe_shutdown_is_ordered_and_idempotent_with_intercepted_services
 
     first = await runtime.async_safe_shutdown(hass, now=started_at)
     assert first.plan.phase.value == "pump_overrun"
+    assert first.plan.next_deadline == started_at + timedelta(seconds=10)
+    assert first.next_runtime.safe_shutdown_phase.value == "pump_overrun"
+    assert first.next_runtime.pumps[PUMP_ID].state.value == "overrun"
     assert calls[-1] == ("switch", "turn_off", "switch.synthetic_source")
     second = await runtime.async_safe_shutdown(hass, now=started_at + timedelta(seconds=5))
     assert second.plan.phase.value == "pump_overrun"
     assert calls == [("switch", "turn_off", "switch.synthetic_source")]
     third = await runtime.async_safe_shutdown(hass, now=started_at + timedelta(seconds=10))
     assert third.plan.phase.value == "pumps_stopped"
+    assert third.plan.next_deadline is None
+    assert third.next_runtime.pumps[PUMP_ID].state.value == "off"
+    assert third.next_runtime.valves[VALVE_ID].state.value == "open"
     assert calls[-1] == ("switch", "turn_off", "switch.synthetic_pump")
     fourth = await runtime.async_safe_shutdown(hass, now=started_at + timedelta(seconds=11))
     assert fourth.plan.phase.value == "valves_closed"
+    assert fourth.next_runtime.valves[VALVE_ID].state.value == "closed"
     assert calls[-1] == ("switch", "turn_off", "switch.synthetic_valve")
     fifth = await runtime.async_safe_shutdown(hass, now=started_at + timedelta(seconds=12))
     assert fifth.execution.executed == ()

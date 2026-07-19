@@ -23,6 +23,11 @@ from custom_components.hydronicus.const import (
     CONF_WEIGHT,
     DOMAIN,
 )
+from custom_components.hydronicus.core.configuration import (
+    plant_configuration_from_entry_data,
+)
+from custom_components.hydronicus.core.model import TemperatureSensorMetadata
+from custom_components.hydronicus.core.topology import compile_topology
 
 
 async def test_user_config_flow_creates_entry(hass) -> None:
@@ -87,6 +92,21 @@ async def test_user_config_flow_creates_entry(hass) -> None:
     assert topology["pumps"][0]["entity_id"] == "switch.floor_pump"
     assert topology["circuits"][0]["valve_ids"] == [topology["valves"][0]["id"]]
     assert topology["circuits"][0]["pump_id"] == topology["pumps"][0]["id"]
+
+    configuration = plant_configuration_from_entry_data(result["data"])
+    compiled = compile_topology(configuration)
+    zone = next(iter(compiled.zones.values()))
+    circuit = next(iter(compiled.circuits.values()))
+    assert zone.temperature_sensor_metadata == (
+        TemperatureSensorMetadata("sensor.living_temperature"),
+    )
+    assert zone.aggregation.value == "median"
+    assert circuit.valve_ids == tuple(compiled.valves)
+    assert circuit.pump_id == next(iter(compiled.pumps))
+    assert compiled.logic_summary == (
+        "Circuit Floor loop opens valves Floor loop valve before requesting pump Floor loop pump.",
+        "Zone Living room can request circuit Floor loop.",
+    )
 
 
 async def test_initial_zone_schema_serializes_for_home_assistant_ui(hass) -> None:

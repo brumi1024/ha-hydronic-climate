@@ -176,6 +176,11 @@ def test_source_change_is_break_before_make_and_never_selects_both_sources() -> 
         NOW + timedelta(seconds=9),
     )
     assert _commands(during_break) == ()
+    assert during_break.control_plan.source_selection is not None
+    assert during_break.control_plan.source_selection.dwell_remaining_seconds == 0.0
+    assert during_break.control_plan.source_selection.explanation == (
+        "Old source released; observing the configured break interval before selection."
+    )
 
     select = evaluate(
         plant,
@@ -184,6 +189,9 @@ def test_source_change_is_break_before_make_and_never_selects_both_sources() -> 
         NOW + timedelta(seconds=10),
     )
     assert _commands(select) == (("source:boiler", ActuatorAction.TURN_ON, None),)
+    assert select.control_plan.source_selection is not None
+    assert select.control_plan.source_selection.phase is SourceSelectionPhase.SELECTING
+    assert select.control_plan.source_selection.target_source_id == "boiler"
     assert all(
         not (command.actuator_id == "source:buffer" and command.action is ActuatorAction.TURN_ON)
         for command in select.control_plan.commands
