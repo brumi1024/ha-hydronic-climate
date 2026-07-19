@@ -19,6 +19,8 @@ INTEGRATION_NAME = "Hydronicus"
 MINIMUM_HOME_ASSISTANT = "2026.7.0"
 ARCHIVE_NAME = "hydronicus.zip"
 INTEGRATION_ROOT = Path("custom_components") / DOMAIN
+FRONTEND_PACKAGE = Path("frontend") / "package.json"
+FRONTEND_BUNDLE = INTEGRATION_ROOT / "frontend" / "hydronicus-plant-card.js"
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
@@ -100,6 +102,27 @@ def validate_repository(root: Path) -> ReleaseMetadata:
     version = normalize_version(
         _string_field(manifest, "version", "manifest.json"), source="manifest version"
     )
+
+    frontend_package_path = root / FRONTEND_PACKAGE
+    if not frontend_package_path.is_file():
+        raise ReleaseValidationError(f"Frontend package metadata is missing: {FRONTEND_PACKAGE}")
+    frontend_package = _load_json(frontend_package_path)
+    frontend_version = normalize_version(
+        _string_field(frontend_package, "version", "frontend/package.json"),
+        source="frontend version",
+    )
+    if frontend_version != version:
+        raise ReleaseValidationError(
+            "frontend/package.json version does not match manifest version"
+        )
+    frontend_bundle_path = root / FRONTEND_BUNDLE
+    if not frontend_bundle_path.is_file():
+        raise ReleaseValidationError(f"Built frontend bundle is missing: {FRONTEND_BUNDLE}")
+    frontend_bundle = frontend_bundle_path.read_text(encoding="utf-8")
+    if re.search(rf'version\s*:\s*"{re.escape(version)}"', frontend_bundle) is None:
+        raise ReleaseValidationError(
+            "Built frontend bundle does not contain the manifest version marker"
+        )
 
     if _string_field(hacs, "name", "hacs.json") != INTEGRATION_NAME:
         raise ReleaseValidationError(f"hacs.json name must be {INTEGRATION_NAME!r}")
@@ -187,7 +210,7 @@ def inspect_archive(
             f"Release version {expected_version!r} does not match "
             f"manifest version {metadata.version!r}"
         )
-    expected_files = sorted(path.as_posix() for path in _integration_files(root))
+    expected_files = [path.as_posix() for path in _integration_files(root)]
     try:
         with zipfile.ZipFile(archive_path) as archive:
             names = archive.namelist()

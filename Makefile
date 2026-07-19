@@ -1,6 +1,6 @@
 UV ?= uv
 
-.PHONY: bootstrap hooks lint release-check public-beta-check format-check typecheck test-core test-integration test-scenarios test verify
+.PHONY: bootstrap hooks lint frontend-check release-check public-beta-check format-check typecheck test-core test-integration test-scenarios test verify
 
 bootstrap:
 	$(UV) sync --frozen --extra test
@@ -15,6 +15,11 @@ lint:
 	$(UV) run python -m json.tool custom_components/hydronicus/manifest.json >/dev/null
 	$(UV) run python -m json.tool custom_components/hydronicus/strings.json >/dev/null
 	$(UV) run python -m json.tool custom_components/hydronicus/translations/en.json >/dev/null
+
+frontend-check:
+	npm --prefix frontend run lint
+	npm --prefix frontend run test
+	npm --prefix frontend run build
 
 release-check:
 	$(UV) run python scripts/package_release.py --dry-run
@@ -40,4 +45,4 @@ test-scenarios:
 test:
 	$(UV) run pytest --cov=custom_components/hydronicus/core --cov-report=term-missing
 
-verify: lint release-check public-beta-check format-check typecheck test
+verify: lint frontend-check release-check public-beta-check format-check typecheck test

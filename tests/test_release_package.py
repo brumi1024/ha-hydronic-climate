@@ -29,6 +29,10 @@ def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> N
         assert archive.namelist() == files
         assert all(path.startswith("custom_components/hydronicus/") for path in files)
         assert "custom_components/hydronicus/manifest.json" in archive.namelist()
+        bundle = archive.read(
+            "custom_components/hydronicus/frontend/hydronicus-plant-card.js"
+        ).decode()
+        assert 'version:"0.1.0-rc.1"' in bundle
 
 
 @pytest.mark.parametrize("version", ["1.02.3", "1.2.3-alpha.01", "1.2", "v1.2.3.4"])
