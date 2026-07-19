@@ -3,25 +3,40 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from math import isfinite
 
 from .model import (
     MAX_ZONE_TARGET_TEMPERATURE,
     MIN_ZONE_TARGET_TEMPERATURE,
+    Circuit,
     CompiledPlant,
     EquipmentKind,
     PlantConfiguration,
+    Pump,
     Source,
     SourceKind,
     SourceSelectionActuator,
     TemperatureAggregation,
     TopologyWarning,
+    Valve,
     Zone,
 )
 
 
 class TopologyValidationError(ValueError):
     """Raised when a topology cannot safely be evaluated."""
+
+
+@dataclass(frozen=True, slots=True)
+class _TopologyIndex:
+    """Deterministically indexed topology objects after uniqueness validation."""
+
+    zones: dict[str, Zone]
+    valves: dict[str, Valve]
+    pumps: dict[str, Pump]
+    circuits: dict[str, Circuit]
+    sources: dict[str, Source]
 
 
 def _duplicates(values: Iterable[str]) -> set[str]:
@@ -273,24 +288,17 @@ def _validate_source_selector(selector: SourceSelectionActuator) -> None:
         raise TopologyValidationError(f"Source selector {selector.id} shadow_only must be boolean.")
 
 
-def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
-    """Validate and compile a plant configuration without reading runtime state."""
-    if not configuration.id:
-        raise TopologyValidationError("Plant id must not be empty.")
-
-    zone_ids = [zone.id for zone in configuration.zones]
-    valve_ids = [valve.id for valve in configuration.valves]
-    pump_ids = [pump.id for pump in configuration.pumps]
-    circuit_ids = [circuit.id for circuit in configuration.circuits]
-    route_ids = [route.id for route in configuration.routes]
-    source_ids = [source.id for source in configuration.sources]
-    for object_name, ids in (
-        ("zone", zone_ids),
-        ("valve", valve_ids),
-        ("pump", pump_ids),
-        ("circuit", circuit_ids),
-        ("source", source_ids),
-    ):
+def _index_topology(configuration: PlantConfiguration) -> _TopologyIndex:
+    """Validate stable object identities and return deterministic lookup maps."""
+    collections = (
+        ("zone", configuration.zones),
+        ("valve", configuration.valves),
+        ("pump", configuration.pumps),
+        ("circuit", configuration.circuits),
+        ("source", configuration.sources),
+    )
+    for object_name, objects in collections:
+        ids = [item.id for item in objects]
         if not ids:
             continue
         if not all(isinstance(value, str) and value for value in ids):
@@ -299,6 +307,8 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             raise TopologyValidationError(
                 f"Duplicate {object_name} ids: {', '.join(sorted(duplicates))}."
             )
+
+    route_ids = [route.id for route in configuration.routes]
     if not all(isinstance(value, str) and value for value in route_ids):
         raise TopologyValidationError("Every route requires a non-empty id.")
     if duplicates := _duplicates(route_ids):
@@ -310,6 +320,35 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
         raise TopologyValidationError(
             "Duplicate delivery routes: " + ", ".join(sorted(duplicates)) + "."
         )
+
+    return _TopologyIndex(
+        zones={zone.id: zone for zone in sorted(configuration.zones, key=lambda item: item.id)},
+        valves={
+            valve.id: valve for valve in sorted(configuration.valves, key=lambda item: item.id)
+        },
+        pumps={pump.id: pump for pump in sorted(configuration.pumps, key=lambda item: item.id)},
+        circuits={
+            circuit.id: circuit
+            for circuit in sorted(configuration.circuits, key=lambda item: item.id)
+        },
+        sources={
+            source.id: source
+            for source in sorted(configuration.sources, key=lambda item: item.id)
+        },
+    )
+
+
+def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
+    """Validate and compile a plant configuration without reading runtime state."""
+    if not configuration.id:
+        raise TopologyValidationError("Plant id must not be empty.")
+
+    index = _index_topology(configuration)
+    zone_ids = list(index.zones)
+    valve_ids = list(index.valves)
+    pump_ids = list(index.pumps)
+    circuit_ids = list(index.circuits)
+    source_ids = list(index.sources)
 
     for zone in configuration.zones:
         _validate_zone(zone)
@@ -377,16 +416,11 @@ def compile_topology(configuration: PlantConfiguration) -> CompiledPlant:
             f"Source selector id {source_selector.id!r} is already used by another object."
         )
 
-    zones = {zone.id: zone for zone in sorted(configuration.zones, key=lambda zone: zone.id)}
-    valves = {valve.id: valve for valve in sorted(configuration.valves, key=lambda valve: valve.id)}
-    pumps = {pump.id: pump for pump in sorted(configuration.pumps, key=lambda pump: pump.id)}
-    circuits = {
-        circuit.id: circuit
-        for circuit in sorted(configuration.circuits, key=lambda circuit: circuit.id)
-    }
-    sources = {
-        source.id: source for source in sorted(configuration.sources, key=lambda source: source.id)
-    }
+    zones = index.zones
+    valves = index.valves
+    pumps = index.pumps
+    circuits = index.circuits
+    sources = index.sources
     referenced_valves: set[str] = set()
     referenced_pumps: set[str] = set()
     for circuit in configuration.circuits:
