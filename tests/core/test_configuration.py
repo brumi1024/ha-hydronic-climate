@@ -176,6 +176,62 @@ def test_decodes_configured_valve_readiness_feedback() -> None:
     assert plant.valves[0].readiness_entity_id == "binary_sensor.valve_ready"
 
 
+@pytest.mark.parametrize(
+    ("collection", "record", "message"),
+    [
+        (
+            "valves",
+            {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "Valve",
+                "entity_id": "switch.valve",
+                "feedback_entity_id": "binary_sensor.valve_ready",
+            },
+            "Stored valve uses unsupported fields: feedback_entity_id",
+        ),
+        (
+            "valves",
+            {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "Valve",
+                "entity_id": "switch.valve",
+                "valve_opening_time_seconds": 30,
+            },
+            "Stored valve uses unsupported fields: valve_opening_time_seconds",
+        ),
+        (
+            "pumps",
+            {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "Pump",
+                "entity_id": "switch.pump",
+                "power_feedback_entity_id": "sensor.pump_power",
+            },
+            "Stored pump uses unsupported fields: power_feedback_entity_id",
+        ),
+        (
+            "pumps",
+            {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "Pump",
+                "entity_id": "switch.pump",
+                "pump_overrun_seconds": 120,
+            },
+            "Stored pump uses unsupported fields: pump_overrun_seconds",
+        ),
+    ],
+)
+def test_rejects_alternate_valve_and_pump_fields(collection, record, message) -> None:
+    """Stored actuators accept only field names emitted by current configuration flows."""
+    with pytest.raises(StoredTopologyError, match=message):
+        plant_configuration_from_entry_data(
+            {
+                "plant_id": "00000000-0000-4000-8000-000000000001",
+                "topology": {collection: [record]},
+            }
+        )
+
+
 def test_rejects_nonboolean_route_enablement() -> None:
     """A malformed flag must not silently enable a delivery route."""
     with pytest.raises(StoredTopologyError, match="route enabled must be a boolean"):

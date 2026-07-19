@@ -145,34 +145,21 @@ def _optional_entity_id(mapping: Mapping[str, Any], key: str) -> str | None:
     return value
 
 
-def _valve_readiness_entity(mapping: Mapping[str, Any]) -> str | None:
-    """Decode the optional configured valve end-switch or readiness entity."""
-    values = tuple(
-        value
-        for key in ("readiness_entity_id", "readiness_entity", "feedback_entity_id")
-        if (value := _optional_entity_id(mapping, key)) is not None
-    )
-    if len(set(values)) > 1:
-        raise StoredTopologyError("Stored valve readiness feedback must use one entity binding.")
-    return values[0] if values else None
+def _reject_unsupported_fields(mapping: Mapping[str, Any], fields: set[str], owner: str) -> None:
+    """Reject historical persisted spellings instead of silently normalizing them."""
+    unsupported = sorted(fields.intersection(mapping))
+    if unsupported:
+        raise StoredTopologyError(
+            f"Stored {owner} uses unsupported fields: {', '.join(unsupported)}."
+        )
 
 
-def _feedback_entity(mapping: Mapping[str, Any], *keys: str) -> str | None:
-    """Read one optional feedback binding from canonical or descriptive keys."""
+def _first_optional_entity_id(mapping: Mapping[str, Any], *keys: str) -> str | None:
+    """Read the first configured optional entity field."""
     for key in keys:
         if key in mapping:
             return _optional_entity_id(mapping, key)
     return None
-
-
-def _feedback_age(mapping: Mapping[str, Any], specific_key: str) -> float:
-    """Read an independently configurable positive feedback freshness limit."""
-    return _number(
-        mapping,
-        specific_key,
-        _number(mapping, "feedback_max_age_seconds", _LEGACY_MAX_AGE_SECONDS, positive=True),
-        positive=True,
-    )
 
 
 def _source_kind(mapping: Mapping[str, Any]) -> SourceKind:
@@ -210,7 +197,7 @@ def _source_from_mapping(mapping: Mapping[str, Any], *, require_uuid: bool) -> S
         positive=True,
     )
     hysteresis = _number(mapping, "hysteresis", 0.5, non_negative=True)
-    demand_entity = _feedback_entity(
+    demand_entity = _first_optional_entity_id(
         mapping,
         "source_demand_entity",
         "demand_entity",
@@ -459,6 +446,34 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
     raw_pumps = _objects(raw_topology, "pumps")
     raw_sources = _objects(raw_topology, "sources")
     require_uuid = bool(raw_valves or raw_pumps)
+    for item in raw_valves:
+        _reject_unsupported_fields(
+            item,
+            {
+                "readiness_entity",
+                "feedback_entity_id",
+                "position_feedback_entity_id",
+                "position_entity",
+                "feedback_max_age_seconds",
+                "valve_opening_time_seconds",
+            },
+            "valve",
+        )
+    for item in raw_pumps:
+        _reject_unsupported_fields(
+            item,
+            {
+                "power_feedback_entity_id",
+                "power_entity",
+                "flow_feedback_entity_id",
+                "flow_entity",
+                "fault_feedback_entity_id",
+                "fault_entity",
+                "feedback_max_age_seconds",
+                "pump_overrun_seconds",
+            },
+            "pump",
+        )
     plant_id = _id(data, "plant_id", require_uuid=require_uuid)
     zones = []
     for item in _objects(raw_topology, "zones"):
@@ -498,14 +513,14 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                 name=str(_required(item, "name")),
                 entity_id=str(_required(item, "entity_id")),
                 opening_time_seconds=_number(item, "opening_time_seconds", 30.0, non_negative=True),
-                readiness_entity_id=_valve_readiness_entity(item),
-                position_entity_id=_feedback_entity(
+                readiness_entity_id=_optional_entity_id(item, "readiness_entity_id"),
+                position_entity_id=_optional_entity_id(item, "position_feedback_entity"),
+                position_max_age_seconds=_number(
                     item,
-                    "position_feedback_entity",
-                    "position_feedback_entity_id",
-                    "position_entity",
+                    "position_feedback_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
                 ),
-                position_max_age_seconds=_feedback_age(item, "position_feedback_max_age_seconds"),
             )
             for item in raw_valves
         )
@@ -515,27 +530,27 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                 name=str(_required(item, "name")),
                 entity_id=str(_required(item, "entity_id")),
                 overrun_seconds=_number(item, "overrun_seconds", 120.0, non_negative=True),
-                power_entity_id=_feedback_entity(
+                power_entity_id=_optional_entity_id(item, "power_feedback_entity"),
+                flow_entity_id=_optional_entity_id(item, "flow_feedback_entity"),
+                fault_entity_id=_optional_entity_id(item, "fault_feedback_entity"),
+                power_max_age_seconds=_number(
                     item,
-                    "power_feedback_entity",
-                    "power_feedback_entity_id",
-                    "power_entity",
+                    "power_feedback_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
                 ),
-                flow_entity_id=_feedback_entity(
+                flow_max_age_seconds=_number(
                     item,
-                    "flow_feedback_entity",
-                    "flow_feedback_entity_id",
-                    "flow_entity",
+                    "flow_feedback_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
                 ),
-                fault_entity_id=_feedback_entity(
+                fault_max_age_seconds=_number(
                     item,
-                    "fault_feedback_entity",
-                    "fault_feedback_entity_id",
-                    "fault_entity",
+                    "fault_feedback_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
                 ),
-                power_max_age_seconds=_feedback_age(item, "power_feedback_max_age_seconds"),
-                flow_max_age_seconds=_feedback_age(item, "flow_feedback_max_age_seconds"),
-                fault_max_age_seconds=_feedback_age(item, "fault_feedback_max_age_seconds"),
             )
             for item in raw_pumps
         )
@@ -586,13 +601,13 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                     if prior_valve is not None
                     else valve_opening_time
                 ),
-                position_entity_id=_feedback_entity(
+                position_entity_id=_optional_entity_id(item, "position_feedback_entity"),
+                position_max_age_seconds=_number(
                     item,
-                    "position_feedback_entity",
-                    "position_feedback_entity_id",
-                    "position_entity",
+                    "position_feedback_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
                 ),
-                position_max_age_seconds=_feedback_age(item, "position_feedback_max_age_seconds"),
             )
             prior_pump = pump_data.get(pump_id)
             pump_data[pump_id] = Pump(
@@ -604,27 +619,27 @@ def plant_configuration_from_entry_data(data: Mapping[str, Any]) -> PlantConfigu
                     if prior_pump is not None
                     else pump_overrun
                 ),
-                power_entity_id=_feedback_entity(
+                power_entity_id=_optional_entity_id(item, "power_feedback_entity"),
+                flow_entity_id=_optional_entity_id(item, "flow_feedback_entity"),
+                fault_entity_id=_optional_entity_id(item, "fault_feedback_entity"),
+                power_max_age_seconds=_number(
                     item,
-                    "power_feedback_entity",
-                    "power_feedback_entity_id",
-                    "power_entity",
+                    "power_feedback_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
                 ),
-                flow_entity_id=_feedback_entity(
+                flow_max_age_seconds=_number(
                     item,
-                    "flow_feedback_entity",
-                    "flow_feedback_entity_id",
-                    "flow_entity",
+                    "flow_feedback_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
                 ),
-                fault_entity_id=_feedback_entity(
+                fault_max_age_seconds=_number(
                     item,
-                    "fault_feedback_entity",
-                    "fault_feedback_entity_id",
-                    "fault_entity",
+                    "fault_feedback_max_age_seconds",
+                    _LEGACY_MAX_AGE_SECONDS,
+                    positive=True,
                 ),
-                power_max_age_seconds=_feedback_age(item, "power_feedback_max_age_seconds"),
-                flow_max_age_seconds=_feedback_age(item, "flow_feedback_max_age_seconds"),
-                fault_max_age_seconds=_feedback_age(item, "fault_feedback_max_age_seconds"),
             )
             circuits.append(
                 Circuit(
