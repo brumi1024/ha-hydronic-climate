@@ -10,7 +10,6 @@ from pathlib import Path
 
 try:
     from scripts.package_release import (
-        INTEGRATION_ROOT,
         ReleaseValidationError,
         build_archive,
         inspect_archive,
@@ -18,14 +17,13 @@ try:
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from package_release import (
-        INTEGRATION_ROOT,
         ReleaseValidationError,
         build_archive,
         inspect_archive,
         validate_repository,
     )
 
-PUBLIC_BETA_VERSION = "0.1.0-rc.3"
+PUBLIC_BETA_VERSION = "0.1.0-rc.4"
 
 
 def _validate_documentation(root: Path) -> None:
@@ -64,19 +62,22 @@ def validate_public_beta(root: Path) -> list[str]:
         inspected_files = inspect_archive(root, archive_path, PUBLIC_BETA_VERSION)
         if files != inspected_files:
             raise ReleaseValidationError("Release archive inspection is not deterministic")
+        install_path = Path(temporary_directory) / "config" / "custom_components" / "hydronicus"
         with zipfile.ZipFile(archive_path) as archive:
-            manifest = json.loads(archive.read(f"{INTEGRATION_ROOT}/manifest.json"))
-            if manifest.get("domain") != "hydronicus":
-                raise ReleaseValidationError("Packaged manifest does not use domain hydronicus")
-            if any(
-                name.startswith("custom_components/hydronic_climate/")
-                for name in archive.namelist()
-            ):
+            archive.extractall(install_path)
+            if any(name.startswith("custom_components/") for name in archive.namelist()):
+                raise ReleaseValidationError(
+                    "HACS archive nests a custom_components directory inside the integration"
+                )
+            if any("hydronic_climate" in name for name in archive.namelist()):
                 raise ReleaseValidationError("Release archive contains the legacy domain")
+        manifest = json.loads((install_path / "manifest.json").read_text(encoding="utf-8"))
+        if manifest.get("domain") != "hydronicus":
+            raise ReleaseValidationError("Packaged manifest does not use domain hydronicus")
 
     _validate_documentation(root)
     return [
-        "HACS archive contains only custom_components/hydronicus",
+        "HACS archive extracts manifest.json directly into the integration directory",
         "packaged manifest loads domain hydronicus",
         "legacy hydronic_climate package is absent",
     ]

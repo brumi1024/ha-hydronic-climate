@@ -179,6 +179,15 @@ def _archive_info(path: Path) -> zipfile.ZipInfo:
     return info
 
 
+def _archive_files(root: Path) -> list[tuple[Path, Path]]:
+    """Map repository integration files to paths relative to the HACS target directory."""
+
+    return [
+        (source_path, source_path.relative_to(INTEGRATION_ROOT))
+        for source_path in _integration_files(root)
+    ]
+
+
 def build_archive(root: Path, output: Path, expected_version: str | None = None) -> list[str]:
     """Build a deterministic archive containing only the Hydronicus integration."""
 
@@ -188,15 +197,15 @@ def build_archive(root: Path, output: Path, expected_version: str | None = None)
             f"Release version {expected_version!r} does not match "
             f"manifest version {metadata.version!r}"
         )
-    files = list(_integration_files(root))
+    files = _archive_files(root)
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(
         output, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
     ) as archive:
-        for relative_path in files:
-            source = root / relative_path
-            archive.writestr(_archive_info(relative_path), source.read_bytes())
-    return [path.as_posix() for path in files]
+        for source_path, archive_path in files:
+            source = root / source_path
+            archive.writestr(_archive_info(archive_path), source.read_bytes())
+    return [archive_path.as_posix() for _, archive_path in files]
 
 
 def inspect_archive(
@@ -210,7 +219,7 @@ def inspect_archive(
             f"Release version {expected_version!r} does not match "
             f"manifest version {metadata.version!r}"
         )
-    expected_files = [path.as_posix() for path in _integration_files(root)]
+    expected_files = [archive_path.as_posix() for _, archive_path in _archive_files(root)]
     try:
         with zipfile.ZipFile(archive_path) as archive:
             names = archive.namelist()
@@ -227,13 +236,11 @@ def inspect_archive(
                 raise ReleaseValidationError(
                     "Release archive contents differ: " + ", ".join(details)
                 )
-            if any(not name.startswith(f"{INTEGRATION_ROOT.as_posix()}/") for name in names):
+            if any(name.startswith("custom_components/") for name in names):
                 raise ReleaseValidationError(
-                    "Release archive contains files outside custom_components/hydronicus"
+                    "Release archive must contain integration files at its root for HACS"
                 )
-            packaged_manifest = json.loads(
-                archive.read(f"{INTEGRATION_ROOT.as_posix()}/manifest.json")
-            )
+            packaged_manifest = json.loads(archive.read("manifest.json"))
             if not isinstance(packaged_manifest, dict):
                 raise ReleaseValidationError("Packaged manifest must be a JSON object")
     except (OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:

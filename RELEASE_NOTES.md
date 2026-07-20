@@ -1,12 +1,13 @@
 # Hydronicus {{VERSION}}
 
-This is the third installable release candidate for supervised Dry run evaluation.
+This is the fourth installable release candidate for supervised Dry run evaluation.
 Use it in Dry run before considering active heating control.
 
-## Changes since rc.2
+## Changes since rc.3
 
-- Reject initial setup when the same Home Assistant entity is selected for both the valve and pump, with a clear inline error.
-- Show the topology compiler reason when the initial setup review cannot validate the configured Plant.
+- Fix the HACS release archive so integration files extract directly into `config/custom_components/hydronicus`.
+- Add a regression check that simulates HACS extraction and requires `manifest.json` at the integration-directory root.
+- Replace an RC1, RC2, or RC3 installation through HACS, then restart Home Assistant before opening Add integration.
 
 ## Highlights
 

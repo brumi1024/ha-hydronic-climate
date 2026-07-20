@@ -19,20 +19,23 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
 def test_archive_contains_only_hydronicus_integration_files(tmp_path: Path) -> None:
-    """The release archive has the path shape HACS expects for content_in_root=false."""
+    """HACS can extract the release directly into its integration directory."""
 
     archive_path = tmp_path / "hydronicus.zip"
-    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.1.0-rc.3")
+    files = build_archive(REPOSITORY_ROOT, archive_path, "v0.1.0-rc.4")
+    install_path = tmp_path / "config" / "custom_components" / "hydronicus"
 
-    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.1.0-rc.3") == files
+    assert inspect_archive(REPOSITORY_ROOT, archive_path, "0.1.0-rc.4") == files
     with ZipFile(archive_path) as archive:
         assert archive.namelist() == files
-        assert all(path.startswith("custom_components/hydronicus/") for path in files)
-        assert "custom_components/hydronicus/manifest.json" in archive.namelist()
-        bundle = archive.read(
-            "custom_components/hydronicus/frontend/hydronicus-plant-card.js"
-        ).decode()
-        assert 'version:"0.1.0-rc.3"' in bundle
+        assert "manifest.json" in archive.namelist()
+        assert not any(path.startswith("custom_components/") for path in files)
+        bundle = archive.read("frontend/hydronicus-plant-card.js").decode()
+        assert 'version:"0.1.0-rc.4"' in bundle
+        archive.extractall(install_path)
+
+    assert (install_path / "manifest.json").is_file()
+    assert not (install_path / "custom_components").exists()
 
 
 @pytest.mark.parametrize("version", ["1.02.3", "1.2.3-alpha.01", "1.2", "v1.2.3.4"])
@@ -69,7 +72,7 @@ def test_public_control_boundary_is_documented_without_legacy_package(
 ) -> None:
     """Public docs state the control boundary and exclude the legacy package."""
     how_it_works = (REPOSITORY_ROOT / "docs" / "how-it-works.md").read_text(encoding="utf-8")
-    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.1.0-rc.3")
+    files = build_archive(REPOSITORY_ROOT, tmp_path / "hydronicus.zip", "0.1.0-rc.4")
 
     assert "Every new Plant starts in Dry run" in how_it_works
     assert "records the complete plan as proposed operations" in how_it_works
