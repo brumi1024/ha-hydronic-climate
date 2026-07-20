@@ -1,14 +1,12 @@
 # Hydronicus {{VERSION}}
 
-This is the second installable release candidate for supervised Dry run evaluation.
+This is the third installable release candidate for supervised Dry run evaluation.
 Use it in Dry run before considering active heating control.
 
-## Changes since rc.1
+## Changes since rc.2
 
-- Add a topology-driven Hydronicus Plant card backed by a redacted, read-only presentation stream.
-- Add explicit thermostat ownership so each Zone uses either a Hydronicus thermostat or one existing Home Assistant climate entity.
-- Accept external thermostat demand only from normalized `hvac_action` state.
-- Add frontend release verification and the Home Assistant validation dependencies required by GitHub checks.
+- Reject initial setup when the same Home Assistant entity is selected for both the valve and pump, with a clear inline error.
+- Show the topology compiler reason when the initial setup review cannot validate the configured Plant.
 
 ## Highlights
 
